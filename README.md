@@ -1,6 +1,6 @@
-# Feishu AI Bot
+# 4D AI Bot
 
-多平台、多租户 AI 智能助手，基于 Gemini Function Calling Agent 架构，支持飞书、企业微信、微信客服三大平台。
+由4D Games开发的 多平台、多租户 AI 智能助手，基于 Gemini Function Calling Agent 架构，支持飞书、企业微信、微信客服、QQ四大平台。
 
 ## Quick Start
 
