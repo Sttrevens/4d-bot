@@ -20,14 +20,14 @@ bash install.sh
 **前置条件：** Docker、Git
 
 **你需要准备：**
-- 飞书/企微应用凭证（App ID + Secret）
+- 飞书/企微/QQ应用凭证（App ID + Secret）
 - Gemini API Key（[获取](https://aistudio.google.com/apikey)）
 - Upstash Redis（[免费注册](https://upstash.com)，记忆/历史存储）
 - 国内服务器需要 Cloudflare Worker 代理（部署教程见 `cloudflare-worker/`）
 
 ## 核心能力
 
-- **多平台接入** — 飞书 (Feishu/Lark)、企业微信 (WeCom)、微信客服 (WeCom KF)
+- **多平台接入** — 飞书 (Feishu/Lark)、企业微信 (WeCom)、微信客服 (WeCom KF)、QQ
 - **多租户隔离** — 每个团队独立的凭证、仓库、LLM 配置、工具集、管理员权限
 - **40+ 内置工具** — GitHub 操作、飞书日历/任务/文档/多维表格、代码搜索、网络搜索、浏览器自动化等
 - **多模态处理** — 文本、图片 (Vision)、语音 (Whisper STT)、视频 (Gemini from_uri / FFmpeg)、文件、PDF 导出
