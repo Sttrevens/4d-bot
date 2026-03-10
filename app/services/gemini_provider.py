@@ -1117,8 +1117,11 @@ async def handle_message(
         user_parts.append(types.Part(
             text=f"[用户发送了 {len(_user_image_paths)} 张图片，"
                  f"本地路径: {paths_str}。"
-                 f"如需将这些图片用于 xhs_publish 等工具，"
-                 f"请将路径传入 images 参数]"
+                 f"如需将这些图片用于 xhs_publish 等工具，请将路径传入 images 参数。\n"
+                 f"如需精确分析密集网格图（如 sprite sheet、icon atlas），"
+                 f"可在自定义工具中使用 sandbox_caps 的 read_user_image(path) 读取文件 + "
+                 f"slice_image_grid(data, rows, cols) 按行切片后逐行调 gemini_analyze_image 分析，"
+                 f"精度远高于一次性分析整张图]"
         ))
 
     contents.append(types.Content(role="user", parts=user_parts))
@@ -1512,9 +1515,14 @@ async def handle_message(
             # ── 退出前检查 2: 读了数据但没写回 ──
             # 结构性判断：调了 read_feishu_doc 但没调 edit/update/write_feishu_doc
             # 说明模型读了文档准备改，却生成了纯文本就想退出
+            # 跳过条件：涉及图片分析/自定义工具调试时，读操作是分析流程的一部分
+            _vision_analysis_in_progress = bool(
+                {"test_custom_tool", "assess_capability"} & set(tool_names_called)
+            )
             if (
                 not _nudged
                 and round_num >= 1
+                and not _vision_analysis_in_progress
                 and _has_unmatched_reads(tool_names_called, user_text)
             ):
                 _nudged = True
@@ -1554,7 +1562,9 @@ async def handle_message(
 
             # ── 退出前检查 4a: 快速本地检测（无 LLM 调用，instant）──
             # 正则匹配"已经删了/加了/发了"等动作声称，对比实际工具调用
-            if _exit_gate_nudge_count < _MAX_EXIT_GATE_NUDGES and reply_text and round_num >= 1:
+            # 涉及视觉分析/自定义工具调试时，放宽到 round 4+ 再检测（这类任务天然需要更多轮）
+            _exit_gate_min_round = 4 if _vision_analysis_in_progress else 1
+            if _exit_gate_nudge_count < _MAX_EXIT_GATE_NUDGES and reply_text and round_num >= _exit_gate_min_round:
                 if detect_action_claims(reply_text, tool_names_called):
                     _exit_gate_nudge_count += 1
                     logger.info(
@@ -1574,7 +1584,7 @@ async def handle_message(
 
             # ── 退出前检查 4b: LLM exit gate（兜底，处理本地检测不了的复杂情况）──
             # fail-OPEN：超时时放行（本地 detect_action_claims 已做了第一道检查）
-            if _exit_gate_nudge_count < _MAX_EXIT_GATE_NUDGES and reply_text and round_num >= 1:
+            if _exit_gate_nudge_count < _MAX_EXIT_GATE_NUDGES and reply_text and round_num >= _exit_gate_min_round:
                 _gate = await llm_exit_review(
                     reply_text, user_text, tool_names_called,
                     gemini_client=client,

@@ -21,6 +21,8 @@
 - download_video: 只允许已知视频平台 URL，200MB 上限，720p 限制
 - gemini_analyze_video: 消耗 API 额度，有大小限制
 - gemini_analyze_image: 同上，图片分析
+- read_user_image: 只读 /tmp/user_img_* 路径，20MB 上限
+- slice_image_grid: 将图片按网格切片，用于分析 sprite sheet 等密集图
 - web_search: 走 CF Worker 代理或 DDG 直连，30s 超时，最多 10 条结果
 - read_server_logs: 只读日志文件，限制 500 行
 - search_logs: 只读日志文件关键词搜索，限制 200 行
@@ -191,6 +193,108 @@ def gemini_analyze_image(image_data: bytes, prompt: str, mime_type: str = "image
     # 在调用线程捕获租户上下文（_run_async 的新线程不继承 contextvars）
     tenant = _get_tenant_or_none()
     return _run_async(_async_gemini_analyze(image_data, prompt, mime_type, tenant=tenant))
+
+
+# ═══════════════════════════════════════════════════════
+#  能力 2c: 用户图片安全读取 + 网格切片
+# ═══════════════════════════════════════════════════════
+
+# 允许读取的临时图片路径前缀（防止路径穿越）
+_USER_IMG_PREFIX = "/tmp/user_img_"
+_MAX_IMAGE_READ_SIZE = 20 * 1024 * 1024  # 20MB
+
+
+def read_user_image(path: str) -> bytes | str:
+    """安全读取用户上传的图片文件，返回 bytes 或错误字符串。
+
+    安全限制:
+    - 只允许读取 /tmp/user_img_* 路径（用户上传的临时文件）
+    - 最大 20MB
+    - 路径穿越检测（realpath 后仍须匹配前缀）
+    """
+    if not path or not isinstance(path, str):
+        return "path 不能为空"
+    path = path.strip()
+    # 路径穿越防护
+    real = os.path.realpath(path)
+    if not real.startswith(_USER_IMG_PREFIX):
+        return f"安全限制：只能读取 {_USER_IMG_PREFIX}* 路径的文件"
+    if not os.path.isfile(real):
+        return f"文件不存在: {path}"
+    size = os.path.getsize(real)
+    if size > _MAX_IMAGE_READ_SIZE:
+        return f"文件过大（{size // (1024*1024)}MB），最大 {_MAX_IMAGE_READ_SIZE // (1024*1024)}MB"
+    try:
+        with open(real, "rb") as f:
+            return f.read()
+    except Exception as e:
+        return f"读取失败: {e}"
+
+
+def slice_image_grid(
+    image_data: bytes,
+    rows: int,
+    cols: int,
+    *,
+    target_row: int | None = None,
+    mime_type: str = "image/png",
+) -> list[bytes] | bytes | str:
+    """将图片按 rows×cols 网格切片，返回切片列表或错误字符串。
+
+    适用于 sprite sheet、icon atlas 等密集网格图的逐行/逐格分析。
+    搭配 gemini_analyze_image 可大幅提升密集图的识别精度。
+
+    Args:
+        image_data: 原始图片 bytes
+        rows: 网格行数
+        cols: 网格列数
+        target_row: 只返回指定行（1-based），None=返回所有行
+        mime_type: 输出格式（image/png 或 image/jpeg）
+
+    Returns:
+        target_row 指定时: 该行的图片 bytes
+        target_row 为 None 时: 每行一张图片的 bytes 列表
+        出错时: 错误字符串
+    """
+    if not image_data or not isinstance(image_data, bytes):
+        return "image_data 必须是非空 bytes"
+    if rows < 1 or cols < 1 or rows > 64 or cols > 64:
+        return "rows/cols 必须在 1-64 之间"
+    if target_row is not None and (target_row < 1 or target_row > rows):
+        return f"target_row 必须在 1-{rows} 之间"
+
+    try:
+        from PIL import Image
+    except ImportError:
+        return "Pillow 未安装，无法切片图片"
+
+    try:
+        img = Image.open(io.BytesIO(image_data))
+    except Exception as e:
+        return f"图片解码失败: {e}"
+
+    w, h = img.size
+    cell_w = w // cols
+    cell_h = h // rows
+
+    if cell_w < 4 or cell_h < 4:
+        return f"网格太密（单格 {cell_w}×{cell_h}px），图片可能不是 {rows}×{cols} 网格"
+
+    fmt = "PNG" if "png" in mime_type.lower() else "JPEG"
+
+    def _row_to_bytes(r: int) -> bytes:
+        """裁剪第 r 行（0-based）为单独图片"""
+        top = r * cell_h
+        bottom = top + cell_h
+        row_img = img.crop((0, top, w, bottom))
+        buf = io.BytesIO()
+        row_img.save(buf, format=fmt)
+        return buf.getvalue()
+
+    if target_row is not None:
+        return _row_to_bytes(target_row - 1)
+
+    return [_row_to_bytes(r) for r in range(rows)]
 
 
 # ═══════════════════════════════════════════════════════
