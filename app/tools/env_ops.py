@@ -133,7 +133,8 @@ def _handle_install_package(args: dict) -> ToolResult:
 
     # 4. pip install
     pip_spec = f"{package_name}{version}" if version else package_name
-    cmd = ["pip", "install", "--no-input", pip_spec]
+    # --only-binary :all: 防止执行 setup.py（阻止恶意包在安装时运行代码）
+    cmd = ["pip", "install", "--no-input", "--only-binary", ":all:", pip_spec]
 
     logger.info("env_ops: installing package: %s", pip_spec)
     try:

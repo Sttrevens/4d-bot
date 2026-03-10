@@ -122,9 +122,10 @@ async def _verify_token(
     credentials: HTTPAuthorizationCredentials | None = Depends(_security),
 ) -> str:
     """验证 admin Bearer token"""
+    import hmac
     if not _ADMIN_TOKEN:
         raise HTTPException(503, "ADMIN_TOKEN not configured on server")
-    if not credentials or credentials.credentials != _ADMIN_TOKEN:
+    if not credentials or not hmac.compare_digest(credentials.credentials, _ADMIN_TOKEN):
         raise HTTPException(401, "Invalid or missing admin token")
     return credentials.credentials
 

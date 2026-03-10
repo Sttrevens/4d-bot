@@ -31,8 +31,7 @@ _ALLOWED_MODULES: frozenset[str] = frozenset({
     "collections", "itertools", "functools", "operator",
     "string", "textwrap", "difflib", "uuid", "copy",
     "csv", "io",
-    # 第三方（网络 + 解析）
-    "httpx",
+    # 第三方（解析）
     "bs4",
     # 项目内
     "app.tools.tool_result",
@@ -98,13 +97,13 @@ _SAFE_BUILTINS: dict[str, Any] = {
     "map": map, "filter": filter, "sorted": sorted, "reversed": reversed,
     "all": all, "any": any, "next": next, "iter": iter,
     # 类型判断
-    "isinstance": isinstance, "issubclass": issubclass, "type": type,
-    "callable": callable, "hasattr": hasattr, "getattr": getattr, "setattr": setattr,
+    "isinstance": isinstance, "issubclass": issubclass,
+    "callable": callable, "hasattr": hasattr,
     # 字符串 & 格式化
     "repr": repr, "format": format, "chr": chr, "ord": ord,
     "hex": hex, "oct": oct, "bin": bin,
     # 其他安全内建
-    "id": id, "hash": hash, "vars": vars, "dir": dir,
+    "id": id, "hash": hash,
     "print": print,  # print 只输出到 stdout，不影响安全
     "ValueError": ValueError,
     "TypeError": TypeError,

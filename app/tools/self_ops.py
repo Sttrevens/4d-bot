@@ -337,8 +337,30 @@ def self_read_file(path: str, branch: str = "main", start_line: int = 0, end_lin
     return ToolResult.success(content)
 
 
+_BLOCKED_WRITE_PATHS = (
+    ".github/", ".env", "tenants.json", "docker-compose",
+    "Dockerfile", "deploy.yml", "instances/",
+)
+
+
+def _check_write_path(path: str) -> str | None:
+    """检查写入路径是否安全，返回错误消息或 None（通过）"""
+    for blocked in _BLOCKED_WRITE_PATHS:
+        if path.startswith(blocked) or path == blocked or ("/" + blocked) in path:
+            return (
+                f"禁止写入 {path}（安全限制）。\n"
+                f"以下路径不允许通过 self_write_file/self_edit_file 修改：\n"
+                f"  {', '.join(_BLOCKED_WRITE_PATHS)}\n"
+                f"如需修改基础设施文件，请联系管理员。"
+            )
+    return None
+
+
 def self_write_file(path: str, content: str, message: str = "", branch: str = "") -> ToolResult:
     """写入 bot 自己仓库的文件（直接推到 main，CI/CD 自动部署）"""
+    path_err = _check_write_path(path)
+    if path_err:
+        return ToolResult.blocked(path_err)
     if not branch:
         branch = "main"
 
@@ -412,6 +434,9 @@ def self_edit_file(
     比 self_write_file 安全：不需要完整文件内容，只需要知道要改的那段代码。
     直接推到 main 分支，CI/CD 自动部署。
     """
+    path_err = _check_write_path(path)
+    if path_err:
+        return ToolResult.blocked(path_err)
     if not branch:
         branch = "main"
 

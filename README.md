@@ -1,33 +1,26 @@
 # 4D AI Bot
 
-由4D Games开发的 多平台、多租户 AI 智能助手，基于 Gemini Function Calling Agent 架构，支持飞书、企业微信、微信客服、QQ四大平台。
+多平台、多租户 AI 智能助手，基于 Gemini Function Calling Agent 架构，支持飞书、企业微信、微信客服三大平台。
 
 ## Quick Start
 
 ```bash
-# 一键安装（交互式向导，自动生成配置 + Docker 启动）
-curl -fsSL https://raw.githubusercontent.com/Sttrevens/feishu-ai-bot/main/install.sh | bash
-```
-
-或者手动安装：
-
-```bash
-git clone https://github.com/Sttrevens/feishu-ai-bot.git
-cd feishu-ai-bot
+git clone https://github.com/Sttrevens/4d-bot.git
+cd 4d-bot
 bash install.sh
 ```
 
 **前置条件：** Docker、Git
 
 **你需要准备：**
-- 飞书/企微/QQ应用凭证（App ID + Secret）
+- 飞书/企微应用凭证（App ID + Secret）
 - Gemini API Key（[获取](https://aistudio.google.com/apikey)）
 - Upstash Redis（[免费注册](https://upstash.com)，记忆/历史存储）
 - 国内服务器需要 Cloudflare Worker 代理（部署教程见 `cloudflare-worker/`）
 
 ## 核心能力
 
-- **多平台接入** — 飞书 (Feishu/Lark)、企业微信 (WeCom)、微信客服 (WeCom KF)、QQ
+- **多平台接入** — 飞书 (Feishu/Lark)、企业微信 (WeCom)、微信客服 (WeCom KF)
 - **多租户隔离** — 每个团队独立的凭证、仓库、LLM 配置、工具集、管理员权限
 - **40+ 内置工具** — GitHub 操作、飞书日历/任务/文档/多维表格、代码搜索、网络搜索、浏览器自动化等
 - **多模态处理** — 文本、图片 (Vision)、语音 (Whisper STT)、视频 (Gemini from_uri / FFmpeg)、文件、PDF 导出
@@ -36,6 +29,21 @@ bash install.sh
 - **记忆系统** — 三层架构：工作记忆 (对话历史) + 事件日志 (journal) + 语义记忆 (per-tenant 可配)
 - **浏览器自动化** — Playwright + Gemini Vision，操作任意网页
 - **能力自获取** — 动态安装 Python 包、创建自定义工具、申请基础设施变更
+
+## 架构概览
+
+```
+用户消息 → Webhook Handler (飞书/企微/微信客服)
+         → 租户上下文设置 (contextvars)
+         → route_message() (配额/限流/试用期检查)
+         → Gemini Agent Loop (flash, round 6+ 自动升级 pro)
+           ├─ 40+ Function Calling 工具
+           ├─ 多模态处理 (图片/语音/视频)
+           ├─ 记忆系统 (读写/回忆)
+           └─ 结果返回用户
+```
+
+每个租户可运行在独立 Docker 容器中（端口隔离、内存限制），通过 `tenants.json` 配置。
 
 ## 技术栈
 
@@ -49,7 +57,7 @@ bash install.sh
 | 语音转写 | OpenAI-compatible Whisper API |
 | 视频处理 | FFmpeg + yt-dlp |
 | 容器化 | Docker + docker-compose |
-| 部署 | 阿里云 ECS / 任意 VPS |
+| 部署 | 阿里云 ECS / 任意 VPS (最低 2GB RAM 推荐) |
 | 代理 | Cloudflare Workers (Gemini API + DuckDuckGo) |
 
 ## 项目结构
@@ -59,7 +67,7 @@ app/
 ├── main.py                     # FastAPI 入口
 ├── config.py                   # 全局配置
 ├── webhook/                    # 平台 Webhook 处理
-│   ├── feishu_handler.py       # 飞书事件处理
+│   ├── handler.py              # 飞书事件处理
 │   ├── wecom_handler.py        # 企微事件处理
 │   └── wecom_kf_handler.py     # 微信客服事件处理
 ├── router/
@@ -102,19 +110,20 @@ cloudflare-worker/              # CF Worker 代理
 └── ddg-search-proxy.js         # DuckDuckGo 搜索代理
 ```
 
-## 手动安装
+## 安装
 
 ### 环境要求
 
 - Docker + docker-compose（推荐）
 - 或 Python 3.12+、FFmpeg、Git（本地开发）
+- **最低配置：2GB RAM**（每个容器限制 512MB + swap，低于 2GB 多租户场景可能 OOM）
 
 ### Docker 部署
 
 ```bash
 # 1. 克隆
-git clone https://github.com/Sttrevens/feishu-ai-bot.git
-cd feishu-ai-bot
+git clone https://github.com/Sttrevens/4d-bot.git
+cd 4d-bot
 
 # 2. 配置
 cp .env.example .env            # 编辑 .env，填入 API Key 等
@@ -154,6 +163,8 @@ python -m app.main
 | `DDG_SEARCH_PROXY_URL` | 国内推荐 | DuckDuckGo 搜索代理 |
 | `GITHUB_TOKEN` | 可选 | GitHub 功能需要 |
 | `STT_API_KEY` | 可选 | 语音转写（Whisper API） |
+| `ADMIN_TOKEN` | 推荐 | Admin Dashboard 认证 token |
+| `HTTPS_PROXY` | 可选 | 代理地址（仅 Gemini/GitHub 等需要翻墙的 API 使用） |
 
 ### tenants.json — Bot 配置
 
@@ -214,6 +225,16 @@ Web 管理面板，访问 `https://YOUR_DOMAIN/admin/dashboard`。
 
 设置 `ADMIN_TOKEN` 环境变量启用认证。
 
+## 安全说明
+
+- **凭证管理**：所有 API Key、Secret 通过环境变量或 `${VAR}` 引用加载，`tenants.json` 和 `.env` 已 gitignore
+- **代码沙箱**：自定义工具在受限沙箱中执行（import 白名单 + AST 安全检查 + 执行超时）
+- **自修复边界**：auto-fix 只能修改 `app/tools/` 和 `app/knowledge/`，基础设施层只读（allowlist fail-closed）
+- **SSRF 防护**：`fetch_url` 和 `browser_open` 均禁止访问内网/本地地址
+- **Webhook 验证**：飞书 verification_token、企微 SHA1 签名 + AES 解密
+- **Admin 认证**：所有 `/admin/api/*` 端点需 Bearer token 认证
+- **容器隔离**：每个租户独立 Docker 容器，512MB 内存限制，防止单租户 OOM 影响全局
+
 ## 国内部署指南
 
 国内服务器无法直连 Google API，需要 Cloudflare Worker 做代理：
@@ -223,11 +244,23 @@ Web 管理面板，访问 `https://YOUR_DOMAIN/admin/dashboard`。
 
 详见 `cloudflare-worker/` 目录中的部署说明。
 
+**注意：** `HTTPS_PROXY` 环境变量仅影响需要翻墙的 API（Gemini、GitHub）。国内可直连的服务（飞书、企微、Upstash Redis）的 httpx 客户端均设置 `trust_env=False`，不会走代理。
+
 ## 测试
 
 ```bash
 python -m pytest tests/ -v
 ```
+
+## 贡献
+
+欢迎 Issue 和 PR。
+
+1. Fork 本仓库
+2. 创建特性分支 (`git checkout -b feature/amazing-feature`)
+3. 提交更改 (`git commit -m 'Add amazing feature'`)
+4. 推送到分支 (`git push origin feature/amazing-feature`)
+5. 开 Pull Request
 
 ## License
 

@@ -107,6 +107,39 @@ sed -i 's/"name": "高梦"/"name": "BotName"/g' "$DST_DIR/app/webhook/handler.py
 # app/tools/doc_ops.py: 示例section名
 sed -i 's/耀西的碎碎念/Bot的碎碎念/g' "$DST_DIR/app/tools/doc_ops.py"
 
+
+# app/services/super_admin.py: docstring 中的真实姓名
+sed -i 's/Steven（吴天骄）/Admin/g' "$DST_DIR/app/services/super_admin.py"
+sed -i 's/Steven/Admin/g' "$DST_DIR/app/services/super_admin.py"
+
+# app/admin/dashboard.html: placeholder 中的真实姓名
+sed -i 's/吴天骄/Admin/g' "$DST_DIR/app/admin/dashboard.html"
+sed -i 's/Steven/Admin/g' "$DST_DIR/app/admin/dashboard.html"
+
+# app/services/deploy_quota.py: docstring
+sed -i 's/kf-steven-ai/kf-ai-assistant/g' "$DST_DIR/app/services/deploy_quota.py"
+
+# app/tools/identity_ops.py: 示例
+sed -i 's/Steven/Admin/g' "$DST_DIR/app/tools/identity_ops.py"
+
+# app/knowledge/self_awareness.md: 容器名
+sed -i 's/kf-steven-ai/kf-ai-assistant/g' "$DST_DIR/app/knowledge/self_awareness.md"
+
+# app/services/base_agent.py: 注释
+sed -i 's/Steven AI/Admin AI/g' "$DST_DIR/app/services/base_agent.py"
+sed -i 's/Steven/Admin/g' "$DST_DIR/app/services/base_agent.py"
+
+# scripts/rebuild_instances.sh: 容器名
+sed -i 's/kf-steven-ai/kf-ai-assistant/g' "$DST_DIR/scripts/rebuild_instances.sh"
+
+# tests 中的真实姓名和容器名
+find "$DST_DIR/tests" -name "*.py" -exec sed -i 's/kf-steven-ai/kf-ai-assistant/g' {} +
+find "$DST_DIR/tests" -name "*.py" -exec sed -i 's/wm_steven_123/wm_admin_123/g' {} +
+find "$DST_DIR/tests" -name "*.py" -exec sed -i 's/sender_name="Steven"/sender_name="Admin"/g' {} +
+
+# install.sh: GitHub 用户名
+sed -i 's/Sttrevens/your-github-username/g' "$DST_DIR/install.sh"
+
 echo "✅ 硬编码姓名已替换"
 
 # ── Step 7: 替换 GitHub 用户名和私有仓库名 ──
@@ -122,6 +155,16 @@ sed -i 's/Sttrevens/your-github-username/g' "$DST_DIR/README.md"
 find "$DST_DIR" -type f -name "*.md" -exec sed -i 's/CDREBIRTH/your-repo-name/g' {} +
 
 echo "✅ GitHub 信息已替换"
+
+# ── Step 7.5: 替换 4dgames/4D Games 引用 ──
+echo "🏢 替换组织名称..."
+find "$DST_DIR" -type f \( -name "*.md" -o -name "*.py" -o -name "*.sh" -o -name "*.yml" \) \
+    -exec sed -i 's/4dgames-feishu-code-bot/feishu-ai-bot/g' {} +
+find "$DST_DIR" -type f \( -name "*.md" -o -name "*.py" -o -name "*.sh" -o -name "*.yml" \) \
+    -exec sed -i 's/四缔游戏（4D Games）/示例公司/g' {} +
+find "$DST_DIR" -type f \( -name "*.md" -o -name "*.py" -o -name "*.sh" -o -name "*.yml" \) \
+    -exec sed -i 's/4D Games/示例公司/g' {} +
+echo "✅ 组织名称已替换"
 
 # ── Step 8: 脱敏 sales_playbook.md ──
 echo "📝 脱敏 knowledge 模块..."

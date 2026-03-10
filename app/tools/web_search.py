@@ -138,6 +138,30 @@ async def fetch_url(args: dict) -> ToolResult:
     if not url.startswith(("http://", "https://")):
         return ToolResult.invalid_param("URL 必须以 http:// 或 https:// 开头")
 
+    # SSRF 防护：禁止访问内网地址
+    try:
+        from urllib.parse import urlparse as _urlparse
+        import ipaddress, socket
+        _parsed = _urlparse(url)
+        _hostname = _parsed.hostname or ""
+        # 禁止 file:// 等非 HTTP 协议
+        if _parsed.scheme not in ("http", "https"):
+            return ToolResult.invalid_param("只支持 http/https 协议")
+        # 禁止 localhost
+        if _hostname in ("localhost", "127.0.0.1", "[::1]", "0.0.0.0"):
+            return ToolResult.blocked("禁止访问本地地址（SSRF 防护）")
+        # 解析 IP 并检查是否为内网/保留地址
+        try:
+            _ips = socket.getaddrinfo(_hostname, None)
+            for _family, _type, _proto, _canonname, _sockaddr in _ips:
+                _ip = ipaddress.ip_address(_sockaddr[0])
+                if _ip.is_private or _ip.is_loopback or _ip.is_link_local or _ip.is_reserved:
+                    return ToolResult.blocked(f"禁止访问内网地址 {_ip}（SSRF 防护）")
+        except (socket.gaierror, ValueError):
+            pass  # DNS 解析失败不阻塞，让 httpx 自己报错
+    except Exception:
+        pass  # 解析失败不阻塞
+
     # 已知 SPA 网站：fetch_url 无法获取内容，直接引导用 browser_open
     _SPA_DOMAINS = ("luma.com", "lu.ma", "splashthat.com", "splash.events")
     try:

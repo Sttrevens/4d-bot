@@ -290,7 +290,17 @@ async def _handle_event_inner(request: Request) -> dict[str, Any]:
                 tenant.tenant_id, body.get("header", {}).get("event_type", "unknown"),
                 list(body.keys()))
 
-    # ---------- challenge 验证 ----------
+    # ---------- 验证 token（在 challenge 之前，防止未授权的 webhook URL 注册）----------
+    header = body.get("header", {})
+    token = header.get("token", "")
+    if not tenant.verification_token:
+        logger.warning("verification_token not configured for tenant=%s, rejecting event", tenant.tenant_id)
+        return {"code": -1, "msg": "verification_token not configured"}
+    if token != tenant.verification_token:
+        logger.warning("invalid verification token for tenant=%s", tenant.tenant_id)
+        return {"code": -1, "msg": "invalid token"}
+
+    # ---------- challenge 验证（token 已验证）----------
     if "challenge" in body:
         logger.info("challenge verification: returning challenge for tenant=%s", tenant.tenant_id)
         return {"challenge": body["challenge"]}
@@ -301,7 +311,6 @@ async def _handle_event_inner(request: Request) -> dict[str, Any]:
         return {"code": 0, "msg": "encrypt_key not configured"}
 
     # ---------- 事件处理 ----------
-    header = body.get("header", {})
     event = body.get("event", {})
     event_id = header.get("event_id", "")
 
@@ -309,13 +318,6 @@ async def _handle_event_inner(request: Request) -> dict[str, Any]:
     if _dedup.is_duplicate(event_id):
         logger.debug("duplicate event %s, skipping", event_id)
         return {"code": 0}
-
-    # ---------- 验证 token ----------
-    token = header.get("token", "")
-    logger.warning("token check: incoming=%r stored=%r tenant=%s", token, tenant.verification_token, tenant.tenant_id)
-    if tenant.verification_token and token != tenant.verification_token:
-        logger.warning("invalid verification token for tenant=%s", tenant.tenant_id)
-        return {"code": -1, "msg": "invalid token"}
 
     # ---------- 只处理 im.message.receive_v1 ----------
     event_type = header.get("event_type", "")

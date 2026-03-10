@@ -283,12 +283,31 @@ async def health():
     return {"status": "ok"}
 
 
+def _verify_internal_token(request: Request):
+    """验证 /_internal/* 接口的认证 token（复用 ADMIN_TOKEN）"""
+    import os
+    token = os.getenv("ADMIN_TOKEN", "").strip()
+    if not token:
+        # ADMIN_TOKEN 未配置时允许访问（向后兼容本地开发）
+        return
+    auth = request.headers.get("authorization", "")
+    if auth.startswith("Bearer "):
+        req_token = auth[7:]
+    else:
+        req_token = request.headers.get("x-internal-token", "")
+    import hmac
+    if not hmac.compare_digest(req_token, token):
+        from fastapi.responses import JSONResponse
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
 @app.post("/_internal/reload-tenants")
-async def reload_tenants():
+async def reload_tenants(request: Request):
     """热加载 tenants.json，不需要重启容器。
 
     用于 dashboard 添加 co-tenant 后触发，或 CI/CD 更新配置后调用。
     """
+    _verify_internal_token(request)
     from app.tenant.registry import tenant_registry
     count = tenant_registry.reload_from_file()
     # 刷新 Redis 元数据
@@ -307,6 +326,7 @@ async def internal_add_tenant(request: Request):
     用于跨容器 co-tenant 添加：admin API 无法直接写入其他容器的
     mounted tenants.json，所以通过 HTTP 让目标容器自己写入。
     """
+    _verify_internal_token(request)
     import json
     from pathlib import Path
     from app.tenant.registry import tenant_registry
@@ -365,6 +385,7 @@ async def internal_add_tenant(request: Request):
 @app.post("/_internal/remove-tenant")
 async def internal_remove_tenant(request: Request):
     """从本容器的 tenants.json 中移除租户并反注册。"""
+    _verify_internal_token(request)
     import json
     from pathlib import Path
     from app.tenant.registry import tenant_registry
