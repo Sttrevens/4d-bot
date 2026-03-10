@@ -189,6 +189,9 @@ class TenantConfig:
     memory_chat_ttl: int = 3600         # 对话历史 Redis TTL（秒），0=不过期
     memory_context_enabled: bool = True # 是否在 system prompt 注入记忆上下文
                                         # False = 不调 build_memory_context()，纯无状态
+    memory_org_recall_enabled: bool = False  # 是否启用组织级记忆共享
+                                              # True = build_memory_context 时也搜索其他用户的解决方案
+                                              # 同一 tenant 下的用户共享「解决方案」类记忆
 
     # ── 试用期 ──
     trial_enabled: bool = False         # 是否启用试用期（新用户首次对话开始计时）

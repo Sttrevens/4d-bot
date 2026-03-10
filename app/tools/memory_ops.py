@@ -28,8 +28,10 @@ def save_memory(args: dict) -> ToolResult:
     user_name = args.get("user_name", "bot")
     tags = args.get("tags", [])
     outcome = args.get("outcome", "")
+    solution = args.get("solution", False)
 
-    ok = mem.remember(user_id, user_name, action, outcome, tags)
+    ok = mem.remember(user_id, user_name, action, outcome, tags,
+                      solution=solution)
     if ok:
         return ToolResult.success("已保存到记忆。")
     return ToolResult.error("保存失败（GitHub 写入错误）。", code="api_error")
@@ -44,6 +46,19 @@ def recall_memory(args: dict) -> ToolResult:
 
     return ToolResult.success(mem.recall_text(
         user_id=user_id, tags=tags, keyword=keyword, limit=limit,
+    ))
+
+
+def recall_org_memory(args: dict) -> ToolResult:
+    """搜索组织内其他成员的解决方案（跨用户知识共享）。"""
+    tags = args.get("tags", [])
+    keyword = args.get("keyword", "")
+    limit = args.get("limit", 5)
+    exclude_user_id = args.get("exclude_user_id", "")
+
+    return ToolResult.success(mem.recall_org_text(
+        tags=tags, keyword=keyword, limit=limit,
+        exclude_user_id=exclude_user_id,
     ))
 
 
@@ -202,8 +217,45 @@ TOOL_DEFINITIONS = [
                 },
                 "user_id": {"type": "string", "description": "相关用户 ID（可选）"},
                 "user_name": {"type": "string", "description": "相关用户名（可选）"},
+                "solution": {
+                    "type": "boolean",
+                    "description": "这条记忆是否是可复用的解决方案（修 bug、排错、配置等）。"
+                                   "标记为 true 后，组织内其他用户遇到类似问题时可以检索到。",
+                    "default": False,
+                },
             },
             "required": ["what"],
+        },
+    },
+    {
+        "name": "recall_org_memory",
+        "description": (
+            "搜索组织内其他成员遇到过的类似问题和解决方案。"
+            "当用户遇到技术问题、配置问题、或常见错误时，先搜搜同事有没有解决过。"
+            "只返回标记为「解决方案」的记忆，不会泄露其他用户的私人对话。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "按标签过滤（如 [\"代码\", \"部署\"]，可选）",
+                },
+                "keyword": {
+                    "type": "string",
+                    "description": "按关键词搜索（如 bug 名、错误信息、技术名词）",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "返回几条，默认 5",
+                    "default": 5,
+                },
+                "exclude_user_id": {
+                    "type": "string",
+                    "description": "排除某个用户的记忆（通常传当前用户 ID）",
+                },
+            },
         },
     },
     {
@@ -389,6 +441,7 @@ TOOL_DEFINITIONS = [
 TOOL_MAP = {
     "save_memory": save_memory,
     "recall_memory": recall_memory,
+    "recall_org_memory": recall_org_memory,
     "create_plan": create_plan,
     "activate_plan": activate_plan_tool,
     "update_plan_step": update_plan_step,

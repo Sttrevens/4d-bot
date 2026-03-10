@@ -182,8 +182,8 @@ _EDITABLE_FIELDS = (
     "trial_enabled", "trial_duration_hours", "approval_duration_days",
     "quota_user_tokens_6h", "quota_monthly_api_calls", "quota_monthly_tokens",
     "rate_limit_rpm", "rate_limit_user_rpm", "deploy_free_quota",
-    "memory_diary_enabled", "memory_context_enabled", "memory_journal_max",
-    "memory_chat_rounds", "memory_chat_ttl",
+    "memory_diary_enabled", "memory_context_enabled", "memory_org_recall_enabled",
+    "memory_journal_max", "memory_chat_rounds", "memory_chat_ttl",
     "admin_names", "tools_enabled", "capability_modules",
     "self_iteration_enabled", "instance_management_enabled",
 )

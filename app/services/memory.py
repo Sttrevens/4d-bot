@@ -122,8 +122,12 @@ def remember(
     action: str,
     outcome: str = "",
     tags: list[str] | None = None,
+    solution: bool = False,
 ) -> int:
-    """记录一次交互到 journal。返回当前 journal 长度。"""
+    """记录一次交互到 journal。返回当前 journal 长度。
+
+    solution=True 表示这是一个可复用的解决方案，会被组织级记忆召回。
+    """
     entry = {
         "user_id": user_id[:12],
         "user_name": user_name,
@@ -132,6 +136,8 @@ def remember(
         "tags": tags or [],
         "time": datetime.now(timezone.utc).isoformat(),
     }
+    if solution:
+        entry["solution"] = True
     try:
         length = memory_store.append_journal(entry)
         # 同步写入索引
@@ -227,6 +233,87 @@ def _filter_entries(
         if len(results) >= limit:
             break
     return results
+
+
+def recall_org(
+    tags: list[str] | None = None,
+    keyword: str = "",
+    limit: int = 10,
+    exclude_user_id: str = "",
+) -> list[dict]:
+    """组织级记忆召回：搜索所有用户的解决方案类记忆。
+
+    只返回标记了 solution=True 的条目（可复用的解决方案），
+    排除当前用户自己的记忆（避免重复）。
+    用于跨用户知识共享：用户 A 解决的问题，用户 B 遇到类似情况时自动借鉴。
+    """
+    has_filter = bool(tags or (keyword and keyword.strip()))
+    keyword_lower = keyword.strip().lower() if keyword else ""
+    exclude_uid = exclude_user_id[:12] if exclude_user_id else ""
+
+    entries = _read_journal_safe(limit=200)
+    results = []
+    for e in reversed(entries):
+        # 只看解决方案类条目
+        if not e.get("solution"):
+            continue
+        # 排除当前用户
+        if exclude_uid and e.get("user_id", "")[:12] == exclude_uid:
+            continue
+
+        # 标签匹配
+        tag_match = False
+        if tags:
+            entry_tags = set(e.get("tags", []))
+            tag_match = bool(entry_tags.intersection(tags))
+
+        # 关键词匹配
+        kw_match = False
+        if keyword_lower:
+            searchable = " ".join([
+                str(e.get("action", "")),
+                str(e.get("details", "")),
+                str(e.get("outcome", "")),
+                str(e.get("summary", "")),
+            ]).lower()
+            kw_match = keyword_lower in searchable
+
+        if has_filter and not tag_match and not kw_match:
+            continue
+
+        results.append(e)
+        if len(results) >= limit:
+            break
+    return results
+
+
+def recall_org_text(
+    tags: list[str] | None = None,
+    keyword: str = "",
+    limit: int = 10,
+    exclude_user_id: str = "",
+) -> str:
+    """组织级记忆召回，格式化为文本。"""
+    entries = recall_org(
+        tags=tags, keyword=keyword, limit=limit,
+        exclude_user_id=exclude_user_id,
+    )
+    if not entries:
+        return "没有找到组织内其他成员的相关解决方案。"
+    lines = []
+    for e in entries:
+        t = e.get("time", "?")[:16]
+        user = e.get("user_name", "?")
+        action = e.get("action", "?")
+        outcome = e.get("outcome", "")
+        tags_str = " ".join(f"#{t}" for t in e.get("tags", []))
+        line = f"[{t}] {user}: {action}"
+        if outcome:
+            line += f" → {outcome}"
+        if tags_str:
+            line += f"  {tags_str}"
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def recall_text(
@@ -501,6 +588,7 @@ async def build_memory_context(
 
     # 2. LLM 智能回忆决策：判断要不要回忆 + 搜什么标签
     recalled = False
+    decision = None
     if current_text:
         try:
             decision = await asyncio.wait_for(
@@ -535,12 +623,42 @@ async def build_memory_context(
             memory_lines = [_format_memory_entry(e) for e in recent]
             parts.append("最近交互:\n" + "\n".join(memory_lines))
 
+    # 4. 组织级记忆共享：搜索其他用户的解决方案
+    # 当 tenant 启用 memory_org_recall_enabled 时，自动搜索其他用户的已解决问题
+    try:
+        from app.tenant.context import get_current_tenant
+        tenant = get_current_tenant()
+        org_recall = getattr(tenant, "memory_org_recall_enabled", False)
+    except Exception:
+        org_recall = False
+
+    if org_recall and current_text:
+        try:
+            # 用当前消息的标签/关键词搜索组织级解决方案
+            search_tags = None
+            search_kw = ""
+            if recalled and decision:
+                search_tags = decision.get("t", [])
+                search_kw = decision.get("k", "")
+            org_results = recall_org(
+                tags=search_tags, keyword=search_kw,
+                limit=3, exclude_user_id=user_id,
+            )
+            if org_results:
+                org_lines = [_format_memory_entry(e) for e in org_results]
+                parts.append(
+                    "组织内相关经验（其他同事的解决方案）:\n"
+                    + "\n".join(org_lines)
+                )
+        except Exception:
+            logger.debug("org recall failed", exc_info=True)
+
     if not parts:
         return ""
 
     context = "\n\n".join(parts)
-    if len(context) > 1500:
-        context = context[:1500] + "..."
+    if len(context) > 2000:
+        context = context[:2000] + "..."
     return f"\n\n你的记忆：\n{context}"
 
 
@@ -575,6 +693,7 @@ async def write_diary(
     summary = diary.get("s", "")
     tags = diary.get("t", [])
     prefs = diary.get("p", [])
+    is_solution = diary.get("sol", False)
 
     if not summary:
         return
@@ -582,7 +701,8 @@ async def write_diary(
     # 写入 journal（返回当前长度）
     journal_len = 0
     try:
-        journal_len = remember(user_id, user_name, summary, "", tags)
+        journal_len = remember(user_id, user_name, summary, "", tags,
+                               solution=is_solution)
     except Exception:
         logger.debug("write_diary: remember failed", exc_info=True)
 
@@ -796,26 +916,28 @@ _DIARY_PROMPT = """\
 你是日记助手。根据用户和bot的对话，生成一条日记条目。
 
 输出严格 JSON（不要输出其他内容）：
-{"s":"摘要","t":["标签"],"p":["偏好"],"w":true}
+{"s":"摘要","t":["标签"],"p":["偏好"],"w":true,"sol":false}
 
 字段说明：
 - s: 摘要（50字以内）。如果涉及文档/文件/链接，务必把标题、ID或URL带上，方便以后找到
 - t: 话题标签（1-3个，从：日历、任务、文档、代码、消息、搜索、表格、部署、规划、其他）
 - p: 用户表达的偏好/规则/标准/习惯/约定（没有则空数组[]）。格式「领域: 内容」
 - w: 是否值得记录（true/false）。纯寒暄("你好""谢谢")、简单确认("好的""收到")= false
+- sol: 是否包含可复用的解决方案（true/false）。当 bot 帮用户解决了具体问题（修 bug、配置、排错等），
+  其他用户遇到类似问题也能借鉴时 = true。纯查询/闲聊 = false
 
 示例：
 用户: 帮我查一下明天有什么会 / Bot: 明天有3个会议...
-→ {"s":"查询明天的会议安排，共3个","t":["日历"],"p":[],"w":true}
+→ {"s":"查询明天的会议安排，共3个","t":["日历"],"p":[],"w":true,"sol":false}
 
 用户: 以后开会标题统一用「部门-主题-日期」格式 / Bot: 好的，我记住了
-→ {"s":"用户设定了会议命名规则","t":["日历"],"p":["日历命名: 会议标题格式为「部门-主题-日期」"],"w":true}
+→ {"s":"用户设定了会议命名规则","t":["日历"],"p":["日历命名: 会议标题格式为「部门-主题-日期」"],"w":true,"sol":false}
 
-用户: 这个文档你记一下 [飞书文档: 产品PRD v2] / Bot: 好的，已记住
-→ {"s":"用户让记住文档「产品PRD v2」(docId:xxx)，后续产品讨论时参考","t":["文档"],"p":[],"w":true}
+用户: 碰撞检测那个 bug 怎么修？/ Bot: 发现是 hitbox 偏移了 2px，改了 collision.py 第 47 行
+→ {"s":"修复碰撞检测 bug: hitbox 偏移 2px，改 collision.py:47","t":["代码"],"p":[],"w":true,"sol":true}
 
 用户: 谢谢 / Bot: 不客气
-→ {"s":"","t":[],"p":[],"w":false}\
+→ {"s":"","t":[],"p":[],"w":false,"sol":false}\
 """
 
 
