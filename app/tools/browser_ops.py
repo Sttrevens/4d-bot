@@ -21,12 +21,15 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import os
 import re
+import socket
 import time
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlparse
 
 from app.tools.tool_result import ToolResult
 
@@ -40,6 +43,46 @@ _BLOCKED_URL_PATTERNS = re.compile(
     r"|192\.168\.|169\.254\.|0\.0\.0\.0|\[::1\])",
     re.IGNORECASE,
 )
+
+
+def _is_url_safe(url: str) -> tuple[bool, str]:
+    """DNS-resolution based SSRF check. Returns (is_safe, reason).
+
+    The regex above is a fast first pass but can be bypassed via IPv6 mapped
+    addresses, decimal IP encoding, DNS rebinding, etc.  This function does
+    actual DNS resolution and checks every resolved IP with the stdlib
+    ``ipaddress`` module (same approach as ``web_search.py:fetch_url``).
+    """
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False, "URL 解析失败"
+
+    # Scheme check
+    if parsed.scheme not in ("http", "https"):
+        return False, f"不支持的协议: {parsed.scheme}（只允许 http/https）"
+
+    hostname = parsed.hostname or ""
+    if not hostname:
+        return False, "URL 缺少主机名"
+
+    # Fast literal hostname check
+    if hostname in ("localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"):
+        return False, f"禁止访问本地地址: {hostname}"
+
+    # DNS resolution — check ALL resolved IPs
+    try:
+        infos = socket.getaddrinfo(hostname, None)
+        for _family, _type, _proto, _canonname, sockaddr in infos:
+            ip = ipaddress.ip_address(sockaddr[0])
+            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+                return False, f"禁止访问内网/保留地址 {ip}（SSRF 防护）"
+    except socket.gaierror:
+        pass  # DNS 解析失败不阻塞，让下游自己报错
+    except ValueError:
+        pass  # IP 解析失败不阻塞
+
+    return True, ""
 
 # ── 会话管理 ──
 
@@ -283,8 +326,13 @@ def _validate_url(url: str) -> str | None:
         return "URL 不能为空"
     if not url.startswith(("http://", "https://")):
         return "URL 必须以 http:// 或 https:// 开头"
+    # Fast regex pre-check (catches obvious cases)
     if _BLOCKED_URL_PATTERNS.match(url):
         return f"禁止访问内部网络地址: {url}"
+    # DNS-resolution based check (catches IPv6 mapped, decimal IP, etc.)
+    safe, reason = _is_url_safe(url)
+    if not safe:
+        return reason
     return None
 
 

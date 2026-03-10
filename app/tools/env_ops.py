@@ -25,6 +25,23 @@ logger = logging.getLogger(__name__)
 
 # ── 安全：危险包黑名单 ──
 
+_CORE_PACKAGES = frozenset({
+    # Web framework
+    "fastapi", "uvicorn", "starlette", "httptools", "uvloop",
+    # HTTP client
+    "httpx", "httpcore", "anyio", "h11", "h2", "sniffio",
+    # LLM
+    "google-genai", "google-generativeai", "openai", "anthropic",
+    # Data validation
+    "pydantic", "pydantic-core",
+    # Core Python
+    "pip", "setuptools", "wheel",
+    # Project dependencies
+    "python-dotenv", "python-multipart",
+    # PDF
+    "fpdf2",
+})
+
 _BLOCKED_PACKAGES = frozenset({
     # 远程访问 / shell 控制
     "paramiko", "fabric", "fabric2", "pexpect", "sh", "plumbum",
@@ -218,6 +235,12 @@ def _handle_uninstall_package(args: dict) -> ToolResult:
 
     if not package_name:
         return ToolResult.invalid_param("package_name 不能为空")
+
+    # 核心依赖保护：禁止卸载运行时必需的包
+    if package_name in _CORE_PACKAGES:
+        return ToolResult.blocked(
+            f"包 '{package_name}' 是系统核心依赖，禁止卸载。"
+        )
 
     tenant_id = _get_tenant_id()
 

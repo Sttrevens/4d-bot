@@ -13,7 +13,7 @@ from __future__ import annotations
 import ast
 import importlib
 import logging
-import signal
+import threading
 import time
 import types
 from typing import Any, Callable
@@ -187,14 +187,40 @@ def _restricted_import(name: str, *args: Any, **kwargs: Any) -> Any:
     return importlib.import_module(name)
 
 
-# ── 超时信号处理 ──
+# ── 超时控制（线程方式，兼容非主线程） ──
 
 class _TimeoutError(Exception):
     pass
 
 
-def _timeout_handler(signum: int, frame: Any) -> None:
-    raise _TimeoutError(f"工具执行超时（{_EXEC_TIMEOUT}秒限制）")
+def _run_with_timeout(func: Callable[[], Any], timeout: int) -> tuple[Any, Exception | None]:
+    """Run *func* in a daemon thread with a timeout.
+
+    Returns ``(result, None)`` on success or ``(None, exception)`` on
+    failure/timeout.  Using a daemon thread means that if the code hangs
+    past the timeout we return an error immediately; the orphaned thread
+    will be cleaned up when the process exits.  This is strictly better
+    than ``signal.SIGALRM`` which silently does nothing outside the main
+    thread (i.e. in production under uvicorn).
+    """
+    result: list[Any] = [None]
+    error: list[Exception | None] = [None]
+
+    def _wrapper() -> None:
+        try:
+            result[0] = func()
+        except Exception as exc:
+            error[0] = exc
+
+    t = threading.Thread(target=_wrapper, daemon=True)
+    t.start()
+    t.join(timeout=timeout)
+
+    if t.is_alive():
+        return None, _TimeoutError(f"工具执行超时（{timeout}秒限制）")
+    if error[0] is not None:
+        return None, error[0]
+    return result[0], None
 
 
 # ── 核心：编译并加载工具代码 ──
@@ -223,32 +249,17 @@ def compile_tool(source: str) -> tuple[dict[str, Any], list[str]]:
     except SyntaxError as e:
         return {}, [f"编译失败: {e}"]
 
-    # 4) 执行（带超时）
-    try:
-        # 设置超时（仅 Unix）
-        old_handler = None
-        try:
-            old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
-            signal.alarm(_EXEC_TIMEOUT)
-        except (ValueError, AttributeError):
-            pass  # Windows 或非主线程，跳过超时
-
+    # 4) 执行（带超时，线程方式）
+    def _do_exec() -> None:
         exec(code_obj, sandbox_globals)  # noqa: S102
 
-        # 取消超时
-        try:
-            signal.alarm(0)
-            if old_handler is not None:
-                signal.signal(signal.SIGALRM, old_handler)
-        except (ValueError, AttributeError):
-            pass
-
-    except _TimeoutError:
-        return {}, ["代码执行超时"]
-    except ImportError as e:
-        return {}, [str(e)]
-    except Exception as e:
-        return {}, [f"执行失败: {type(e).__name__}: {e}"]
+    _, exec_err = _run_with_timeout(_do_exec, _EXEC_TIMEOUT)
+    if exec_err is not None:
+        if isinstance(exec_err, _TimeoutError):
+            return {}, ["代码执行超时"]
+        if isinstance(exec_err, ImportError):
+            return {}, [str(exec_err)]
+        return {}, [f"执行失败: {type(exec_err).__name__}: {exec_err}"]
 
     # 5) 验证接口
     errors: list[str] = []
@@ -296,28 +307,14 @@ def execute_tool(handler: Callable, args: dict, *, extended_timeout: bool = Fals
         extended_timeout: 使用 sandbox_caps 的工具需要更长超时（视频下载等）
     """
     timeout = _EXEC_TIMEOUT_EXTENDED if extended_timeout else _EXEC_TIMEOUT
-    try:
-        old_handler = None
-        try:
-            old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
-            signal.alarm(timeout)
-        except (ValueError, AttributeError):
-            pass
 
-        result = handler(args)
-
-        try:
-            signal.alarm(0)
-            if old_handler is not None:
-                signal.signal(signal.SIGALRM, old_handler)
-        except (ValueError, AttributeError):
-            pass
-
-    except _TimeoutError:
-        return ToolResult.error(f"工具执行超时（{timeout}秒限制）", code="internal")
-    except Exception as e:
-        logger.exception("custom tool handler failed")
-        return ToolResult.error(f"工具执行出错: {type(e).__name__}: {e}", code="internal")
+    raw_result, exec_err = _run_with_timeout(lambda: handler(args), timeout)
+    if exec_err is not None:
+        if isinstance(exec_err, _TimeoutError):
+            return ToolResult.error(f"工具执行超时（{timeout}秒限制）", code="internal")
+        logger.exception("custom tool handler failed", exc_info=exec_err)
+        return ToolResult.error(f"工具执行出错: {type(exec_err).__name__}: {exec_err}", code="internal")
+    result = raw_result
 
     # 归一化返回值
     if isinstance(result, ToolResult):
