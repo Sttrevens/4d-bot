@@ -1,0 +1,150 @@
+# 自动部署到阿里云
+#
+# 触发条件：push 到 main 分支
+# 流程：checkout 代码 → rsync 到服务器 → docker compose rebuild
+#
+# 优势：服务器不需要连接 github.com（避免国内网络超时）
+#
+# 需要在 GitHub → Settings → Secrets and variables → Actions 配置：
+#   DEPLOY_HOST     服务器公网 IP（如 47.xx.xx.xx）
+#   DEPLOY_USER     SSH 用户名（如 root）
+#   DEPLOY_KEY      SSH 私钥（完整的 -----BEGIN...-----END...）
+#   DEPLOY_PATH     项目在服务器上的路径（如 /opt/feishu-ai-bot）
+
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Deploy code via tar+ssh
+        env:
+          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$DEPLOY_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+          SSH_CMD="ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=60 -o ServerAliveCountMax=5 -o TCPKeepAlive=yes -o ConnectTimeout=30"
+
+          # 清理旧代码（保留 .env），然后通过 tar 管道传输新代码
+          # 不需要服务器安装 rsync
+          $SSH_CMD "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "cd '${DEPLOY_PATH}' && \
+             cp .env /tmp/.env.deploy.bak 2>/dev/null || true && \
+             rm -rf app/ *.py *.yml *.json *.txt *.toml *.cfg Dockerfile* requirements* CLAUDE* && \
+             true"
+
+          tar czf - \
+            --exclude='.env' \
+            --exclude='.git' \
+            --exclude='__pycache__' \
+            --exclude='*.pyc' \
+            ./ | $SSH_CMD "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "cd '${DEPLOY_PATH}' && tar xzf -"
+
+          $SSH_CMD "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "cd '${DEPLOY_PATH}' && \
+             cp /tmp/.env.deploy.bak .env 2>/dev/null || true && \
+             rm -f /tmp/.env.deploy.bak"
+
+      - name: Rebuild and restart
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_KEY }}
+          command_timeout: 25m
+          # 防止阿里云 NAT/安全组静默杀死空闲 SSH 连接
+          # ServerAliveInterval=60: 每 60 秒发心跳
+          # ServerAliveCountMax=5: 连续 5 次无回应才断开
+          ssh_options: -o ServerAliveInterval=60 -o ServerAliveCountMax=5 -o TCPKeepAlive=yes
+          script: |
+            set -e
+            cd ${{ secrets.DEPLOY_PATH }}
+
+            # 前置检查：确认关键文件在 tar 传输后存在
+            if [ ! -f docker-compose.yml ] || [ ! -f Dockerfile ]; then
+              echo "FATAL: docker-compose.yml or Dockerfile missing after code transfer!"
+              echo "Files in deploy path:"
+              ls -la
+              exit 1
+            fi
+
+            echo ">>> cleanup stale build cache (keep 7 days / 5GB)"
+            docker builder prune --filter until=168h -f --keep-storage 5g 2>/dev/null || true
+
+            # 从 .env 提取代理地址，host.docker.internal 改为 127.0.0.1（build 在宿主机网络）
+            BUILD_PROXY=$(grep -E '^HTTPS_PROXY=' .env 2>/dev/null | head -1 | cut -d= -f2- | sed 's/host\.docker\.internal/127.0.0.1/g' || true)
+            echo ">>> docker compose build (proxy for base image pull + playwright: ${BUILD_PROXY:-none})"
+            # --env-file /dev/null: 不加载 .env（含 host.docker.internal 代理，build 时不可用）
+            # HTTPS_PROXY/HTTP_PROXY: 传给 BuildKit 拉取 Docker Hub 基础镜像（python:3.12-slim）
+            # --build-arg PLAYWRIGHT_PROXY: 传给 Dockerfile 内 playwright install 的 fallback
+            HTTPS_PROXY=$BUILD_PROXY HTTP_PROXY=$BUILD_PROXY \
+              docker compose --env-file /dev/null build --build-arg PLAYWRIGHT_PROXY="$BUILD_PROXY"
+
+            # Phase 1 已部署：3 个 bot 各自在 provisioned 容器中运行
+            # 只需要 build 镜像（上面已完成），不再启动根 compose 的遗留容器
+            # 如果需要回退到单容器模式，取消下面注释：
+            # docker compose up -d
+
+            echo ">>> ensure instances/ directory exists"
+            if [ ! -d instances ] && [ -f scripts/rebuild_instances.sh ]; then
+              echo ">>> instances/ missing, rebuilding..."
+              bash scripts/rebuild_instances.sh
+            fi
+
+            echo ">>> sync per-container tenants.json from root config"
+            if [ -d instances ] && [ -f tenants.json ]; then
+              python3 scripts/sync_instance_configs.py
+            fi
+
+            echo ">>> ensure all compose files have mem_limit (prevent OOM hang)"
+            if [ -d instances ]; then
+              for dir in instances/*/; do
+                cf="$dir/docker-compose.yml"
+                if [ -f "$cf" ] && ! grep -q "mem_limit" "$cf"; then
+                  echo ">>> FIXING: $cf missing mem_limit, adding..."
+                  sed -i '/restart: unless-stopped/a\    mem_limit: 512m\n    memswap_limit: 768m' "$cf"
+                fi
+              done
+            fi
+
+            echo ">>> restart provisioned containers"
+            if [ -d instances ]; then
+              for dir in instances/*/; do
+                if [ -f "$dir/docker-compose.yml" ]; then
+                  tenant=$(basename "$dir")
+                  echo ">>> restarting provisioned instance: $tenant"
+                  docker compose -f "$dir/docker-compose.yml" up -d || echo "WARN: failed to restart $tenant"
+                fi
+              done
+            else
+              echo "WARN: no instances/ directory found, no containers to restart"
+            fi
+
+            echo ">>> health check provisioned containers"
+            sleep 5
+            for port in 8101 8102 8103; do
+              if curl -sf --max-time 5 "http://127.0.0.1:$port/health" > /dev/null 2>&1; then
+                echo ">>> port $port: healthy"
+              else
+                echo "WARN: port $port: NOT responding"
+              fi
+            done
+
+            echo ">>> cleanup old images"
+            docker image prune -f
+
+            echo ">>> deploy done at $(date)"

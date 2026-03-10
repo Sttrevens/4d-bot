@@ -1,0 +1,731 @@
+"""客户管理 + 开通审批 + Co-tenant 管理工具
+
+安全模型：
+- 超管专属工具（硬拦截）：bind_customer, list_customers, update_customer_notes,
+  list_provision_requests, approve_provision_request, reject_provision_request,
+  add_co_tenant, remove_co_tenant, list_co_tenants
+- 任何人可用：request_provision（创建待审批请求）, lookup_customer, customer_instance_status
+- 敏感工具（provision_ops.py 里的 provision_tenant 等）也需在 agent 层拦截
+
+拦截机制：工具 handler 通过 get_current_sender() 读取 contextvar，
+判断 is_super_admin，非超管调用超管工具直接返回权限错误。
+这是硬拦截，不依赖 LLM 遵守 system prompt。
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+
+from app.tools.tool_result import ToolResult
+
+logger = logging.getLogger(__name__)
+
+
+def _require_super_admin() -> ToolResult | None:
+    """检查当前发送者是否为超管。非超管返回错误 ToolResult，超管返回 None（放行）。"""
+    from app.tenant.context import get_current_sender
+    sender = get_current_sender()
+    if not sender.is_super_admin:
+        return ToolResult.error(
+            "该操作需要管理员权限。如需开通 bot 实例，请用 request_provision 提交申请。",
+            code="permission",
+        )
+    return None
+
+
+# ── 超管专属工具 ──────────────────────────────────────────────────
+
+
+def _bind_customer(args: dict) -> ToolResult:
+    """绑定客户与实例（超管专属）"""
+    denied = _require_super_admin()
+    if denied:
+        return denied
+    from app.services.customer_store import bind_customer
+
+    external_userid = args.get("external_userid", "").strip()
+    tenant_id = args.get("tenant_id", "").strip()
+    name = args.get("name", "").strip()
+    platform = args.get("platform", "").strip()
+    port = args.get("port", 0)
+    notes = args.get("notes", "").strip()
+
+    if not external_userid:
+        return ToolResult.invalid_param("Missing external_userid")
+    if not tenant_id:
+        return ToolResult.invalid_param("Missing tenant_id")
+
+    ok = bind_customer(
+        external_userid=external_userid,
+        tenant_id=tenant_id,
+        name=name,
+        platform=platform,
+        port=int(port) if port else 0,
+        notes=notes,
+    )
+    if ok:
+        return ToolResult.success(f"已绑定客户 {name or external_userid} → 实例 {tenant_id}")
+    return ToolResult.error("绑定失败（Redis 不可用或参数缺失）")
+
+
+def _list_customers(args: dict) -> ToolResult:
+    """列出所有已绑定客户（超管专属）"""
+    denied = _require_super_admin()
+    if denied:
+        return denied
+    from app.services.customer_store import list_customers
+
+    customers = list_customers()
+    if not customers:
+        return ToolResult.success("当前没有已绑定的客户。")
+    return ToolResult.success(json.dumps(customers, indent=2, ensure_ascii=False))
+
+
+def _update_customer_notes(args: dict) -> ToolResult:
+    """更新客户备注（超管专属）"""
+    denied = _require_super_admin()
+    if denied:
+        return denied
+    from app.services.customer_store import update_customer
+
+    external_userid = args.get("external_userid", "").strip()
+    if not external_userid:
+        return ToolResult.invalid_param("Missing external_userid")
+
+    updates = {}
+    if args.get("name"):
+        updates["name"] = args["name"].strip()
+    if args.get("notes"):
+        updates["notes"] = args["notes"].strip()
+
+    if not updates:
+        return ToolResult.invalid_param("至少提供 name 或 notes 其中一个")
+
+    ok = update_customer(external_userid, **updates)
+    if ok:
+        return ToolResult.success("客户信息已更新。")
+    return ToolResult.error("更新失败（客户不存在或 Redis 不可用）")
+
+
+# ── 审批工具（超管专属）──────────────────────────────────────────
+
+
+def _list_provision_requests(args: dict) -> ToolResult:
+    """列出待审批的开通请求（超管专属）"""
+    denied = _require_super_admin()
+    if denied:
+        return denied
+    from app.services.provision_approval import list_pending
+
+    status_filter = args.get("status", "pending").strip()
+    if status_filter == "all":
+        from app.services.provision_approval import list_all
+        requests = list_all()
+    else:
+        requests = list_pending()
+
+    if not requests:
+        return ToolResult.success("当前没有待审批的开通请求。")
+    # 脱敏展示
+    for r in requests:
+        r.pop("provision_result", None)  # 太长
+    return ToolResult.success(json.dumps(requests, indent=2, ensure_ascii=False))
+
+
+def _approve_provision_request(args: dict) -> ToolResult:
+    """审批通过开通请求 → 自动 provision（超管专属）"""
+    denied = _require_super_admin()
+    if denied:
+        return denied
+    from app.services.provision_approval import approve_request
+    from app.tenant.context import get_current_sender
+
+    request_id = args.get("request_id", "").strip()
+    if not request_id:
+        return ToolResult.invalid_param("Missing request_id")
+
+    sender = get_current_sender()
+    result = approve_request(request_id, approved_by=sender.sender_name or sender.sender_id)
+    if not result:
+        return ToolResult.error(f"请求 {request_id} 不存在", code="not_found")
+
+    if result.get("status") != "approved":
+        return ToolResult.success(f"请求已是 {result['status']} 状态，无需重复操作。")
+
+    pr = result.get("provision_result", {})
+    if pr and pr.get("ok"):
+        return ToolResult.success(
+            f"已批准并自动开通实例 {result['tenant_id']}。\n"
+            f"端口: {pr.get('port')}\n"
+            f"Webhook: {pr.get('webhook_path', '')}\n"
+            f"客户 {result['requester_name']} 已自动绑定。"
+        )
+    else:
+        error = (pr or {}).get("error", "未知错误")
+        return ToolResult.success(
+            f"已批准请求 {request_id}，但自动开通失败: {error}\n"
+            f"可手动用 provision_tenant 重试。"
+        )
+
+
+def _reject_provision_request(args: dict) -> ToolResult:
+    """拒绝开通请求（超管专属）"""
+    denied = _require_super_admin()
+    if denied:
+        return denied
+    from app.services.provision_approval import reject_request
+    from app.tenant.context import get_current_sender
+
+    request_id = args.get("request_id", "").strip()
+    if not request_id:
+        return ToolResult.invalid_param("Missing request_id")
+
+    reason = args.get("reason", "").strip()
+    sender = get_current_sender()
+    result = reject_request(
+        request_id,
+        rejected_by=sender.sender_name or sender.sender_id,
+        reason=reason,
+    )
+    if not result:
+        return ToolResult.error(f"请求 {request_id} 不存在", code="not_found")
+    return ToolResult.success(f"已拒绝请求 {request_id}。" + (f"原因: {reason}" if reason else ""))
+
+
+# ── 任何人可用的工具 ──────────────────────────────────────────────
+
+
+def _request_provision(args: dict) -> ToolResult:
+    """客户请求开通 bot（任何人可用，创建待审批请求）"""
+    from app.services.deploy_quota import check_deploy_quota, init_user_quota
+    from app.services.provision_approval import create_request
+    from app.tenant.context import get_current_sender, get_current_tenant
+
+    sender = get_current_sender()
+    tenant = get_current_tenant()
+
+    # ── 部署配额检查（超管跳过）──
+    if not sender.is_super_admin:
+        free_quota = tenant.deploy_free_quota
+        quota_info = check_deploy_quota(tenant.tenant_id, sender.sender_id, free_quota)
+        if not quota_info["allowed"]:
+            return ToolResult.error(
+                f"您的免费部署额度已用完（{quota_info['used']}/{quota_info['total']}）。\n"
+                f"如需更多部署名额，请联系管理员或了解付费方案。",
+                code="quota_exceeded",
+            )
+        # 初始化配额记录（首次请求时）
+        init_user_quota(tenant.tenant_id, sender.sender_id, free_quota)
+
+    tenant_id = args.get("tenant_id", "").strip()
+    name = args.get("name", "").strip()
+    platform = args.get("platform", "").strip()
+    credentials_json = args.get("credentials_json", "{}").strip()
+
+    if not tenant_id:
+        return ToolResult.invalid_param("Missing tenant_id")
+    if not name:
+        return ToolResult.invalid_param("Missing name")
+    if not platform:
+        return ToolResult.invalid_param("Missing platform")
+
+    try:
+        credentials = json.loads(credentials_json)
+    except json.JSONDecodeError as e:
+        return ToolResult.invalid_param(f"Invalid credentials_json: {e}")
+
+    result = create_request(
+        requester_id=sender.sender_id,
+        requester_name=sender.sender_name or sender.sender_id,
+        tenant_id=tenant_id,
+        name=name,
+        platform=platform,
+        credentials=credentials,
+        llm_system_prompt=args.get("llm_system_prompt", ""),
+        custom_persona=bool(args.get("custom_persona", False)),
+        capability_modules=args.get("capability_modules"),
+        notes=args.get("notes", ""),
+        source_tenant_id=tenant.tenant_id,
+    )
+    if not result:
+        return ToolResult.error("提交失败（系统暂时不可用），请稍后重试。")
+
+    return ToolResult.success(
+        f"开通请求已提交（{result['request_id']}），正在等待管理员审批。\n"
+        f"管理员会尽快处理，请耐心等待。"
+    )
+
+
+def _lookup_customer(args: dict) -> ToolResult:
+    """查找客户绑定信息"""
+    from app.services.customer_store import get_customer, get_customer_by_tenant
+
+    external_userid = args.get("external_userid", "").strip()
+    tenant_id = args.get("tenant_id", "").strip()
+
+    if not external_userid and not tenant_id:
+        return ToolResult.invalid_param("需要提供 external_userid 或 tenant_id 其中一个")
+
+    info = None
+    if external_userid:
+        info = get_customer(external_userid)
+    elif tenant_id:
+        info = get_customer_by_tenant(tenant_id)
+
+    if not info:
+        return ToolResult.success("未找到该客户的绑定记录。可能尚未开通实例。")
+
+    return ToolResult.success(json.dumps(info, indent=2, ensure_ascii=False))
+
+
+def _customer_instance_status(args: dict) -> ToolResult:
+    """查看客户实例状态+用量"""
+    from app.services.customer_store import get_customer
+    from app.services.provisioner import instance_status
+    from app.services.metering import get_usage_summary
+
+    external_userid = args.get("external_userid", "").strip()
+    tenant_id = args.get("tenant_id", "").strip()
+
+    if external_userid and not tenant_id:
+        info = get_customer(external_userid)
+        if not info:
+            return ToolResult.success(
+                "该用户尚未绑定实例。如果是新客户，请用 request_provision 提交开通申请。"
+            )
+        tenant_id = info.get("tenant_id", "")
+
+    if not tenant_id:
+        return ToolResult.invalid_param("需要提供 external_userid 或 tenant_id")
+
+    status = instance_status(tenant_id)
+
+    from datetime import datetime, timezone
+    month = datetime.now(timezone.utc).strftime("%Y-%m")
+    usage = get_usage_summary(tenant_id, month)
+
+    result = {
+        "instance": status,
+        "usage_this_month": usage,
+    }
+    return ToolResult.success(json.dumps(result, indent=2, ensure_ascii=False))
+
+
+# ── Co-tenant Management ──────────────────────────────────────────
+
+
+def _add_co_tenant(args: dict) -> ToolResult:
+    """添加 co-tenant（超管专用，自动继承 primary 凭证）"""
+    check = _require_super_admin()
+    if check:
+        return check
+
+    from app.tenant.context import get_current_tenant
+    from app.tenant.registry import tenant_registry
+
+    tenant = get_current_tenant()
+    if tenant.platform != "wecom_kf":
+        return ToolResult.error("Co-tenant 仅支持 wecom_kf 平台")
+
+    tenant_id = args.get("tenant_id", "").strip()
+    name = args.get("name", "").strip()
+    open_kfid = args.get("wecom_kf_open_kfid", "").strip()
+
+    if not tenant_id or not name or not open_kfid:
+        return ToolResult.invalid_param(
+            "需要 tenant_id, name, wecom_kf_open_kfid 三个必填字段"
+        )
+
+    # 检查是否已存在
+    existing = tenant_registry.get(tenant_id)
+    if existing:
+        return ToolResult.error(f"租户 {tenant_id} 已存在")
+
+    # 从 primary tenant 继承配置（与 dashboard api_add_co_tenant 逻辑对齐）
+    new_config = {
+        "tenant_id": tenant_id,
+        "name": name,
+        "platform": "wecom_kf",
+        # 继承凭证
+        "wecom_corpid": tenant.wecom_corpid,
+        "wecom_kf_secret": tenant.wecom_kf_secret,
+        "wecom_kf_token": tenant.wecom_kf_token,
+        "wecom_kf_encoding_aes_key": tenant.wecom_kf_encoding_aes_key,
+        "wecom_kf_open_kfid": open_kfid,
+        # LLM 配置（用环境变量引用，不泄露实际 key）
+        "llm_provider": tenant.llm_provider or "gemini",
+        "llm_api_key": "${GEMINI_API_KEY}",
+        "llm_model": tenant.llm_model or "gemini-3-flash-preview",
+        "llm_model_strong": tenant.llm_model_strong or "gemini-3.1-pro-preview",
+        "coding_model": "",
+        # 继承运营配置
+        "trial_enabled": tenant.trial_enabled,
+        "trial_duration_hours": tenant.trial_duration_hours,
+        "quota_user_tokens_6h": tenant.quota_user_tokens_6h,
+        "memory_diary_enabled": tenant.memory_diary_enabled,
+        "memory_context_enabled": tenant.memory_context_enabled,
+        "memory_chat_rounds": tenant.memory_chat_rounds,
+        "memory_chat_ttl": tenant.memory_chat_ttl,
+        # co-tenant 安全默认
+        "instance_management_enabled": False,
+        "self_iteration_enabled": False,
+    }
+
+    # 可选覆盖字段
+    if args.get("llm_system_prompt"):
+        new_config["llm_system_prompt"] = args["llm_system_prompt"]
+    if args.get("custom_persona") is not None:
+        new_config["custom_persona"] = bool(args["custom_persona"])
+    if args.get("tools_enabled"):
+        new_config["tools_enabled"] = args["tools_enabled"]
+
+    # 发布到 Redis（tenant_cfg 持久化 + 队列通知 hot-load）
+    from app.services.tenant_sync import publish_tenant_update
+    ok = publish_tenant_update("add", new_config)
+    if not ok:
+        return ToolResult.error("发布到 Redis 失败，请稍后重试")
+
+    # 同时注册到本地 registry（本容器立即可用，不用等 5 秒轮询）
+    try:
+        tenant_registry.register_from_dict(new_config)
+    except Exception as e:
+        logger.warning("add_co_tenant: local register failed: %s", e)
+
+    return ToolResult.success(
+        f"Co-tenant {tenant_id} 已添加成功！\n"
+        f"• 凭证从 {tenant.tenant_id} 自动继承\n"
+        f"• open_kfid: {open_kfid}\n"
+        f"• 本容器已立即加载，其他容器 5 秒内同步\n"
+        f"• 客户现在可以发消息了"
+    )
+
+
+def _remove_co_tenant(args: dict) -> ToolResult:
+    """移除 co-tenant（超管专用）"""
+    check = _require_super_admin()
+    if check:
+        return check
+
+    from app.tenant.context import get_current_tenant
+    from app.tenant.registry import tenant_registry
+    from app.services.tenant_sync import publish_tenant_update
+
+    tenant = get_current_tenant()
+    co_tid = args.get("tenant_id", "").strip()
+    if not co_tid:
+        return ToolResult.invalid_param("需要 tenant_id")
+    if co_tid == tenant.tenant_id:
+        return ToolResult.error("不能移除自己（primary tenant）")
+
+    # 从 Redis 移除 tenant_cfg
+    publish_tenant_update("remove", {"tenant_id": co_tid})
+
+    # 从本地 registry 移除
+    try:
+        tenant_registry.unregister(co_tid)
+    except Exception:
+        pass
+
+    # 清理 kf_dispatch 路由
+    try:
+        from app.services import redis_client as redis_mod
+        # 查找并删除该 co-tenant 的 kf_dispatch 路由
+        existing = tenant_registry.get(co_tid)
+        if existing and existing.wecom_kf_open_kfid:
+            redis_mod.execute("DEL", f"kf_dispatch:{existing.wecom_kf_open_kfid}")
+    except Exception:
+        pass
+
+    return ToolResult.success(
+        f"Co-tenant {co_tid} 已移除。\n"
+        f"• Redis tenant_cfg 已删除\n"
+        f"• 本容器已卸载，其他容器 5 秒内同步"
+    )
+
+
+def _list_co_tenants(args: dict) -> ToolResult:
+    """列出当前实例的所有 co-tenant（超管专用）"""
+    check = _require_super_admin()
+    if check:
+        return check
+
+    from app.tenant.context import get_current_tenant
+    from app.tenant.registry import tenant_registry
+
+    tenant = get_current_tenant()
+    results = []
+
+    for tid, t in tenant_registry.all_tenants().items():
+        if t.platform != "wecom_kf":
+            continue
+        if t.wecom_corpid != tenant.wecom_corpid:
+            continue
+        if t.wecom_kf_secret != tenant.wecom_kf_secret:
+            continue
+        is_primary = (tid == tenant.tenant_id)
+        results.append({
+            "tenant_id": tid,
+            "name": t.name,
+            "open_kfid": t.wecom_kf_open_kfid,
+            "role": "primary" if is_primary else "co-tenant",
+        })
+
+    if not results:
+        return ToolResult.success("当前容器没有加载任何 wecom_kf 租户。")
+
+    return ToolResult.success(json.dumps(results, indent=2, ensure_ascii=False))
+
+
+# ── Tool Definitions ─────────────────────────────────────────────
+
+TOOL_DEFINITIONS = [
+    # ── 审批流（核心）──
+    {
+        "name": "request_provision",
+        "description": (
+            "为客户提交 bot 开通申请（任何人可用）。"
+            "创建待审批请求，管理员审批通过后自动开通实例。"
+            "客户提供凭证后用这个工具提交，不要直接用 provision_tenant。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "tenant_id": {
+                    "type": "string",
+                    "description": "租户唯一标识（字母数字和连字符），如 'acme-support'",
+                },
+                "name": {
+                    "type": "string",
+                    "description": "租户显示名称，如 '某某公司 AI 助手'",
+                },
+                "platform": {
+                    "type": "string",
+                    "enum": ["feishu", "wecom", "wecom_kf", "qq"],
+                    "description": "接入平台: feishu=飞书, wecom=企微, wecom_kf=微信客服, qq=QQ机器人",
+                },
+                "credentials_json": {
+                    "type": "string",
+                    "description": "平台凭证 JSON 字符串（同 provision_tenant 格式）",
+                },
+                "llm_system_prompt": {
+                    "type": "string",
+                    "description": "自定义系统提示词（可选）",
+                },
+                "custom_persona": {
+                    "type": "boolean",
+                    "description": "是否完全自定义人设（可选）",
+                },
+                "notes": {
+                    "type": "string",
+                    "description": "备注信息（客户需求描述等）",
+                },
+            },
+            "required": ["tenant_id", "name", "platform", "credentials_json"],
+        },
+    },
+    {
+        "name": "list_provision_requests",
+        "description": (
+            "列出待审批的开通请求（仅管理员可用）。"
+            "默认只显示 pending 状态，传 status='all' 显示全部。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "enum": ["pending", "all"],
+                    "description": "筛选状态（默认 pending）",
+                },
+            },
+        },
+    },
+    {
+        "name": "approve_provision_request",
+        "description": (
+            "审批通过客户的开通请求（仅管理员可用）。"
+            "通过后自动创建实例、绑定客户。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "request_id": {
+                    "type": "string",
+                    "description": "请求 ID（req_ 开头）",
+                },
+            },
+            "required": ["request_id"],
+        },
+    },
+    {
+        "name": "reject_provision_request",
+        "description": "拒绝客户的开通请求（仅管理员可用）。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "request_id": {
+                    "type": "string",
+                    "description": "请求 ID",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "拒绝原因（可选，会通知客户）",
+                },
+            },
+            "required": ["request_id"],
+        },
+    },
+    # ── 客户管理 ──
+    {
+        "name": "bind_customer",
+        "description": (
+            "将客户与 bot 实例绑定（仅管理员可用）。"
+            "开通审批自动绑定，一般不需要手动调用。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "external_userid": {
+                    "type": "string",
+                    "description": "客户的 external_userid",
+                },
+                "tenant_id": {
+                    "type": "string",
+                    "description": "实例 tenant_id",
+                },
+                "name": {"type": "string", "description": "客户名称"},
+                "platform": {"type": "string", "description": "平台"},
+                "port": {"type": "integer", "description": "端口"},
+                "notes": {"type": "string", "description": "备注"},
+            },
+            "required": ["external_userid", "tenant_id"],
+        },
+    },
+    {
+        "name": "lookup_customer",
+        "description": "查找客户绑定信息。可用 external_userid 或 tenant_id 查找。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "external_userid": {"type": "string", "description": "客户 external_userid"},
+                "tenant_id": {"type": "string", "description": "实例 tenant_id"},
+            },
+        },
+    },
+    {
+        "name": "list_customers",
+        "description": "列出所有已绑定客户（仅管理员可用）。",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "customer_instance_status",
+        "description": (
+            "查看客户实例状态+用量。"
+            "可用 external_userid 自动查找或直接指定 tenant_id。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "external_userid": {"type": "string", "description": "客户 external_userid"},
+                "tenant_id": {"type": "string", "description": "实例 tenant_id"},
+            },
+        },
+    },
+    {
+        "name": "update_customer_notes",
+        "description": "更新客户备注（仅管理员可用）。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "external_userid": {"type": "string", "description": "客户 external_userid"},
+                "name": {"type": "string", "description": "新客户名"},
+                "notes": {"type": "string", "description": "备注"},
+            },
+            "required": ["external_userid"],
+        },
+    },
+    # ── Co-tenant 管理（与 dashboard 对齐）──
+    {
+        "name": "add_co_tenant",
+        "description": (
+            "添加 co-tenant 到当前实例（仅管理员可用，wecom_kf 专属）。"
+            "自动从当前租户继承全部凭证和配置，只需提供 tenant_id、name、open_kfid。"
+            "当用户说要添加同 corp 下的新客服账号/bot 时使用此工具。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "tenant_id": {
+                    "type": "string",
+                    "description": "新租户唯一标识，如 'kf-nar'",
+                },
+                "name": {
+                    "type": "string",
+                    "description": "新租户显示名称，如 '纳尔 AI'",
+                },
+                "wecom_kf_open_kfid": {
+                    "type": "string",
+                    "description": "企微客服账号 open_kfid（wk 开头），从企微后台获取",
+                },
+                "llm_system_prompt": {
+                    "type": "string",
+                    "description": "自定义系统提示词（可选，不填则继承 primary）",
+                },
+                "custom_persona": {
+                    "type": "boolean",
+                    "description": "是否完全自定义人设（可选）",
+                },
+                "tools_enabled": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "启用的工具列表（可选，空数组=全启用，不填=继承 primary）",
+                },
+            },
+            "required": ["tenant_id", "name", "wecom_kf_open_kfid"],
+        },
+    },
+    {
+        "name": "remove_co_tenant",
+        "description": (
+            "移除 co-tenant（仅管理员可用）。"
+            "从当前实例中移除一个 co-hosted 的租户。不可移除 primary tenant 自身。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "tenant_id": {
+                    "type": "string",
+                    "description": "要移除的 co-tenant ID",
+                },
+            },
+            "required": ["tenant_id"],
+        },
+    },
+    {
+        "name": "list_co_tenants",
+        "description": (
+            "列出当前实例的所有 co-tenant（仅管理员可用）。"
+            "显示同 corp + 同 secret 下的所有租户，标注 primary / co-tenant 角色。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+]
+
+TOOL_MAP = {
+    "request_provision": _request_provision,
+    "list_provision_requests": _list_provision_requests,
+    "approve_provision_request": _approve_provision_request,
+    "reject_provision_request": _reject_provision_request,
+    "bind_customer": _bind_customer,
+    "lookup_customer": _lookup_customer,
+    "list_customers": _list_customers,
+    "customer_instance_status": _customer_instance_status,
+    "update_customer_notes": _update_customer_notes,
+    "add_co_tenant": _add_co_tenant,
+    "remove_co_tenant": _remove_co_tenant,
+    "list_co_tenants": _list_co_tenants,
+}

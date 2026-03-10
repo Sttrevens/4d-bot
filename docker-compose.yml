@@ -1,0 +1,28 @@
+services:
+  bot:
+    image: feishu-code-bot:latest
+    build:
+      context: .
+      network: host            # build 时用宿主机网络，让 Playwright 能通过本机代理下载 Chromium
+      args:
+        # 阿里云服务器用国内 pip 镜像，避免 pypi.org 超时
+        PIP_INDEX_URL: https://mirrors.aliyun.com/pypi/simple
+    network_mode: host          # 共享宿主机网络，容器内 127.0.0.1 直通宿主机（Xray 代理）
+    # ports:                    # host 模式不需要端口映射，uvicorn 直接监听宿主机 8000
+    #   - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      # 挂载本地 workspace 供编码任务操作 git 仓库
+      - workspace:/tmp/workspace
+      # 挂载 tenants.json 方便热更新租户配置（无需重新构建镜像）
+      - ./tenants.json:/app/tenants.json:ro
+      # 持久化日志（跨容器重启保留，供 selffix 读取诊断）
+      - logs:/app/logs
+    restart: unless-stopped
+    mem_limit: 512m
+    memswap_limit: 768m
+
+volumes:
+  workspace:
+  logs:

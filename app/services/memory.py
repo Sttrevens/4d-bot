@@ -1,0 +1,989 @@
+"""三层记忆管理器
+
+Layer 1: 工作记忆（Working Memory）— ChatHistory，已存在
+Layer 2: 情景记忆（Episodic Memory）— journal，全量日记（LLM 生成摘要+标签+偏好）
+Layer 3: 语义记忆（Semantic Memory）— 用户画像 + 项目知识
+
+记忆设计原则：
+- 全量写日记：每次交互都记（LLM 判断是否值得记 + 生成摘要/标签/偏好）
+- 智能回忆：新消息进来时，LLM 判断是否需要回忆 + 搜什么，按需召回
+- bot 自己的行动也记：创建的文档 ID、发过的消息、处理过的任务等结构化信息
+- 省 token：记忆上下文按需注入，不相关的不注入
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import re
+import time
+from datetime import datetime, timezone
+
+from app.services import memory_store
+
+logger = logging.getLogger(__name__)
+
+# 用户画像模板
+_DEFAULT_USER_PROFILE = {
+    "name": "",
+    "preferences": [],       # 用户偏好/习惯
+    "expertise": [],          # 用户擅长的领域
+    "recent_topics": [],      # 最近关注的话题
+    "interaction_count": 0,
+    "first_seen": "",
+    "last_seen": "",
+}
+
+# 项目知识模板
+_DEFAULT_PROJECT_KNOWLEDGE = {
+    "repo": "",
+    "architecture": "",       # 架构概述
+    "key_files": [],          # 关键文件
+    "conventions": [],        # 编码约定
+    "common_issues": [],      # 常见问题
+    "last_updated": "",
+}
+
+
+# ── 记忆索引（Memory Index Layer）──
+# 轻量级索引：每条日记生成一行摘要 + 标签，存在单独的 Redis key
+# 检索时先搜索索引（快），命中后再加载完整记忆（按需）
+# 索引格式: [{idx: N, s: "摘要", t: ["标签"], ts: "2025-01-01"}]
+
+_INDEX_KEY = "journal_index"
+_INDEX_MAX = 500  # 索引最大条目数
+
+
+def _append_index(summary: str, tags: list[str]) -> None:
+    """追加一条索引条目。"""
+    try:
+        index = memory_store.read_json(_INDEX_KEY)
+        if not isinstance(index, list):
+            index = []
+        idx = len(index)
+        index.append({
+            "idx": idx,
+            "s": summary[:80],
+            "t": tags,
+            "ts": datetime.now(timezone.utc).isoformat()[:10],
+        })
+        # 超过上限时裁剪旧索引
+        if len(index) > _INDEX_MAX:
+            index = index[-_INDEX_MAX:]
+        memory_store.write_json(_INDEX_KEY, index)
+    except Exception:
+        logger.debug("_append_index failed", exc_info=True)
+
+
+def search_index(
+    keyword: str = "",
+    tags: list[str] | None = None,
+    limit: int = 10,
+) -> list[dict]:
+    """搜索记忆索引（轻量级，不加载完整日记）。
+
+    返回匹配的索引条目，调用方可据此决定是否加载完整 journal。
+    """
+    try:
+        index = memory_store.read_json(_INDEX_KEY)
+        if not isinstance(index, list):
+            return []
+    except Exception:
+        return []
+
+    keyword_lower = keyword.strip().lower() if keyword else ""
+    results = []
+    for entry in reversed(index):  # 最近的在前
+        # 标签匹配
+        if tags:
+            entry_tags = set(entry.get("t", []))
+            if not entry_tags.intersection(tags):
+                if not keyword_lower:
+                    continue
+
+        # 关键词匹配
+        if keyword_lower:
+            if keyword_lower not in entry.get("s", "").lower():
+                if not tags or not set(entry.get("t", [])).intersection(tags):
+                    continue
+
+        results.append(entry)
+        if len(results) >= limit:
+            break
+    return results
+
+
+# ── 情景记忆（Episodic）──
+
+
+def remember(
+    user_id: str,
+    user_name: str,
+    action: str,
+    outcome: str = "",
+    tags: list[str] | None = None,
+) -> int:
+    """记录一次交互到 journal。返回当前 journal 长度。"""
+    entry = {
+        "user_id": user_id[:12],
+        "user_name": user_name,
+        "action": action,
+        "outcome": outcome,
+        "tags": tags or [],
+        "time": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        length = memory_store.append_journal(entry)
+        # 同步写入索引
+        _append_index(action[:80], tags or [])
+        return length
+    except Exception:
+        logger.warning("remember failed", exc_info=True)
+        return 0
+
+
+def recall(
+    user_id: str = "",
+    tags: list[str] | None = None,
+    keyword: str = "",
+    limit: int = 20,
+) -> list[dict]:
+    """检索相关记忆。支持按用户、标签、关键词过滤。
+
+    两阶段搜索：先在最近 100 条中找，找不够再搜全部 journal。
+    keyword 会在 action/details/outcome/summary 字段中做子串匹配。
+    tags 和 keyword 是 OR 关系：任一匹配即纳入结果。
+    """
+    has_filter = bool(tags or (keyword and keyword.strip()))
+    keyword_lower = keyword.strip().lower() if keyword else ""
+
+    # 阶段 1: 先搜最近 100 条（大多数情况下够用，省 Redis 带宽）
+    results = _filter_entries(
+        _read_journal_safe(limit=100),
+        user_id=user_id, tags=tags, keyword_lower=keyword_lower,
+        has_filter=has_filter, limit=limit,
+    )
+
+    # 阶段 2: 最近 100 条没找够 → 搜全部（深度回忆）
+    if len(results) < limit and has_filter:
+        all_entries = _read_journal_safe(limit=0)
+        if len(all_entries) > 100:
+            results = _filter_entries(
+                all_entries, user_id=user_id, tags=tags,
+                keyword_lower=keyword_lower, has_filter=has_filter, limit=limit,
+            )
+
+    return results
+
+
+def _read_journal_safe(limit: int = 100) -> list[dict]:
+    """安全读取 journal，出错返回空列表。limit=0 读全部。"""
+    try:
+        if limit <= 0:
+            return memory_store.read_journal_all()
+        return memory_store.read_journal(limit=limit)
+    except Exception:
+        logger.warning("recall: journal read failed", exc_info=True)
+        return []
+
+
+def _filter_entries(
+    entries: list[dict],
+    *,
+    user_id: str,
+    tags: list[str] | None,
+    keyword_lower: str,
+    has_filter: bool,
+    limit: int,
+) -> list[dict]:
+    """按条件过滤 journal 条目。"""
+    results = []
+    for e in reversed(entries):  # 最近的在前
+        if user_id and e.get("user_id", "")[:12] != user_id[:12]:
+            continue
+
+        # 标签匹配
+        tag_match = False
+        if tags:
+            entry_tags = set(e.get("tags", []))
+            tag_match = bool(entry_tags.intersection(tags))
+
+        # 关键词匹配（在多个文本字段中搜索）
+        kw_match = False
+        if keyword_lower:
+            searchable = " ".join([
+                str(e.get("action", "")),
+                str(e.get("details", "")),
+                str(e.get("outcome", "")),
+                str(e.get("summary", "")),
+            ]).lower()
+            kw_match = keyword_lower in searchable
+
+        # tags 和 keyword 是 OR 关系；都没指定则全部匹配
+        if has_filter and not tag_match and not kw_match:
+            continue
+
+        results.append(e)
+        if len(results) >= limit:
+            break
+    return results
+
+
+def recall_text(
+    user_id: str = "",
+    tags: list[str] | None = None,
+    keyword: str = "",
+    limit: int = 10,
+) -> str:
+    """检索记忆并格式化为文本（供 LLM 工具返回）。"""
+    entries = recall(user_id=user_id, tags=tags, keyword=keyword, limit=limit)
+    if not entries:
+        return "没有找到相关记忆。"
+    lines = []
+    for e in entries:
+        t = e.get("time", "?")[:16]
+        user = e.get("user_name", "?")
+        action = e.get("action", "?")
+        outcome = e.get("outcome", "")
+        tags_str = " ".join(f"#{t}" for t in e.get("tags", []))
+        line = f"[{t}] {user}: {action}"
+        if outcome:
+            line += f" → {outcome}"
+        if tags_str:
+            line += f"  {tags_str}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+# ── Bot 行动日记 ──
+
+
+# 只记录这些"写"操作，"读"操作不记（节省 Redis 调用）
+_REMEMBER_TOOL_KEYWORDS = frozenset({
+    "create", "write", "send", "update", "set", "add",
+    "delete", "remove", "deploy", "fix", "edit",
+})
+
+
+def note_tool_action(
+    tool_name: str,
+    tool_args: dict,
+    result_str: str,
+    user_id: str = "",
+    user_name: str = "",
+) -> None:
+    """工具执行后调用：记录 bot 的重要行动到日记。
+
+    只记录写操作（创建/发送/修改等），读操作跳过。
+    结构化提取关键信息（文档 ID、标题、URL 等），而不是记原始 result。
+    """
+    # 只记录写类操作
+    name_lower = tool_name.lower()
+    if not any(kw in name_lower for kw in _REMEMBER_TOOL_KEYWORDS):
+        return
+
+    # 失败的操作不记
+    if "[ERROR]" in result_str:
+        return
+
+    details = _extract_action_details(tool_name, tool_args, result_str)
+    if not details:
+        return
+
+    tags = _infer_tags([tool_name])
+
+    entry = {
+        "type": "bot_action",
+        "tool": tool_name,
+        "details": details,
+        "user_id": user_id[:12] if user_id else "",
+        "user_name": user_name,
+        "tags": tags,
+        "time": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        memory_store.append_journal(entry)
+        # 同步写入索引
+        _append_index(f"[bot] {details[:60]}", tags)
+    except Exception:
+        logger.debug("note_tool_action failed", exc_info=True)
+
+
+def _extract_action_details(tool_name: str, args: dict, result: str) -> str:
+    """从工具调用中提取结构化的关键信息摘要。"""
+    name = tool_name.lower()
+
+    # 文档操作
+    if "doc" in name:
+        title = args.get("title", "")
+        doc_id = args.get("document_id", "")
+        # 从结果中提取 document_id
+        m = re.search(r"document_id:\s*(\S+)", result)
+        if m:
+            doc_id = m.group(1)
+        # 从结果中提取 URL
+        url_m = re.search(r"(https://\S*feishu\S*docx/\S+)", result)
+        url = url_m.group(1) if url_m else ""
+        if title and doc_id:
+            s = f"创建文档「{title}」(ID: {doc_id})"
+            if url:
+                s += f" {url}"
+            return s
+        if doc_id:
+            blocks_m = re.search(r"已写入 (\d+) 个", result)
+            blocks = blocks_m.group(1) if blocks_m else ""
+            return f"写入文档 {doc_id}" + (f" ({blocks}块)" if blocks else "")
+        return ""
+
+    # 消息操作
+    if "message" in name or "send" in name:
+        target = args.get("name_or_id", args.get("chat_id", ""))
+        content = args.get("content", "")[:60]
+        if target:
+            return f"发消息给 {target}: {content}"
+        return ""
+
+    # 日历操作
+    if "calendar" in name or "event" in name:
+        summary = args.get("summary", args.get("title", ""))
+        if summary:
+            return f"日历事件: {summary}"
+        return ""
+
+    # 任务操作
+    if "task" in name:
+        summary = args.get("summary", args.get("title", args.get("content", "")))
+        if summary:
+            return f"任务: {summary[:60]}"
+        return ""
+
+    # 妙记操作
+    if "minute" in name:
+        token = args.get("minute_token", "")
+        return f"处理妙记 {token[:20]}" if token else ""
+
+    # 代码/部署操作
+    if "deploy" in name or "edit" in name or "fix" in name:
+        return result[:80] if result else ""
+
+    # 其他写操作：取结果摘要
+    if result and not result.startswith("[ERROR]"):
+        return result[:80]
+    return ""
+
+
+# ── 语义记忆（Semantic）──
+
+
+def get_user_profile(user_id: str) -> dict:
+    """获取用户画像。不存在则返回默认模板。"""
+    key = f"users/{user_id[:12]}"
+    profile = memory_store.read_json(key)
+    if profile is None:
+        return dict(_DEFAULT_USER_PROFILE)
+    return profile
+
+
+def update_user_profile(user_id: str, updates: dict) -> bool:
+    """更新用户画像（合并更新，不覆盖）。"""
+    profile = get_user_profile(user_id)
+
+    # 合并简单字段
+    for field in ("name", "architecture"):
+        if field in updates:
+            profile[field] = updates[field]
+
+    # 合并列表字段（去重，保留最近 20 项）
+    for field in ("preferences", "expertise", "recent_topics"):
+        if field in updates:
+            existing = profile.get(field, [])
+            new_items = updates[field] if isinstance(updates[field], list) else [updates[field]]
+            merged = list(dict.fromkeys(existing + new_items))  # 去重保序
+            profile[field] = merged[-20:]  # 只保留最近 20 项
+
+    # 更新计数和时间
+    profile["interaction_count"] = profile.get("interaction_count", 0) + 1
+    profile["last_seen"] = datetime.now(timezone.utc).isoformat()
+    if not profile.get("first_seen"):
+        profile["first_seen"] = profile["last_seen"]
+
+    key = f"users/{user_id[:12]}"
+    return memory_store.write_json(key, profile)
+
+
+def get_project_knowledge(repo: str) -> dict:
+    """获取项目知识。"""
+    key = f"projects/{repo.replace('/', '_')}"
+    knowledge = memory_store.read_json(key)
+    if knowledge is None:
+        return dict(_DEFAULT_PROJECT_KNOWLEDGE, repo=repo)
+    return knowledge
+
+
+def update_project_knowledge(repo: str, updates: dict) -> bool:
+    """更新项目知识。"""
+    knowledge = get_project_knowledge(repo)
+
+    for field in ("architecture",):
+        if field in updates:
+            knowledge[field] = updates[field]
+
+    for field in ("key_files", "conventions", "common_issues"):
+        if field in updates:
+            existing = knowledge.get(field, [])
+            new_items = updates[field] if isinstance(updates[field], list) else [updates[field]]
+            merged = list(dict.fromkeys(existing + new_items))
+            knowledge[field] = merged[-30:]
+
+    knowledge["last_updated"] = datetime.now(timezone.utc).isoformat()
+
+    key = f"projects/{repo.replace('/', '_')}"
+    return memory_store.write_json(key, knowledge)
+
+
+# ── 上下文构建（注入 system prompt）──
+
+
+def _format_memory_entry(e: dict) -> str:
+    """格式化单条记忆条目为人类可读文本。"""
+    t = e.get("time", "?")[:10]
+
+    # 压缩记忆（远期摘要）
+    if e.get("type") == "compressed":
+        tr = e.get("time_range", "")
+        summary = e.get("summary", "?")
+        return f"  [{tr or t}] (摘要) {summary}"
+
+    # bot 自己的行动日记
+    if e.get("type") == "bot_action":
+        details = e.get("details", "")
+        return f"  [{t}] 我做了: {details}"
+
+    # 用户交互记忆
+    action = e.get("action", "?")[:80]
+    outcome = e.get("outcome", "")
+    line = f"  [{t}] {action}"
+    if outcome:
+        line += f" → {outcome[:60]}"
+    return line
+
+
+async def build_memory_context(
+    user_id: str,
+    user_name: str = "",
+    current_text: str = "",
+) -> str:
+    """构建记忆上下文，注入到 system prompt 中。
+
+    智能回忆策略（全 LLM 驱动）：
+    1. 用户画像（偏好/规则）始终注入
+    2. LLM 判断当前消息是否需要回忆历史 → 返回搜索标签
+    3. 按标签召回相关记忆 → 注入上下文
+    """
+    import asyncio
+
+    parts = []
+
+    # 1. 用户画像（始终注入）
+    profile = get_user_profile(user_id)
+    if profile.get("interaction_count", 0) > 0:
+        prefs = profile.get("preferences", [])
+        topics = profile.get("recent_topics", [])
+        profile_lines = [f"用户画像({profile.get('name', user_name)}):"]
+        if prefs:
+            profile_lines.append("  偏好/规则:")
+            for p in prefs[-5:]:
+                profile_lines.append(f"    - {p}")
+        if topics:
+            profile_lines.append(f"  最近关注: {', '.join(topics[-3:])}")
+        if len(profile_lines) > 1:
+            parts.append("\n".join(profile_lines))
+
+    # 2. LLM 智能回忆决策：判断要不要回忆 + 搜什么标签
+    recalled = False
+    if current_text:
+        try:
+            decision = await asyncio.wait_for(
+                _llm_recall_decision(current_text), timeout=3.0
+            )
+        except (asyncio.TimeoutError, Exception):
+            decision = None
+
+        if decision and decision.get("r"):
+            tags = decision.get("t", [])
+            keyword = decision.get("k", "")
+            if tags or keyword:
+                # 先搜索索引（轻量级），看是否有相关记忆
+                index_hits = search_index(keyword=keyword, tags=tags, limit=8)
+                if index_hits:
+                    # 索引命中 → 加载完整 journal 做精确匹配
+                    # 注意：必须传 user_id 做用户隔离，否则会召回其他用户的记忆
+                    relevant = recall(user_id=user_id, tags=tags, keyword=keyword, limit=8)
+                else:
+                    # 索引未命中 → 仍尝试 journal 搜索（兼容旧数据无索引）
+                    relevant = recall(user_id=user_id, tags=tags, keyword=keyword, limit=5)
+                if relevant:
+                    memory_lines = [_format_memory_entry(e) for e in relevant]
+                    label = ", ".join(tags)
+                    parts.append(f"相关记忆({label}):\n" + "\n".join(memory_lines))
+                    recalled = True
+
+    # 3. LLM 没有建议回忆 → 注入最近 3 条该用户的交互（保底）
+    if not recalled:
+        recent = recall(user_id=user_id, limit=3)
+        if recent:
+            memory_lines = [_format_memory_entry(e) for e in recent]
+            parts.append("最近交互:\n" + "\n".join(memory_lines))
+
+    if not parts:
+        return ""
+
+    context = "\n\n".join(parts)
+    if len(context) > 1500:
+        context = context[:1500] + "..."
+    return f"\n\n你的记忆：\n{context}"
+
+
+# ── 日记系统（写入侧）──
+
+
+async def write_diary(
+    user_id: str,
+    user_name: str,
+    user_text: str,
+    reply: str,
+    tool_names_called: list[str] | None = None,
+    action_outcomes: list[tuple[str, str]] | None = None,
+) -> None:
+    """每次交互结束后写日记。
+
+    LLM 生成摘要 + 标签 + 偏好提取，全量记录。
+    不值得记的（纯寒暄）由 LLM 判断跳过。
+    """
+    try:
+        diary = await _llm_diary_entry(user_text, reply, tool_names_called, action_outcomes)
+    except Exception:
+        logger.debug("write_diary: LLM call failed", exc_info=True)
+        # LLM 失败时回退：有工具调用就用老逻辑记录
+        if tool_names_called:
+            _fallback_diary(user_id, user_name, user_text, reply, tool_names_called)
+        return
+
+    if not diary or not diary.get("w", False):
+        return  # LLM 判断不值得记录
+
+    summary = diary.get("s", "")
+    tags = diary.get("t", [])
+    prefs = diary.get("p", [])
+
+    if not summary:
+        return
+
+    # 写入 journal（返回当前长度）
+    journal_len = 0
+    try:
+        journal_len = remember(user_id, user_name, summary, "", tags)
+    except Exception:
+        logger.debug("write_diary: remember failed", exc_info=True)
+
+    # 偏好写入用户画像
+    if prefs:
+        try:
+            update_user_profile(user_id, {
+                "name": user_name,
+                "preferences": prefs,
+            })
+            # 偏好也写入 journal 以便按标签召回
+            for pref in prefs:
+                remember(user_id, user_name, f"用户偏好: {pref}", "", ["偏好"])
+            logger.info("diary: saved %d preference(s) for %s: %s",
+                        len(prefs), user_name, "; ".join(p[:40] for p in prefs))
+        except Exception:
+            logger.debug("write_diary: preference save failed", exc_info=True)
+
+    # 更新用户画像：最近话题
+    if tags:
+        try:
+            update_user_profile(user_id, {
+                "name": user_name,
+                "recent_topics": tags[:3],
+            })
+        except Exception:
+            pass
+
+    logger.info("diary: %s [%s] %s", user_name, ",".join(tags), summary[:60])
+
+    # journal 达到压缩阈值时触发后台压缩
+    # 阈值可通过 tenant.memory_journal_max 配置
+    compress_threshold = _COMPRESS_THRESHOLD
+    try:
+        from app.tenant.context import get_current_tenant
+        tenant_max = getattr(get_current_tenant(), "memory_journal_max", 0)
+        if tenant_max > 0:
+            compress_threshold = tenant_max
+    except Exception:
+        pass
+    if journal_len >= compress_threshold:
+        import asyncio
+        try:
+            asyncio.create_task(compress_old_entries())
+        except Exception:
+            logger.debug("compress task creation failed", exc_info=True)
+
+
+def _fallback_diary(
+    user_id: str, user_name: str,
+    user_text: str, reply: str,
+    tool_names_called: list[str],
+) -> None:
+    """LLM 不可用时的回退日记写入（用工具名推断标签）。"""
+    tags = _infer_tags(tool_names_called)
+    action = user_text[:80]
+    outcome = reply[:100] if reply else ""
+    try:
+        remember(user_id, user_name, action, outcome, tags)
+        update_user_profile(user_id, {
+            "name": user_name,
+            "recent_topics": tags[:3],
+        })
+    except Exception:
+        logger.debug("_fallback_diary failed", exc_info=True)
+
+
+def _infer_tags(tool_calls: list[str]) -> list[str]:
+    """从工具调用列表推断 tags（回退用）。"""
+    tags = set()
+    tag_map = {
+        "calendar": "日历",
+        "task": "任务",
+        "doc": "文档",
+        "minute": "妙记",
+        "git": "代码",
+        "pr": "代码",
+        "issue": "代码",
+        "file": "代码",
+        "search": "搜索",
+        "message": "消息",
+        "self_": "自修复",
+        "plan": "规划",
+        "memory": "记忆",
+        "bitable": "表格",
+    }
+    for call in tool_calls:
+        call_lower = call.lower()
+        for keyword, tag in tag_map.items():
+            if keyword in call_lower:
+                tags.add(tag)
+    return list(tags)[:5]
+
+
+# ── 记忆压缩（远期记忆 → 摘要）──
+
+# 触发压缩的 journal 长度阈值
+_COMPRESS_THRESHOLD = 800
+# 压缩后保留的近期详细条目数
+_KEEP_RECENT = 500
+# 每批压缩的条目数（避免单次 LLM 调用过大）
+_COMPRESS_BATCH = 50
+
+_COMPRESS_PROMPT = """\
+你是记忆压缩助手。将以下多条日记条目压缩成尽量少的摘要条目。
+
+要求：
+- 合并同类事件（如多次日历操作→"处理了N个日历事件，包括xxx"）
+- 保留关键信息：人名、文档ID/标题、重要决定、具体数字
+- 偏好/规则/标准类条目必须完整保留，不可压缩
+- 丢弃纯查询类（"查看了xxx"）除非结果有后续影响
+
+输出严格 JSON 数组（不要输出其他内容）：
+[{"s":"摘要内容","t":["标签1","标签2"]}]
+
+每条摘要控制在 50 字以内。整个数组通常 3-8 条。\
+"""
+
+
+async def compress_old_entries() -> None:
+    """压缩 journal 中的旧条目：近期保留详细，远期压缩为摘要。
+
+    触发条件：journal 长度 >= _COMPRESS_THRESHOLD
+    效果：300 条旧记忆 → ~30 条压缩摘要，信息不丢失只精炼。
+    """
+    all_entries = memory_store.read_journal_all()
+    total = len(all_entries)
+    if total < _COMPRESS_THRESHOLD:
+        return
+
+    # 分割：旧条目（要压缩）+ 近期条目（保留原样）
+    split_idx = total - _KEEP_RECENT
+    old_entries = all_entries[:split_idx]
+    recent_entries = all_entries[split_idx:]
+
+    logger.info("compressing journal: %d total, %d old → compress, %d recent → keep",
+                total, len(old_entries), len(recent_entries))
+
+    # 分批压缩旧条目
+    compressed_all: list[dict] = []
+    for i in range(0, len(old_entries), _COMPRESS_BATCH):
+        batch = old_entries[i:i + _COMPRESS_BATCH]
+
+        # 提取时间范围
+        times = [e.get("time", "")[:10] for e in batch if e.get("time")]
+        time_range = f"{times[0]}~{times[-1]}" if len(times) >= 2 else (times[0] if times else "")
+
+        # 收集所有标签
+        all_tags: set[str] = set()
+        for e in batch:
+            all_tags.update(e.get("tags", []))
+
+        # 格式化条目为文本给 LLM
+        lines = []
+        for e in batch:
+            if e.get("type") == "bot_action":
+                lines.append(f"- {e.get('details', '')}")
+            else:
+                action = e.get("action", "")
+                outcome = e.get("outcome", "")
+                line = f"- {action}"
+                if outcome:
+                    line += f" → {outcome}"
+                lines.append(line)
+
+        batch_text = "\n".join(lines)
+        try:
+            result = await _llm_json_call(_COMPRESS_PROMPT, batch_text)
+        except Exception:
+            logger.debug("compress batch failed", exc_info=True)
+            # 压缩失败时保留原始条目（不丢数据）
+            compressed_all.extend(batch)
+            continue
+
+        if result and isinstance(result, list):
+            for item in result:
+                compressed_all.append({
+                    "type": "compressed",
+                    "summary": item.get("s", ""),
+                    "tags": item.get("t", list(all_tags)),
+                    "time_range": time_range,
+                    "time": times[-1] if times else "",
+                })
+        elif result and isinstance(result, dict):
+            # LLM 返回了单个 dict 而不是数组
+            compressed_all.append({
+                "type": "compressed",
+                "summary": result.get("s", ""),
+                "tags": result.get("t", list(all_tags)),
+                "time_range": time_range,
+                "time": times[-1] if times else "",
+            })
+        else:
+            # 解析失败，保留原始
+            compressed_all.extend(batch)
+
+    # 重写 journal：压缩摘要 + 近期详细
+    new_journal = compressed_all + recent_entries
+    ok = memory_store.rewrite_journal(new_journal)
+    if ok:
+        logger.info("journal compressed: %d → %d entries (%d compressed + %d recent)",
+                     total, len(new_journal), len(compressed_all), len(recent_entries))
+    else:
+        logger.warning("journal rewrite failed, keeping original")
+
+
+# ── LLM 调用（日记 + 回忆决策）──
+
+
+_DIARY_PROMPT = """\
+你是日记助手。根据用户和bot的对话，生成一条日记条目。
+
+输出严格 JSON（不要输出其他内容）：
+{"s":"摘要","t":["标签"],"p":["偏好"],"w":true}
+
+字段说明：
+- s: 摘要（50字以内）。如果涉及文档/文件/链接，务必把标题、ID或URL带上，方便以后找到
+- t: 话题标签（1-3个，从：日历、任务、文档、代码、消息、搜索、表格、部署、规划、其他）
+- p: 用户表达的偏好/规则/标准/习惯/约定（没有则空数组[]）。格式「领域: 内容」
+- w: 是否值得记录（true/false）。纯寒暄("你好""谢谢")、简单确认("好的""收到")= false
+
+示例：
+用户: 帮我查一下明天有什么会 / Bot: 明天有3个会议...
+→ {"s":"查询明天的会议安排，共3个","t":["日历"],"p":[],"w":true}
+
+用户: 以后开会标题统一用「部门-主题-日期」格式 / Bot: 好的，我记住了
+→ {"s":"用户设定了会议命名规则","t":["日历"],"p":["日历命名: 会议标题格式为「部门-主题-日期」"],"w":true}
+
+用户: 这个文档你记一下 [飞书文档: 产品PRD v2] / Bot: 好的，已记住
+→ {"s":"用户让记住文档「产品PRD v2」(docId:xxx)，后续产品讨论时参考","t":["文档"],"p":[],"w":true}
+
+用户: 谢谢 / Bot: 不客气
+→ {"s":"","t":[],"p":[],"w":false}\
+"""
+
+
+_RECALL_PROMPT = """\
+用户发来一条新消息。判断bot是否需要查阅历史记忆来更好地回应。
+
+输出严格 JSON（不要输出其他内容）：
+{"r":true,"t":["标签"],"k":"关键词"}
+
+字段说明：
+- r: 是否需要回忆（true/false）
+  true: 用户提到了之前做过的事、涉及具体项目/人/文档、需要上下文才能理解
+  false: 简单问候、明确独立的指令（如"翻译这段话"）、不需要历史上下文
+- t: 应该搜索的标签（从：日历、任务、文档、代码、消息、搜索、表格、部署、规划、偏好）
+- k: 搜索关键词（如人名、项目名、事件名，可选，无则空字符串""）
+
+示例：
+"上次帮我创建的那个文档叫什么" → {"r":true,"t":["文档"],"k":""}
+"帮我建个明天下午3点的会" → {"r":true,"t":["日历","偏好"],"k":"会议"}
+"你好" → {"r":false,"t":[],"k":""}
+"把这段翻译成英文" → {"r":false,"t":[],"k":""}\
+"""
+
+
+# ── P2: 记忆自组织（空闲时经验蒸馏）──
+
+
+_DISTILL_PROMPT = """\
+你是经验蒸馏助手。分析以下日记条目，提炼出可复用的经验规则。
+
+要求：
+- 找出重复出现的模式（如"用户经常要求XX格式"、"XX工具配合YY效果好"）
+- 提炼为简短、可操作的规则（如"创建文档后主动转让 owner 给用户"）
+- 忽略一次性事件，只保留有普遍价值的经验
+- 每条规则 30 字以内
+
+输出严格 JSON 数组（不要输出其他内容）：
+[{"rule":"规则内容","tags":["标签"],"source_count":N}]
+
+source_count 表示这条规则基于多少条日记提炼。通常 3-8 条规则。\
+"""
+
+
+async def distill_experience() -> list[dict]:
+    """空闲时经验蒸馏：从最近日记中提炼可复用的经验规则。
+
+    返回提炼出的规则列表。规则会写入 capability_module 和用户画像。
+    由 scheduler 在空闲时段调用。
+    """
+    # 读取最近 50 条日记（不含压缩条目）
+    recent = _read_journal_safe(limit=50)
+    if len(recent) < 10:
+        return []  # 日记太少，不值得提炼
+
+    # 过滤掉压缩条目
+    detailed = [e for e in recent if e.get("type") != "compressed"]
+    if len(detailed) < 8:
+        return []
+
+    # 格式化给 LLM
+    lines = []
+    for e in detailed:
+        if e.get("type") == "bot_action":
+            lines.append(f"- [bot] {e.get('details', '')}")
+        else:
+            action = e.get("action", "")
+            tags = ",".join(e.get("tags", []))
+            lines.append(f"- [{tags}] {action}")
+
+    batch_text = "\n".join(lines)
+    try:
+        result = await _llm_json_call(_DISTILL_PROMPT, batch_text)
+    except Exception:
+        logger.debug("distill_experience: LLM call failed", exc_info=True)
+        return []
+
+    if not result or not isinstance(result, list):
+        return []
+
+    # 写入经验规则到 tool_tracker（作为 lesson）
+    rules = []
+    for item in result:
+        rule = item.get("rule", "")
+        tags = item.get("tags", [])
+        if not rule:
+            continue
+        rules.append({"rule": rule, "tags": tags})
+
+        # 写入 tool_tracker 作为经验教训
+        try:
+            from app.services.tool_tracker import record_lesson
+            from app.tenant.context import get_current_tenant
+            tid = get_current_tenant().tenant_id
+            # 用第一个 tag 作为工具名（近似关联）
+            tool_hint = tags[0] if tags else "general"
+            record_lesson(tid, tool_hint, rule, context="distilled")
+        except Exception:
+            pass
+
+    if rules:
+        # 记录到 journal 便于追溯
+        try:
+            entry = {
+                "type": "distilled",
+                "summary": f"经验蒸馏: 提炼了 {len(rules)} 条规则",
+                "rules": [r["rule"] for r in rules],
+                "tags": ["经验蒸馏"],
+                "time": datetime.now(timezone.utc).isoformat(),
+            }
+            memory_store.append_journal(entry)
+        except Exception:
+            pass
+
+        logger.info("distill_experience: extracted %d rules", len(rules))
+
+    return rules
+
+
+async def _llm_diary_entry(
+    user_text: str, reply: str, tool_names: list[str] | None,
+    action_outcomes: list[tuple[str, str]] | None = None,
+) -> dict | None:
+    """用 LLM 生成日记条目。返回解析后的 dict 或 None。"""
+    tools_str = ", ".join(tool_names) if tool_names else "无"
+    content = (
+        f"用户: {user_text[:400]}\n"
+        f"Bot: {reply[:800]}\n"
+        f"调用的工具: {tools_str}"
+    )
+    # 附加工具执行结果摘要（包含 URL、文档 ID 等关键数据）
+    if action_outcomes:
+        outcomes_str = "\n".join(
+            f"  {name} {outcome}" for name, outcome in action_outcomes[:10]
+        )
+        content += f"\n工具执行结果:\n{outcomes_str}"
+    return await _llm_json_call(_DIARY_PROMPT, content)
+
+
+async def _llm_recall_decision(user_text: str) -> dict | None:
+    """用 LLM 判断是否需要回忆。返回解析后的 dict 或 None。"""
+    return await _llm_json_call(_RECALL_PROMPT, user_text[:200])
+
+
+async def _llm_json_call(system_prompt: str, user_content: str) -> dict | None:
+    """通用轻量 LLM 调用，返回 JSON dict。"""
+    from openai import AsyncOpenAI
+    from app.config import settings
+
+    try:
+        client = AsyncOpenAI(
+            api_key=settings.kimi.api_key,
+            base_url=settings.kimi.base_url,
+        )
+        resp = await client.chat.completions.create(
+            model=settings.kimi.model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ],
+            temperature=0,
+            max_tokens=200,
+        )
+        answer = resp.choices[0].message.content.strip()
+        # 尝试提取 JSON（兼容 LLM 输出前后有多余文本）
+        m = re.search(r"\{.*\}", answer, re.DOTALL)
+        if m:
+            return json.loads(m.group())
+        return None
+    except Exception:
+        logger.debug("_llm_json_call failed", exc_info=True)
+        return None

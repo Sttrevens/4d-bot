@@ -1,0 +1,178 @@
+{
+    "tenants": [
+        {
+            "tenant_id": "my-feishu-bot",
+            "name": "我的飞书 Bot",
+            "bot_aliases": ["小助手"],
+            "platform": "feishu",
+
+            "app_id": "cli_xxxxxxxxxxxx",
+            "app_secret": "${FEISHU_APP_SECRET}",
+            "verification_token": "${FEISHU_VERIFICATION_TOKEN}",
+            "encrypt_key": "",
+            "oauth_redirect_uri": "https://your-domain.com/oauth/my-feishu-bot/callback",
+            "bot_open_id": "",
+
+            "github_token": "${GITHUB_TOKEN}",
+            "github_repo_owner": "your-org",
+            "github_repo_name": "your-repo",
+
+            "llm_provider": "gemini",
+            "llm_api_key": "${GEMINI_API_KEY}",
+            "llm_base_url": "",
+            "llm_model": "gemini-3-flash-preview",
+            "llm_model_strong": "gemini-2.5-pro",
+            "llm_system_prompt": "你是一个专业的技术助手，帮助团队解决技术问题。",
+
+            "coding_model": "",
+            "coding_api_key": "",
+            "coding_base_url": "",
+
+            "stt_api_key": "",
+            "stt_base_url": "",
+            "stt_model": "",
+
+            "admin_open_ids": [],
+            "admin_names": ["Admin"],
+            "tools_enabled": [],
+            "scheduler_timezone": "Asia/Shanghai",
+
+            "custom_persona": false,
+            "self_iteration_enabled": false,
+            "instance_management_enabled": false,
+            "capability_modules": [],
+
+            "memory_diary_enabled": true,
+            "memory_journal_max": 800,
+            "memory_chat_rounds": 5,
+            "memory_chat_ttl": 3600,
+            "memory_context_enabled": true,
+
+            "quota_monthly_api_calls": 0,
+            "quota_monthly_tokens": 0,
+            "rate_limit_rpm": 60,
+            "rate_limit_user_rpm": 10
+        },
+        {
+            "tenant_id": "my-wecom-bot",
+            "name": "企微内部应用 Bot",
+            "platform": "wecom",
+
+            "wecom_corpid": "${WECOM_CORPID}",
+            "wecom_corpsecret": "${WECOM_CORPSECRET}",
+            "wecom_agent_id": 1000002,
+            "wecom_token": "${WECOM_TOKEN}",
+            "wecom_encoding_aes_key": "${WECOM_AES_KEY}",
+
+            "github_token": "",
+            "github_repo_owner": "",
+            "github_repo_name": "",
+
+            "llm_provider": "gemini",
+            "llm_api_key": "${GEMINI_API_KEY}",
+            "llm_base_url": "",
+            "llm_model": "gemini-3-flash-preview",
+            "llm_model_strong": "gemini-2.5-pro",
+            "llm_system_prompt": "你是一个专业的工作助手。",
+
+            "coding_model": "",
+            "coding_api_key": "",
+            "coding_base_url": "",
+
+            "stt_api_key": "",
+            "stt_base_url": "",
+            "stt_model": "",
+
+            "admin_open_ids": [],
+            "admin_names": ["Admin"],
+            "tools_enabled": [],
+
+            "custom_persona": false,
+            "self_iteration_enabled": false,
+
+            "memory_diary_enabled": true,
+            "memory_journal_max": 800,
+            "memory_chat_rounds": 5,
+            "memory_chat_ttl": 3600,
+            "memory_context_enabled": true
+        },
+        {
+            "tenant_id": "my-kf-bot",
+            "name": "微信客服 AI 助手",
+            "platform": "wecom_kf",
+
+            "wecom_corpid": "${WECOM_CORPID}",
+            "wecom_kf_secret": "${WECOM_KF_SECRET}",
+            "wecom_kf_token": "${WECOM_KF_TOKEN}",
+            "wecom_kf_encoding_aes_key": "${WECOM_KF_AES_KEY}",
+            "wecom_kf_open_kfid": "wkXXXXXXXXXXXXXX",
+
+            "github_token": "",
+            "github_repo_owner": "",
+            "github_repo_name": "",
+
+            "llm_provider": "gemini",
+            "llm_api_key": "${GEMINI_API_KEY}",
+            "llm_base_url": "",
+            "llm_model": "gemini-3-flash-preview",
+            "llm_model_strong": "gemini-2.5-pro",
+            "custom_persona": true,
+            "llm_system_prompt": "你是一个友善的 AI 助手，为微信用户提供服务。",
+
+            "coding_model": "",
+            "coding_api_key": "",
+            "coding_base_url": "",
+
+            "stt_api_key": "",
+            "stt_base_url": "",
+            "stt_model": "",
+
+            "admin_open_ids": [],
+            "admin_names": ["Admin"],
+            "tools_enabled": [
+                "think",
+                "web_search",
+                "fetch_url",
+                "save_memory",
+                "recall_memory",
+                "export_file",
+                "browser_open",
+                "browser_do",
+                "browser_read",
+                "browser_close",
+                "search_social_media",
+                "get_platform_search_url",
+                "create_custom_tool",
+                "list_custom_tools",
+                "install_package",
+                "assess_capability",
+                "guide_human",
+                "set_reminder",
+                "list_reminders",
+                "cancel_reminder",
+                "update_reminder"
+            ],
+
+            "self_iteration_enabled": false,
+            "instance_management_enabled": false,
+            "capability_modules": ["social_media_research"],
+
+            "trial_enabled": true,
+            "trial_duration_hours": 48,
+            "approval_duration_days": 30,
+            "quota_user_tokens_6h": 500000,
+            "deploy_free_quota": 1,
+
+            "memory_diary_enabled": false,
+            "memory_journal_max": 0,
+            "memory_chat_rounds": 3,
+            "memory_chat_ttl": 1800,
+            "memory_context_enabled": false,
+
+            "social_media_api_provider": "",
+            "social_media_api_key": "",
+            "social_media_api_secret": ""
+        }
+    ],
+    "default_tenant_id": "my-feishu-bot"
+}

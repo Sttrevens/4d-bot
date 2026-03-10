@@ -1,0 +1,2720 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bot Admin Dashboard</title>
+<link rel="stylesheet" href="https://cdn.bootcdn.net/ajax/libs/tailwindcss/2.2.19/tailwind.min.css">
+<style>
+  [v-cloak] { display: none; }
+  .fade-in { animation: fadeIn 0.2s ease-in; }
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+  .status-trial { color: #2563eb; background: #dbeafe; }
+  .status-approved { color: #16a34a; background: #dcfce7; }
+  .status-expired { color: #ea580c; background: #fff7ed; }
+  .status-blocked { color: #dc2626; background: #fef2f2; }
+  #logs-output::-webkit-scrollbar { width: 6px; }
+  #logs-output::-webkit-scrollbar-track { background: #1f2937; }
+  #logs-output::-webkit-scrollbar-thumb { background: #4b5563; border-radius: 3px; }
+</style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+
+<!-- Login -->
+<div id="login-view" class="flex items-center justify-center min-h-screen">
+  <div class="bg-white rounded-xl shadow-lg p-8 w-96">
+    <h1 class="text-2xl font-bold text-gray-800 mb-6 text-center">Bot Admin</h1>
+    <input id="token-input" type="password" placeholder="Admin Token"
+      class="w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none mb-4"
+      onkeydown="if(event.key==='Enter')login()">
+    <button onclick="login()"
+      class="w-full bg-blue-600 text-white py-3 rounded-lg hover:bg-blue-700 transition font-medium">
+      Login
+    </button>
+    <p id="login-error" class="text-red-500 text-sm mt-2 hidden"></p>
+  </div>
+</div>
+
+<!-- Dashboard -->
+<div id="dashboard-view" class="hidden">
+  <!-- Nav -->
+  <nav class="bg-white shadow-sm border-b sticky top-0 z-10">
+    <div class="max-w-7xl mx-auto px-4 py-3 flex justify-between items-center">
+      <h1 class="text-xl font-bold text-gray-800">Bot Admin Dashboard</h1>
+      <div class="flex items-center gap-4">
+        <button onclick="refreshAll()" class="text-gray-500 hover:text-blue-600 text-sm">Refresh</button>
+        <button onclick="logout()" class="text-gray-500 hover:text-red-500 text-sm">Logout</button>
+      </div>
+    </div>
+  </nav>
+
+  <div class="max-w-7xl mx-auto px-4 py-6">
+    <!-- Tabs -->
+    <div class="flex gap-2 mb-6">
+      <button onclick="switchTab('overview')" id="tab-overview"
+        class="tab-btn px-4 py-2 rounded-lg font-medium text-sm bg-blue-100 text-blue-700">
+        Overview
+      </button>
+      <button onclick="switchTab('users')" id="tab-users"
+        class="tab-btn px-4 py-2 rounded-lg font-medium text-sm bg-gray-100 text-gray-600 hover:bg-gray-200">
+        Users
+      </button>
+      <button onclick="switchTab('usage')" id="tab-usage"
+        class="tab-btn px-4 py-2 rounded-lg font-medium text-sm bg-gray-100 text-gray-600 hover:bg-gray-200">
+        Usage
+      </button>
+      <button onclick="switchTab('instances')" id="tab-instances"
+        class="tab-btn px-4 py-2 rounded-lg font-medium text-sm bg-gray-100 text-gray-600 hover:bg-gray-200">
+        Instances
+      </button>
+      <button onclick="switchTab('logs')" id="tab-logs"
+        class="tab-btn px-4 py-2 rounded-lg font-medium text-sm bg-gray-100 text-gray-600 hover:bg-gray-200">
+        Logs
+      </button>
+      <button onclick="switchTab('identities')" id="tab-identities"
+        class="tab-btn px-4 py-2 rounded-lg font-medium text-sm bg-gray-100 text-gray-600 hover:bg-gray-200">
+        Identities
+      </button>
+      <button onclick="switchTab('superadmin')" id="tab-superadmin"
+        class="tab-btn px-4 py-2 rounded-lg font-medium text-sm bg-gray-100 text-gray-600 hover:bg-gray-200">
+        Super Admin
+      </button>
+    </div>
+
+    <!-- Overview Tab -->
+    <div id="panel-overview" class="fade-in">
+      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4" id="tenant-cards">
+        <div class="text-gray-400 p-8 text-center">Loading...</div>
+      </div>
+    </div>
+
+    <!-- Users Tab -->
+    <div id="panel-users" class="hidden fade-in">
+      <div class="bg-white rounded-xl shadow-sm p-6">
+        <div class="flex items-center gap-4 mb-4">
+          <label class="text-sm font-medium text-gray-600">Tenant:</label>
+          <select id="user-tenant-select" onchange="loadUsers()"
+            class="border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
+          </select>
+          <span id="user-count" class="text-sm text-gray-400 ml-auto"></span>
+        </div>
+
+        <!-- Filter buttons -->
+        <div class="flex gap-2 mb-4">
+          <button onclick="filterUsers('all')" class="filter-btn text-xs px-3 py-1 rounded-full bg-gray-100 text-gray-600">All</button>
+          <button onclick="filterUsers('trial')" class="filter-btn text-xs px-3 py-1 rounded-full bg-blue-50 text-blue-600">Trial</button>
+          <button onclick="filterUsers('expired')" class="filter-btn text-xs px-3 py-1 rounded-full bg-orange-50 text-orange-600">Expired</button>
+          <button onclick="filterUsers('approved')" class="filter-btn text-xs px-3 py-1 rounded-full bg-green-50 text-green-600">Approved</button>
+          <button onclick="filterUsers('blocked')" class="filter-btn text-xs px-3 py-1 rounded-full bg-red-50 text-red-600">Blocked</button>
+        </div>
+
+        <div id="users-table-container">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="border-b text-left text-gray-500">
+                <th class="py-2 px-2">Name</th>
+                <th class="py-2 px-2">User ID</th>
+                <th class="py-2 px-2">Status</th>
+                <th class="py-2 px-2">First Seen</th>
+                <th class="py-2 px-2">Last Active</th>
+                <th class="py-2 px-2">Messages</th>
+                <th class="py-2 px-2">Notes</th>
+                <th class="py-2 px-2 text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="users-tbody">
+              <tr><td colspan="8" class="text-center text-gray-400 py-8">Select a tenant</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Usage Tab -->
+    <div id="panel-usage" class="hidden fade-in">
+      <div class="bg-white rounded-xl shadow-sm p-6">
+        <div class="flex items-center gap-4 mb-6">
+          <label class="text-sm font-medium text-gray-600">Month:</label>
+          <input id="usage-month" type="month" onchange="loadUsage()"
+            class="border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
+        </div>
+        <div id="usage-content">
+          <div class="text-gray-400 p-8 text-center">Loading...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Instances Tab -->
+    <div id="panel-instances" class="hidden fade-in">
+      <!-- Instance List -->
+      <div id="instances-list-view">
+        <div class="flex justify-between items-center mb-4">
+          <h2 class="text-lg font-semibold text-gray-700">Bot Instances</h2>
+          <button onclick="showProvisionForm()"
+            class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition text-sm font-medium">
+            + New Instance
+          </button>
+        </div>
+        <div class="bg-white rounded-xl shadow-sm p-6">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="border-b text-left text-gray-500">
+                <th class="py-2 px-3">Name</th>
+                <th class="py-2 px-3">Tenant ID</th>
+                <th class="py-2 px-3">Platform</th>
+                <th class="py-2 px-3">Port</th>
+                <th class="py-2 px-3">Status</th>
+                <th class="py-2 px-3 text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="instances-tbody">
+              <tr><td colspan="6" class="text-center text-gray-400 py-8">Loading...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Provision Form (hidden by default) -->
+      <div id="provision-form-view" class="hidden">
+        <div class="flex items-center gap-3 mb-4">
+          <button onclick="hideProvisionForm()" class="text-gray-400 hover:text-gray-600">&larr; Back</button>
+          <h2 class="text-lg font-semibold text-gray-700">Create New Bot Instance</h2>
+        </div>
+        <div class="bg-white rounded-xl shadow-sm p-6 max-w-3xl">
+          <form onsubmit="submitProvision(event)">
+            <!-- Basic Info -->
+            <h3 class="font-semibold text-gray-700 mb-3 border-b pb-2">Basic Info</h3>
+            <div class="grid grid-cols-2 gap-4 mb-6">
+              <div>
+                <label class="block text-xs font-medium text-gray-500 mb-1">Tenant ID *</label>
+                <input name="tenant_id" required placeholder="customer-abc"
+                  pattern="[a-zA-Z0-9_-]+" title="Only letters, numbers, - and _"
+                  class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-gray-500 mb-1">Display Name *</label>
+                <input name="name" required placeholder="Customer ABC AI Assistant"
+                  class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
+              </div>
+              <div class="col-span-2">
+                <label class="block text-xs font-medium text-gray-500 mb-1">Platform *</label>
+                <select name="platform" required onchange="platformChanged(this.value)"
+                  class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                  <option value="">-- Select Platform --</option>
+                  <option value="feishu">Feishu (飞书)</option>
+                  <option value="wecom">WeCom Internal (企业微信-内部)</option>
+                  <option value="wecom_kf">WeCom Customer Service (微信客服)</option>
+                  <option value="qq">QQ Bot (QQ机器人)</option>
+                </select>
+              </div>
+            </div>
+
+            <!-- Platform Credentials -->
+            <h3 class="font-semibold text-gray-700 mb-3 border-b pb-2">Platform Credentials</h3>
+            <div id="cred-placeholder" class="text-gray-400 text-sm mb-6 py-4 text-center">
+              Select a platform above to see credential fields
+            </div>
+
+            <!-- Feishu Credentials -->
+            <div id="cred-feishu" class="hidden mb-6">
+              <div class="grid grid-cols-2 gap-4">
+                <div>
+                  <label class="block text-xs font-medium text-gray-500 mb-1">App ID *</label>
+                  <input name="app_id" placeholder="cli_xxxxxxxxxxxx"
+                    class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                </div>
+                <div>
+                  <label class="block text-xs font-medium text-gray-500 mb-1">App Secret *</label>
+                  <input name="app_secret" type="password" placeholder="xxxxxxxxxxxxxxxx"
+                    class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                </div>
+                <div>
+                  <label class="block text-xs font-medium text-gray-500 mb-1">Verification Token *</label>
+                  <input name="verification_token" placeholder="xxxxxxxxxxxxxxxx"
+                    class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                </div>
+                <div>
+                  <label class="block text-xs font-medium text-gray-500 mb-1">Encrypt Key</label>
+                  <input name="encrypt_key" placeholder="(optional)"
+                    class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                </div>
+              </div>
+            </div>
+
+            <!-- WeCom Credentials -->
+            <div id="cred-wecom" class="hidden mb-6">
+              <div class="grid grid-cols-2 gap-4">
+                <div>
+                  <label class="block text-xs font-medium text-gray-500 mb-1">Corp ID *</label>
+                  <input name="wecom_corpid" placeholder="wwXXXXXXXXXXXXXX"
+                    class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                </div>
+                <div>
+                  <label class="block text-xs font-medium text-gray-500 mb-1">Corp Secret *</label>
+                  <input name="wecom_corpsecret" type="password"
+                    class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                </div>
+                <div>
+                  <label class="block text-xs font-medium text-gray-500 mb-1">Agent ID *</label>
+                  <input name="wecom_agent_id" type="number" placeholder="1000001"
+                    class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                </div>
+                <div>
+                  <label class="block text-xs font-medium text-gray-500 mb-1">Callback Token *</label>
+                  <input name="wecom_token"
+                    class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                </div>
+                <div class="col-span-2">
+                  <label class="block text-xs font-medium text-gray-500 mb-1">Callback EncodingAESKey *</label>
+                  <input name="wecom_encoding_aes_key"
+                    class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                </div>
+              </div>
+            </div>
+
+            <!-- WeCom KF Credentials -->
+            <div id="cred-wecom_kf" class="hidden mb-6">
+              <div class="grid grid-cols-2 gap-4">
+                <div>
+                  <label class="block text-xs font-medium text-gray-500 mb-1">Corp ID *</label>
+                  <input name="wecom_corpid_kf" placeholder="wwXXXXXXXXXXXXXX"
+                    class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                </div>
+                <div>
+                  <label class="block text-xs font-medium text-gray-500 mb-1">KF Secret *</label>
+                  <input name="wecom_kf_secret" type="password"
+                    class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                </div>
+                <div>
+                  <label class="block text-xs font-medium text-gray-500 mb-1">KF Callback Token *</label>
+                  <input name="wecom_kf_token"
+                    class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                </div>
+                <div>
+                  <label class="block text-xs font-medium text-gray-500 mb-1">KF EncodingAESKey *</label>
+                  <input name="wecom_kf_encoding_aes_key"
+                    class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                </div>
+                <div class="col-span-2">
+                  <label class="block text-xs font-medium text-gray-500 mb-1">KF Account ID (open_kfid) *</label>
+                  <input name="wecom_kf_open_kfid" placeholder="wkXXXXXXXXXX"
+                    class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                </div>
+              </div>
+            </div>
+
+            <!-- QQ Credentials -->
+            <div id="cred-qq" class="hidden mb-6">
+              <div class="grid grid-cols-2 gap-4">
+                <div>
+                  <label class="block text-xs font-medium text-gray-500 mb-1">App ID *</label>
+                  <input name="qq_app_id" placeholder="QQ 开放平台 AppID"
+                    class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                </div>
+                <div>
+                  <label class="block text-xs font-medium text-gray-500 mb-1">App Secret *</label>
+                  <input name="qq_app_secret" type="password" placeholder="QQ 开放平台 AppSecret"
+                    class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                </div>
+                <div class="col-span-2">
+                  <label class="block text-xs font-medium text-gray-500 mb-1">Webhook Token *</label>
+                  <input name="qq_token" placeholder="Webhook 回调验证 Token (Ed25519 seed)"
+                    class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                </div>
+              </div>
+            </div>
+
+            <!-- LLM Config -->
+            <h3 class="font-semibold text-gray-700 mb-3 border-b pb-2">LLM Config</h3>
+            <div class="mb-6">
+              <div class="mb-3">
+                <label class="block text-xs font-medium text-gray-500 mb-1">System Prompt</label>
+                <textarea name="llm_system_prompt" rows="4" placeholder="Describe the bot's persona and behavior..."
+                  class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none resize-y"></textarea>
+              </div>
+              <label class="flex items-center gap-2 text-sm text-gray-600">
+                <input name="custom_persona" type="checkbox" class="rounded">
+                Custom Persona (skip generic behavior rules injection)
+              </label>
+            </div>
+
+            <!-- Trial & Quota -->
+            <h3 class="font-semibold text-gray-700 mb-3 border-b pb-2">Trial & Quota</h3>
+            <div class="grid grid-cols-2 gap-4 mb-6">
+              <label class="flex items-center gap-2 text-sm text-gray-600 col-span-2">
+                <input name="trial_enabled" type="checkbox" class="rounded" onchange="document.getElementById('trial-opts').classList.toggle('hidden', !this.checked)">
+                Enable Trial Period (new users must be approved after trial expires)
+              </label>
+              <div id="trial-opts" class="hidden col-span-2 grid grid-cols-3 gap-4 pl-6 border-l-2 border-blue-200">
+                <div>
+                  <label class="block text-xs font-medium text-gray-500 mb-1">Trial Duration (hours)</label>
+                  <input name="trial_duration_hours" type="number" value="48" min="1"
+                    class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                </div>
+                <div>
+                  <label class="block text-xs font-medium text-gray-500 mb-1">Approval Duration (days, 0=permanent)</label>
+                  <input name="approval_duration_days" type="number" value="30" min="0"
+                    class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                </div>
+                <div>
+                  <label class="block text-xs font-medium text-gray-500 mb-1">6h Token Quota (0=unlimited)</label>
+                  <input name="quota_user_tokens_6h" type="number" value="500000" min="0"
+                    class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                </div>
+              </div>
+            </div>
+
+            <!-- Advanced Settings -->
+            <details class="mb-6">
+              <summary class="font-semibold text-gray-700 mb-3 border-b pb-2 cursor-pointer">Advanced Settings</summary>
+              <div class="space-y-5 pt-2">
+                <!-- Rate Limits & Quotas -->
+                <div>
+                  <p class="text-xs font-medium text-gray-500 mb-2">Rate Limits & Monthly Quotas</p>
+                  <div class="grid grid-cols-2 gap-4">
+                    <div>
+                      <label class="block text-xs text-gray-400 mb-1">Tenant RPM (0=default 60)</label>
+                      <input name="rate_limit_rpm" type="number" value="0"
+                        class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                    </div>
+                    <div>
+                      <label class="block text-xs text-gray-400 mb-1">User RPM (0=default 10)</label>
+                      <input name="rate_limit_user_rpm" type="number" value="0"
+                        class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                    </div>
+                    <div>
+                      <label class="block text-xs text-gray-400 mb-1">Monthly API Calls (0=unlimited)</label>
+                      <input name="quota_monthly_api_calls" type="number" value="0"
+                        class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                    </div>
+                    <div>
+                      <label class="block text-xs text-gray-400 mb-1">Monthly Tokens (0=unlimited)</label>
+                      <input name="quota_monthly_tokens" type="number" value="0"
+                        class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Deploy Quota -->
+                <div>
+                  <label class="block text-xs font-medium text-gray-500 mb-1">Deploy Free Quota (per user, 0=unlimited)</label>
+                  <input name="deploy_free_quota" type="number" value="1"
+                    class="w-48 border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                </div>
+
+                <!-- Memory Config -->
+                <div>
+                  <p class="text-xs font-medium text-gray-500 mb-2">Memory System</p>
+                  <div class="grid grid-cols-2 gap-3 mb-3">
+                    <label class="flex items-center gap-2 text-sm text-gray-600">
+                      <input name="memory_diary_enabled" type="checkbox" class="rounded" checked>
+                      Diary (LLM summarize each interaction)
+                    </label>
+                    <label class="flex items-center gap-2 text-sm text-gray-600">
+                      <input name="memory_context_enabled" type="checkbox" class="rounded" checked>
+                      Inject memory context into prompt
+                    </label>
+                  </div>
+                  <div class="grid grid-cols-3 gap-4">
+                    <div>
+                      <label class="block text-xs text-gray-400 mb-1">Journal Max (0=no compress)</label>
+                      <input name="memory_journal_max" type="number" value="800"
+                        class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                    </div>
+                    <div>
+                      <label class="block text-xs text-gray-400 mb-1">Chat Rounds</label>
+                      <input name="memory_chat_rounds" type="number" value="5"
+                        class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                    </div>
+                    <div>
+                      <label class="block text-xs text-gray-400 mb-1">Chat TTL (seconds)</label>
+                      <input name="memory_chat_ttl" type="number" value="3600"
+                        class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Admin Names -->
+                <div>
+                  <label class="block text-xs font-medium text-gray-500 mb-1">Admin Names (comma-separated, for super admin matching)</label>
+                  <input name="admin_names" type="text" placeholder="吴天骄, Steven"
+                    class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                </div>
+              </div>
+            </details>
+
+            <!-- Submit -->
+            <div class="flex items-center gap-3 pt-4 border-t">
+              <button type="submit" id="provision-submit-btn"
+                class="bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700 transition text-sm font-medium">
+                Create Instance
+              </button>
+              <button type="button" onclick="hideProvisionForm()"
+                class="text-gray-500 px-4 py-2 rounded-lg hover:bg-gray-100 text-sm">
+                Cancel
+              </button>
+              <span id="provision-status" class="text-sm ml-auto"></span>
+            </div>
+          </form>
+        </div>
+      </div>
+      <!-- KF Bot Management Panel (hidden by default) -->
+      <div id="kf-panel-view" class="hidden">
+        <div class="flex items-center gap-3 mb-4">
+          <button onclick="hideKfPanel()" class="text-gray-400 hover:text-gray-600">&larr; Back</button>
+          <h2 id="kf-panel-title" class="text-lg font-semibold text-gray-700">KF Accounts</h2>
+        </div>
+        <div class="bg-white rounded-xl shadow-sm p-6 mb-4">
+          <h3 class="text-sm font-semibold text-gray-600 mb-3">WeChat KF Accounts (from API)</h3>
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="border-b text-left text-gray-500">
+                <th class="py-2 px-3">Name</th>
+                <th class="py-2 px-3">open_kfid</th>
+                <th class="py-2 px-3">Avatar</th>
+                <th class="py-2 px-3 text-right">Status</th>
+              </tr>
+            </thead>
+            <tbody id="kf-accounts-body">
+              <tr><td colspan="4" class="text-center text-gray-400 py-8">Loading...</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Add Co-tenant Form (shown when clicking "+ Add as Bot") -->
+        <div id="kf-add-form" class="hidden bg-white rounded-xl shadow-sm p-6">
+          <h3 class="text-sm font-semibold text-gray-600 mb-3">
+            Add Co-hosted Bot for: <span id="kf-add-kfname" class="text-purple-600"></span>
+          </h3>
+          <form onsubmit="submitAddCoTenant(event)">
+            <input type="hidden" id="kf-add-open-kfid">
+            <div class="grid grid-cols-2 gap-4 mb-4">
+              <div>
+                <label class="block text-xs font-medium text-gray-500 mb-1">Tenant ID *</label>
+                <input id="kf-add-tenant-id" required pattern="[a-zA-Z0-9_-]+"
+                  class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-purple-500 focus:outline-none"
+                  placeholder="kf-new-bot">
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-gray-500 mb-1">Display Name *</label>
+                <input id="kf-add-name" required
+                  class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-purple-500 focus:outline-none"
+                  placeholder="New KF Bot">
+              </div>
+            </div>
+            <div class="mb-4">
+              <label class="block text-xs font-medium text-gray-500 mb-1">Config Template</label>
+              <div class="flex gap-3">
+                <label class="flex items-center gap-2 px-3 py-2 border rounded-lg cursor-pointer hover:bg-purple-50 has-[:checked]:border-purple-500 has-[:checked]:bg-purple-50">
+                  <input type="radio" name="kf-add-template" value="inherit" checked class="text-purple-600">
+                  <div>
+                    <span class="text-sm font-medium">Inherit from Primary</span>
+                    <p class="text-[10px] text-gray-400">Same tools, memory, quota, capabilities</p>
+                  </div>
+                </label>
+                <label class="flex items-center gap-2 px-3 py-2 border rounded-lg cursor-pointer hover:bg-gray-50 has-[:checked]:border-purple-500 has-[:checked]:bg-purple-50">
+                  <input type="radio" name="kf-add-template" value="minimal" class="text-purple-600">
+                  <div>
+                    <span class="text-sm font-medium">Minimal</span>
+                    <p class="text-[10px] text-gray-400">Bare config, all tools enabled, defaults</p>
+                  </div>
+                </label>
+              </div>
+            </div>
+            <div class="mb-4">
+              <label class="block text-xs font-medium text-gray-500 mb-1">System Prompt (optional, leave blank to inherit)</label>
+              <textarea id="kf-add-prompt" rows="3"
+                class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-purple-500 focus:outline-none"
+                placeholder="Leave blank to inherit primary's system prompt..."></textarea>
+            </div>
+            <div class="grid grid-cols-3 gap-4 mb-4">
+              <div class="flex items-center gap-2">
+                <input id="kf-add-trial" type="checkbox" class="rounded">
+                <label for="kf-add-trial" class="text-sm text-gray-600">Override Trial</label>
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-gray-500 mb-1">Trial Hours</label>
+                <input id="kf-add-trial-hours" type="number" value="48"
+                  class="w-full border rounded-lg px-3 py-2 text-sm">
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-gray-500 mb-1">6h Token Quota (0=unlimited)</label>
+                <input id="kf-add-token-quota" type="number" value="500000"
+                  class="w-full border rounded-lg px-3 py-2 text-sm">
+              </div>
+            </div>
+
+            <!-- Advanced Settings (collapsible) -->
+            <details class="mb-4">
+              <summary class="text-sm font-medium text-gray-500 cursor-pointer hover:text-gray-700 mb-3">Advanced Settings (override inherited values)</summary>
+              <div class="border rounded-lg p-4 space-y-4 bg-gray-50">
+                <!-- Approval & Deploy -->
+                <div class="grid grid-cols-3 gap-4">
+                  <div>
+                    <label class="block text-xs font-medium text-gray-500 mb-1">Approval Duration (days, 0=permanent)</label>
+                    <input id="kf-add-approval-days" type="number" placeholder="30"
+                      class="w-full border rounded-lg px-3 py-2 text-sm bg-white">
+                  </div>
+                  <div>
+                    <label class="block text-xs font-medium text-gray-500 mb-1">Deploy Free Quota (0=unlimited)</label>
+                    <input id="kf-add-deploy-quota" type="number" placeholder="1"
+                      class="w-full border rounded-lg px-3 py-2 text-sm bg-white">
+                  </div>
+                  <div class="flex items-center gap-2 pt-4">
+                    <input id="kf-add-custom-persona" type="checkbox" class="rounded">
+                    <label for="kf-add-custom-persona" class="text-xs text-gray-600">Custom Persona</label>
+                  </div>
+                </div>
+
+                <!-- Rate Limits -->
+                <div>
+                  <p class="text-xs font-medium text-gray-500 mb-2">Rate Limits</p>
+                  <div class="grid grid-cols-2 gap-4">
+                    <div>
+                      <label class="block text-[10px] text-gray-400 mb-1">Tenant RPM (0=default 60)</label>
+                      <input id="kf-add-rate-rpm" type="number" placeholder="0"
+                        class="w-full border rounded-lg px-3 py-2 text-sm bg-white">
+                    </div>
+                    <div>
+                      <label class="block text-[10px] text-gray-400 mb-1">User RPM (0=default 10)</label>
+                      <input id="kf-add-rate-user-rpm" type="number" placeholder="0"
+                        class="w-full border rounded-lg px-3 py-2 text-sm bg-white">
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Monthly Quotas -->
+                <div>
+                  <p class="text-xs font-medium text-gray-500 mb-2">Monthly Quotas</p>
+                  <div class="grid grid-cols-2 gap-4">
+                    <div>
+                      <label class="block text-[10px] text-gray-400 mb-1">API Calls (0=unlimited)</label>
+                      <input id="kf-add-monthly-calls" type="number" placeholder="0"
+                        class="w-full border rounded-lg px-3 py-2 text-sm bg-white">
+                    </div>
+                    <div>
+                      <label class="block text-[10px] text-gray-400 mb-1">Tokens (0=unlimited)</label>
+                      <input id="kf-add-monthly-tokens" type="number" placeholder="0"
+                        class="w-full border rounded-lg px-3 py-2 text-sm bg-white">
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Memory Config -->
+                <div>
+                  <p class="text-xs font-medium text-gray-500 mb-2">Memory System</p>
+                  <div class="grid grid-cols-2 gap-4 mb-2">
+                    <label class="flex items-center gap-2">
+                      <input id="kf-add-mem-diary" type="checkbox" class="rounded" checked>
+                      <span class="text-xs text-gray-600">Diary (LLM summarize each interaction)</span>
+                    </label>
+                    <label class="flex items-center gap-2">
+                      <input id="kf-add-mem-context" type="checkbox" class="rounded" checked>
+                      <span class="text-xs text-gray-600">Inject memory context into prompt</span>
+                    </label>
+                  </div>
+                  <div class="grid grid-cols-3 gap-4">
+                    <div>
+                      <label class="block text-[10px] text-gray-400 mb-1">Journal Max (0=no compress)</label>
+                      <input id="kf-add-mem-journal" type="number" placeholder="800"
+                        class="w-full border rounded-lg px-3 py-2 text-sm bg-white">
+                    </div>
+                    <div>
+                      <label class="block text-[10px] text-gray-400 mb-1">Chat Rounds</label>
+                      <input id="kf-add-mem-rounds" type="number" placeholder="5"
+                        class="w-full border rounded-lg px-3 py-2 text-sm bg-white">
+                    </div>
+                    <div>
+                      <label class="block text-[10px] text-gray-400 mb-1">Chat TTL (seconds)</label>
+                      <input id="kf-add-mem-ttl" type="number" placeholder="3600"
+                        class="w-full border rounded-lg px-3 py-2 text-sm bg-white">
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Admin Names -->
+                <div>
+                  <label class="block text-xs font-medium text-gray-500 mb-1">Admin Names (comma-separated)</label>
+                  <input id="kf-add-admin-names" type="text" placeholder="吴天骄, Steven"
+                    class="w-full border rounded-lg px-3 py-2 text-sm bg-white">
+                </div>
+              </div>
+            </details>
+            <div class="flex items-center gap-3">
+              <button id="kf-add-submit-btn" type="submit"
+                class="bg-purple-600 text-white px-6 py-2 rounded-lg hover:bg-purple-700 transition text-sm font-medium">
+                Add Co-tenant
+              </button>
+              <button type="button" onclick="document.getElementById('kf-add-form').classList.add('hidden')"
+                class="text-gray-500 px-4 py-2 rounded-lg hover:bg-gray-100 text-sm">Cancel</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <!-- Edit Tenant Modal -->
+    <div id="edit-tenant-modal" class="hidden fixed inset-0 bg-black/50 z-50 flex items-center justify-center">
+      <div class="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto p-6 m-4">
+        <div class="flex justify-between items-center mb-4">
+          <h3 class="text-lg font-semibold">Edit Tenant: <span id="edit-tid" class="text-blue-600"></span></h3>
+          <button onclick="closeEditModal()" class="text-gray-400 hover:text-gray-600 text-xl">&times;</button>
+        </div>
+        <form onsubmit="submitEditTenant(event)" class="space-y-5">
+          <!-- Name -->
+          <div>
+            <label class="block text-xs font-medium text-gray-500 mb-1">Display Name</label>
+            <input id="edit-name" class="w-full border rounded-lg px-3 py-2 text-sm">
+          </div>
+          <!-- System Prompt -->
+          <div>
+            <label class="block text-xs font-medium text-gray-500 mb-1">System Prompt</label>
+            <textarea id="edit-prompt" rows="5" class="w-full border rounded-lg px-3 py-2 text-sm resize-y"></textarea>
+          </div>
+          <!-- Persona -->
+          <label class="flex items-center gap-2 text-sm text-gray-600">
+            <input id="edit-custom-persona" type="checkbox" class="rounded">
+            Custom Persona (skip generic behavior rules)
+          </label>
+          <!-- Trial & Quota -->
+          <div>
+            <p class="text-xs font-medium text-gray-500 mb-2">Trial & Quota</p>
+            <div class="grid grid-cols-2 gap-3">
+              <label class="flex items-center gap-2 text-sm text-gray-600 col-span-2">
+                <input id="edit-trial-enabled" type="checkbox" class="rounded">
+                Enable Trial Period
+              </label>
+              <div>
+                <label class="block text-[10px] text-gray-400 mb-1">Trial Hours</label>
+                <input id="edit-trial-hours" type="number" class="w-full border rounded-lg px-3 py-2 text-sm">
+              </div>
+              <div>
+                <label class="block text-[10px] text-gray-400 mb-1">Approval Duration (days, 0=permanent)</label>
+                <input id="edit-approval-days" type="number" class="w-full border rounded-lg px-3 py-2 text-sm">
+              </div>
+              <div>
+                <label class="block text-[10px] text-gray-400 mb-1">6h Token Quota (0=unlimited)</label>
+                <input id="edit-token-quota" type="number" class="w-full border rounded-lg px-3 py-2 text-sm">
+              </div>
+              <div>
+                <label class="block text-[10px] text-gray-400 mb-1">Deploy Free Quota (0=unlimited)</label>
+                <input id="edit-deploy-quota" type="number" class="w-full border rounded-lg px-3 py-2 text-sm">
+              </div>
+            </div>
+          </div>
+          <!-- Rate Limits & Monthly Quotas -->
+          <div>
+            <p class="text-xs font-medium text-gray-500 mb-2">Rate Limits & Monthly Quotas</p>
+            <div class="grid grid-cols-2 gap-3">
+              <div>
+                <label class="block text-[10px] text-gray-400 mb-1">Tenant RPM (0=default 60)</label>
+                <input id="edit-rate-rpm" type="number" class="w-full border rounded-lg px-3 py-2 text-sm">
+              </div>
+              <div>
+                <label class="block text-[10px] text-gray-400 mb-1">User RPM (0=default 10)</label>
+                <input id="edit-rate-user-rpm" type="number" class="w-full border rounded-lg px-3 py-2 text-sm">
+              </div>
+              <div>
+                <label class="block text-[10px] text-gray-400 mb-1">Monthly API Calls (0=unlimited)</label>
+                <input id="edit-monthly-calls" type="number" class="w-full border rounded-lg px-3 py-2 text-sm">
+              </div>
+              <div>
+                <label class="block text-[10px] text-gray-400 mb-1">Monthly Tokens (0=unlimited)</label>
+                <input id="edit-monthly-tokens" type="number" class="w-full border rounded-lg px-3 py-2 text-sm">
+              </div>
+            </div>
+          </div>
+          <!-- Memory -->
+          <div>
+            <p class="text-xs font-medium text-gray-500 mb-2">Memory System</p>
+            <div class="grid grid-cols-2 gap-3 mb-2">
+              <label class="flex items-center gap-2 text-sm text-gray-600">
+                <input id="edit-mem-diary" type="checkbox" class="rounded">
+                Diary (LLM summarize interactions)
+              </label>
+              <label class="flex items-center gap-2 text-sm text-gray-600">
+                <input id="edit-mem-context" type="checkbox" class="rounded">
+                Inject memory into prompt
+              </label>
+            </div>
+            <div class="grid grid-cols-3 gap-3">
+              <div>
+                <label class="block text-[10px] text-gray-400 mb-1">Journal Max</label>
+                <input id="edit-mem-journal" type="number" class="w-full border rounded-lg px-3 py-2 text-sm">
+              </div>
+              <div>
+                <label class="block text-[10px] text-gray-400 mb-1">Chat Rounds</label>
+                <input id="edit-mem-rounds" type="number" class="w-full border rounded-lg px-3 py-2 text-sm">
+              </div>
+              <div>
+                <label class="block text-[10px] text-gray-400 mb-1">Chat TTL (seconds)</label>
+                <input id="edit-mem-ttl" type="number" class="w-full border rounded-lg px-3 py-2 text-sm">
+              </div>
+            </div>
+          </div>
+          <!-- Admin Names -->
+          <div>
+            <label class="block text-xs font-medium text-gray-500 mb-1">Admin Names (comma-separated)</label>
+            <input id="edit-admin-names" type="text" class="w-full border rounded-lg px-3 py-2 text-sm">
+          </div>
+          <!-- Submit -->
+          <div class="flex items-center gap-3 pt-3 border-t">
+            <button id="edit-submit-btn" type="submit"
+              class="bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700 text-sm font-medium">
+              Save Changes
+            </button>
+            <button type="button" onclick="closeEditModal()" class="text-gray-500 px-4 py-2 rounded-lg hover:bg-gray-100 text-sm">Cancel</button>
+            <span id="edit-status" class="text-sm ml-auto"></span>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- Logs Tab -->
+    <div id="panel-logs" class="hidden fade-in">
+      <div class="bg-white rounded-xl shadow-sm p-6">
+        <!-- Controls -->
+        <div class="flex flex-wrap items-center gap-3 mb-4">
+          <label class="text-sm font-medium text-gray-600">Instance:</label>
+          <select id="logs-instance-select" onchange="loadLogs()"
+            class="border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
+          </select>
+          <label class="text-sm font-medium text-gray-600 ml-2">Lines:</label>
+          <select id="logs-lines" onchange="loadLogs()"
+            class="border rounded-lg px-2 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
+            <option value="100">100</option>
+            <option value="200" selected>200</option>
+            <option value="500">500</option>
+            <option value="1000">1000</option>
+          </select>
+          <label class="text-sm font-medium text-gray-600 ml-2">Since:</label>
+          <select id="logs-since" onchange="loadLogs()"
+            class="border rounded-lg px-2 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
+            <option value="">All</option>
+            <option value="5m">5 min</option>
+            <option value="30m" selected>30 min</option>
+            <option value="1h">1 hour</option>
+            <option value="6h">6 hours</option>
+            <option value="24h">24 hours</option>
+          </select>
+          <label class="text-sm font-medium text-gray-600 ml-2">Level:</label>
+          <select id="logs-level" onchange="loadLogs()"
+            class="border rounded-lg px-2 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
+            <option value="">All</option>
+            <option value="ERROR">ERROR</option>
+            <option value="WARNING">WARNING</option>
+            <option value="INFO">INFO</option>
+          </select>
+          <input id="logs-grep" type="text" placeholder="Search..."
+            class="border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none w-40"
+            onkeydown="if(event.key==='Enter')loadLogs()">
+          <button onclick="loadLogs()" class="bg-blue-600 text-white px-3 py-2 rounded-lg hover:bg-blue-700 text-sm">Refresh</button>
+          <label class="text-sm text-gray-500 ml-2">
+            <input type="checkbox" id="logs-auto-refresh" class="mr-1" checked>Auto (5s)
+          </label>
+        </div>
+        <!-- Error summary -->
+        <div id="logs-error-summary" class="hidden mb-3 bg-red-50 border border-red-200 rounded-lg p-3">
+          <div class="flex justify-between items-center">
+            <span class="text-sm font-medium text-red-700" id="logs-error-count"></span>
+            <button onclick="toggleErrorPanel()" class="text-xs text-red-600 hover:underline" id="logs-error-toggle">Show errors</button>
+          </div>
+          <pre id="logs-error-detail" class="hidden mt-2 text-xs text-red-800 whitespace-pre-wrap max-h-40 overflow-y-auto"></pre>
+        </div>
+        <!-- Stats -->
+        <div class="flex items-center gap-4 mb-2 text-xs text-gray-400">
+          <span id="logs-stats"></span>
+        </div>
+        <!-- Log output -->
+        <div class="relative">
+          <pre id="logs-output" class="bg-gray-900 text-gray-100 rounded-lg p-4 text-xs font-mono overflow-auto whitespace-pre-wrap"
+            style="max-height: 70vh; min-height: 300px;">Select an instance to view logs</pre>
+          <button onclick="scrollLogsToBottom()" title="Scroll to bottom"
+            class="absolute bottom-3 right-3 bg-gray-700 text-gray-300 px-2 py-1 rounded text-xs hover:bg-gray-600 opacity-70 hover:opacity-100">
+            &darr; Bottom
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Identities Tab -->
+    <div id="panel-identities" class="hidden fade-in">
+      <div class="space-y-6">
+        <!-- 选择租户 + 操作按钮 -->
+        <div class="bg-white rounded-xl shadow-sm border p-6">
+          <div class="flex justify-between items-center mb-4">
+            <h3 class="text-lg font-semibold">Cross-Platform Identities</h3>
+            <div class="flex items-center gap-3">
+              <select id="identity-tenant-select" onchange="loadIdentities()"
+                class="text-sm border rounded-lg px-3 py-1.5 bg-gray-50">
+              </select>
+              <button onclick="showLinkIdentityModal()"
+                class="px-3 py-1.5 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700">
+                Link Identity
+              </button>
+            </div>
+          </div>
+          <div id="identities-table-container">
+            <table class="w-full text-sm">
+              <thead>
+                <tr class="text-left text-gray-500 border-b">
+                  <th class="pb-2 pr-4">Name</th>
+                  <th class="pb-2 pr-4">Identity ID</th>
+                  <th class="pb-2 pr-4">Linked Platforms</th>
+                  <th class="pb-2 pr-4">Created</th>
+                  <th class="pb-2">Actions</th>
+                </tr>
+              </thead>
+              <tbody id="identities-tbody"></tbody>
+            </table>
+            <p id="identities-empty" class="hidden text-gray-400 text-center py-8">No identities found</p>
+          </div>
+        </div>
+
+        <!-- Channels 配置 -->
+        <div class="bg-white rounded-xl shadow-sm border p-6">
+          <div class="flex justify-between items-center mb-4">
+            <h3 class="text-lg font-semibold">Bot Channels</h3>
+            <button onclick="showAddChannelModal()"
+              class="px-3 py-1.5 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700">
+              + Add Channel
+            </button>
+          </div>
+          <div id="channels-container">
+            <table class="w-full text-sm">
+              <thead>
+                <tr class="text-left text-gray-500 border-b">
+                  <th class="pb-2 pr-4">Channel ID</th>
+                  <th class="pb-2 pr-4">Platform</th>
+                  <th class="pb-2 pr-4">Status</th>
+                  <th class="pb-2 pr-4">Credentials</th>
+                  <th class="pb-2">Actions</th>
+                </tr>
+              </thead>
+              <tbody id="channels-tbody"></tbody>
+            </table>
+            <p id="channels-empty" class="hidden text-gray-400 text-center py-8">No channels configured</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Link Identity Modal (redesigned: select from trial users) -->
+    <div id="link-identity-modal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center">
+      <div class="bg-white rounded-xl shadow-xl p-6 w-full max-w-lg">
+        <h3 class="text-lg font-semibold mb-4">Link / Create Identity</h3>
+        <div class="space-y-4">
+          <!-- Step 1: Select user from known users -->
+          <div>
+            <label class="text-sm font-medium text-gray-700">Select User</label>
+            <p class="text-xs text-gray-400 mb-1">Choose from users who have interacted with this bot</p>
+            <select id="link-id-user-select" onchange="onLinkUserSelect()"
+              class="w-full text-sm border rounded-lg px-3 py-2 mt-1">
+              <option value="">-- Select a user --</option>
+            </select>
+          </div>
+
+          <!-- Auto-filled from selection -->
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="text-sm text-gray-600">Platform</label>
+              <input id="link-id-platform" type="text" readonly
+                class="w-full text-sm border rounded-lg px-3 py-2 mt-1 bg-gray-50">
+            </div>
+            <div>
+              <label class="text-sm text-gray-600">Platform User ID</label>
+              <input id="link-id-pid" type="text" readonly
+                class="w-full text-sm border rounded-lg px-3 py-2 mt-1 bg-gray-50 font-mono text-xs">
+            </div>
+          </div>
+
+          <!-- Step 2: Link to existing identity or create new -->
+          <div>
+            <label class="text-sm font-medium text-gray-700">Link to Identity</label>
+            <select id="link-id-target" onchange="onLinkTargetChange()"
+              class="w-full text-sm border rounded-lg px-3 py-2 mt-1">
+              <option value="__new__">Create New Identity</option>
+            </select>
+          </div>
+
+          <!-- Name (for new identity) -->
+          <div id="link-id-name-row">
+            <label class="text-sm text-gray-600">Name</label>
+            <input id="link-id-name" type="text" placeholder="User display name"
+              class="w-full text-sm border rounded-lg px-3 py-2 mt-1">
+          </div>
+
+          <!-- Manual input toggle -->
+          <details class="text-xs text-gray-400">
+            <summary class="cursor-pointer hover:text-gray-600">Manual input (advanced)</summary>
+            <div class="mt-2 space-y-2 p-3 bg-gray-50 rounded-lg">
+              <div>
+                <label class="text-xs text-gray-500">Override Platform</label>
+                <select id="link-id-platform-manual" class="w-full text-xs border rounded px-2 py-1 mt-1">
+                  <option value="">-- use selected --</option>
+                  <option value="feishu">feishu</option>
+                  <option value="wecom">wecom</option>
+                  <option value="wecom_kf">wecom_kf</option>
+                  <option value="qq">qq</option>
+                </select>
+              </div>
+              <div>
+                <label class="text-xs text-gray-500">Override Platform User ID</label>
+                <input id="link-id-pid-manual" type="text" placeholder="e.g. ou_xxxx"
+                  class="w-full text-xs border rounded px-2 py-1 mt-1 font-mono">
+              </div>
+              <div>
+                <label class="text-xs text-gray-500">Override Identity ID</label>
+                <input id="link-id-identity-manual" type="text" placeholder="UUID (optional)"
+                  class="w-full text-xs border rounded px-2 py-1 mt-1 font-mono">
+              </div>
+            </div>
+          </details>
+        </div>
+        <div class="flex justify-end gap-2 mt-4">
+          <button onclick="closeLinkIdentityModal()"
+            class="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg">Cancel</button>
+          <button onclick="submitLinkIdentity()"
+            class="px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700">Link</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Add/Edit Channel Modal -->
+    <div id="channel-modal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center">
+      <div class="bg-white rounded-xl shadow-xl p-6 w-full max-w-lg">
+        <h3 id="channel-modal-title" class="text-lg font-semibold mb-4">Add Channel</h3>
+        <input type="hidden" id="ch-edit-id" value="">
+        <div class="space-y-3">
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="text-sm text-gray-600">Platform</label>
+              <select id="ch-platform" onchange="onChannelPlatformChange()"
+                class="w-full text-sm border rounded-lg px-3 py-2 mt-1">
+                <option value="feishu">Feishu</option>
+                <option value="wecom">WeCom</option>
+                <option value="wecom_kf">WeCom KF</option>
+                <option value="qq">QQ</option>
+              </select>
+            </div>
+            <div>
+              <label class="text-sm text-gray-600">Channel ID</label>
+              <input id="ch-channel-id" type="text" placeholder="auto-generated"
+                class="w-full text-sm border rounded-lg px-3 py-2 mt-1 font-mono">
+            </div>
+          </div>
+          <div class="flex items-center gap-2">
+            <input id="ch-enabled" type="checkbox" checked class="rounded">
+            <label class="text-sm text-gray-600">Enabled</label>
+          </div>
+
+          <!-- Dynamic credential fields per platform -->
+          <div id="ch-creds-feishu" class="space-y-2">
+            <p class="text-xs font-medium text-gray-500 uppercase tracking-wider">Feishu Credentials</p>
+            <input id="ch-app-id" type="text" placeholder="App ID (cli_xxx)"
+              class="w-full text-sm border rounded-lg px-3 py-2">
+            <input id="ch-app-secret" type="password" placeholder="App Secret"
+              class="w-full text-sm border rounded-lg px-3 py-2">
+            <input id="ch-verification-token" type="text" placeholder="Verification Token"
+              class="w-full text-sm border rounded-lg px-3 py-2">
+            <input id="ch-encrypt-key" type="text" placeholder="Encrypt Key"
+              class="w-full text-sm border rounded-lg px-3 py-2">
+          </div>
+
+          <div id="ch-creds-wecom" class="space-y-2 hidden">
+            <p class="text-xs font-medium text-gray-500 uppercase tracking-wider">WeCom Credentials</p>
+            <input id="ch-wecom-corpid" type="text" placeholder="Corp ID (wwXXXX)"
+              class="w-full text-sm border rounded-lg px-3 py-2">
+            <input id="ch-wecom-corpsecret" type="password" placeholder="Corp Secret"
+              class="w-full text-sm border rounded-lg px-3 py-2">
+            <input id="ch-wecom-agent-id" type="number" placeholder="Agent ID"
+              class="w-full text-sm border rounded-lg px-3 py-2">
+            <input id="ch-wecom-token" type="text" placeholder="Token"
+              class="w-full text-sm border rounded-lg px-3 py-2">
+            <input id="ch-wecom-aes-key" type="text" placeholder="Encoding AES Key"
+              class="w-full text-sm border rounded-lg px-3 py-2">
+          </div>
+
+          <div id="ch-creds-wecom_kf" class="space-y-2 hidden">
+            <p class="text-xs font-medium text-gray-500 uppercase tracking-wider">WeCom KF Credentials</p>
+            <input id="ch-kf-corpid" type="text" placeholder="Corp ID (wwXXXX)"
+              class="w-full text-sm border rounded-lg px-3 py-2">
+            <input id="ch-kf-secret" type="password" placeholder="KF Secret"
+              class="w-full text-sm border rounded-lg px-3 py-2">
+            <input id="ch-kf-token" type="text" placeholder="KF Token"
+              class="w-full text-sm border rounded-lg px-3 py-2">
+            <input id="ch-kf-aes-key" type="text" placeholder="KF Encoding AES Key"
+              class="w-full text-sm border rounded-lg px-3 py-2">
+            <input id="ch-kf-open-kfid" type="text" placeholder="Open KFID (wkXXXX)"
+              class="w-full text-sm border rounded-lg px-3 py-2">
+          </div>
+
+          <div id="ch-creds-qq" class="space-y-2 hidden">
+            <p class="text-xs font-medium text-gray-500 uppercase tracking-wider">QQ Credentials</p>
+            <input id="ch-qq-app-id" type="text" placeholder="QQ App ID"
+              class="w-full text-sm border rounded-lg px-3 py-2">
+            <input id="ch-qq-app-secret" type="password" placeholder="QQ App Secret"
+              class="w-full text-sm border rounded-lg px-3 py-2">
+            <input id="ch-qq-token" type="text" placeholder="QQ Token (Ed25519 seed)"
+              class="w-full text-sm border rounded-lg px-3 py-2">
+          </div>
+
+          <!-- Webhook URL hint -->
+          <div id="ch-webhook-hint" class="p-2 bg-blue-50 rounded text-xs text-blue-700">
+            Webhook URL: <code id="ch-webhook-url" class="font-mono">-</code>
+          </div>
+        </div>
+        <div class="flex justify-end gap-2 mt-4">
+          <button onclick="closeChannelModal()"
+            class="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg">Cancel</button>
+          <button onclick="submitChannel()"
+            class="px-4 py-2 text-sm bg-green-600 text-white rounded-lg hover:bg-green-700">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Super Admin Tab -->
+    <div id="panel-superadmin" class="hidden fade-in">
+      <div class="space-y-6">
+        <!-- 超管身份 -->
+        <div class="bg-white rounded-xl shadow-sm border p-6">
+          <div class="flex justify-between items-center mb-4">
+            <h3 class="text-lg font-semibold">Super Admin Identity</h3>
+            <button onclick="saveSuperAdmin()" class="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700">Save</button>
+          </div>
+          <div class="mb-4">
+            <label class="block text-sm text-gray-600 mb-1">Name (跨平台匹配)</label>
+            <input id="sa-name" type="text" class="w-full border rounded-lg px-3 py-2 text-sm" placeholder="吴天骄">
+          </div>
+          <h4 class="text-sm font-medium text-gray-700 mb-2">Platform Identities</h4>
+          <div id="sa-identities" class="space-y-2"></div>
+          <button onclick="addIdentityRow()" class="mt-3 text-sm text-blue-600 hover:underline">+ Add Identity</button>
+        </div>
+
+        <!-- 开通审批队列 -->
+        <div class="bg-white rounded-xl shadow-sm border p-6">
+          <div class="flex justify-between items-center mb-4">
+            <h3 class="text-lg font-semibold">Provision Requests</h3>
+            <select id="req-filter" onchange="loadProvisionRequests()" class="border rounded-lg px-2 py-1 text-sm">
+              <option value="pending">Pending</option>
+              <option value="all">All</option>
+            </select>
+          </div>
+          <table class="w-full text-sm">
+            <thead><tr class="text-left text-gray-500 border-b">
+              <th class="pb-2">ID</th><th class="pb-2">Requester</th><th class="pb-2">Name</th>
+              <th class="pb-2">Platform</th><th class="pb-2">Status</th><th class="pb-2">Actions</th>
+            </tr></thead>
+            <tbody id="requests-tbody">
+              <tr><td colspan="6" class="text-center text-gray-400 py-8">Loading...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── State ──
+let TOKEN = localStorage.getItem('admin_token') || '';
+let tenantsData = [];
+let usersData = [];
+let usersTrialDurationHours = 48;
+let currentFilter = 'all';
+
+// ── API ──
+async function api(path, opts = {}) {
+  const res = await fetch(`/admin/api${path}`, {
+    cache: 'no-store',
+    ...opts,
+    headers: {
+      'Authorization': `Bearer ${TOKEN}`,
+      'Content-Type': 'application/json',
+      ...(opts.headers || {}),
+    },
+  });
+  if (res.status === 401) { logout(); throw new Error('Unauthorized'); }
+  if (!res.ok) {
+    let msg = `API error: ${res.status}`;
+    try { const e = await res.json(); msg = e.detail || e.error || msg; } catch {}
+    throw new Error(msg);
+  }
+  return res.json();
+}
+
+// ── Auth ──
+async function login() {
+  const input = document.getElementById('token-input');
+  const err = document.getElementById('login-error');
+  TOKEN = input.value.trim();
+  if (!TOKEN) { err.textContent = 'Please enter token'; err.classList.remove('hidden'); return; }
+
+  try {
+    await api('/tenants');
+    localStorage.setItem('admin_token', TOKEN);
+    showDashboard();
+  } catch (e) {
+    err.textContent = 'Invalid token';
+    err.classList.remove('hidden');
+    TOKEN = '';
+  }
+}
+
+function logout() {
+  TOKEN = '';
+  localStorage.removeItem('admin_token');
+  document.getElementById('dashboard-view').classList.add('hidden');
+  document.getElementById('login-view').classList.remove('hidden');
+}
+
+function showDashboard() {
+  document.getElementById('login-view').classList.add('hidden');
+  document.getElementById('dashboard-view').classList.remove('hidden');
+  refreshAll();
+}
+
+// ── Tabs ──
+function switchTab(tab) {
+  document.querySelectorAll('.tab-btn').forEach(b => {
+    b.className = 'tab-btn px-4 py-2 rounded-lg font-medium text-sm bg-gray-100 text-gray-600 hover:bg-gray-200';
+  });
+  document.getElementById(`tab-${tab}`).className =
+    'tab-btn px-4 py-2 rounded-lg font-medium text-sm bg-blue-100 text-blue-700';
+
+  ['overview', 'users', 'usage', 'instances', 'logs', 'identities', 'superadmin'].forEach(p => {
+    const el = document.getElementById(`panel-${p}`);
+    if (el) el.classList.toggle('hidden', p !== tab);
+  });
+
+  if (tab === 'users') loadUsers();
+  if (tab === 'usage') loadUsage();
+  if (tab === 'instances') loadInstances();
+  if (tab === 'logs') initLogsTab();
+  if (tab === 'identities') loadIdentities();
+  if (tab === 'superadmin') { loadSuperAdmin(); loadProvisionRequests(); }
+}
+
+// ── Overview ──
+async function loadOverview() {
+  try {
+    const [tenantRes, usageRes] = await Promise.all([
+      api('/tenants'),
+      api('/usage'),
+    ]);
+    tenantsData = tenantRes.tenants;
+    const usageMap = usageRes.tenants || {};
+
+    // Populate user tenant selector
+    const sel = document.getElementById('user-tenant-select');
+    sel.innerHTML = tenantsData.map(t =>
+      `<option value="${t.tenant_id}">${t.name || t.tenant_id}</option>`
+    ).join('');
+
+    // Render cards
+    const container = document.getElementById('tenant-cards');
+    if (!tenantsData.length) {
+      container.innerHTML = '<div class="text-gray-400 p-8 text-center">No tenants found</div>';
+      return;
+    }
+
+    container.innerHTML = tenantsData.map(t => {
+      const u = usageMap[t.tenant_id] || {};
+      const calls = u.api_calls || 0;
+      const tokens = (parseInt(u.input_tokens || 0) + parseInt(u.output_tokens || 0));
+      const platformBadge = {
+        feishu: '<span class="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded">Feishu</span>',
+        wecom: '<span class="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded">WeCom</span>',
+        wecom_kf: '<span class="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded">WeCom KF</span>',
+        qq: '<span class="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded">QQ</span>',
+      }[t.platform] || `<span class="text-xs bg-gray-100 text-gray-700 px-2 py-0.5 rounded">${t.platform}</span>`;
+
+      const hostBadge = t.host_instance
+        ? `<span class="text-[10px] bg-purple-50 text-purple-500 px-1.5 py-0.5 rounded mt-1 inline-block">on ${t.host_instance}</span>`
+        : '';
+
+      return `
+        <div class="bg-white rounded-xl shadow-sm p-5 hover:shadow-md transition">
+          <div class="flex justify-between items-start mb-3">
+            <div>
+              <h3 class="font-semibold text-gray-800">${t.name || t.tenant_id}</h3>
+              <p class="text-xs text-gray-400 mt-0.5">${t.tenant_id} ${hostBadge}</p>
+            </div>
+            <div class="flex items-center gap-2">
+              <button onclick="openEditModal('${t.tenant_id}')" class="text-xs text-blue-500 hover:text-blue-700 hover:underline">Edit</button>
+              ${platformBadge}
+            </div>
+          </div>
+          <div class="grid grid-cols-2 gap-3 text-sm">
+            <div>
+              <p class="text-gray-400 text-xs">API Calls (month)</p>
+              <p class="font-medium text-gray-700">${calls.toLocaleString()}</p>
+            </div>
+            <div>
+              <p class="text-gray-400 text-xs">Tokens (month)</p>
+              <p class="font-medium text-gray-700">${tokens.toLocaleString()}</p>
+            </div>
+            <div>
+              <p class="text-gray-400 text-xs">Trial</p>
+              <p class="font-medium ${t.trial_enabled ? 'text-blue-600' : 'text-gray-400'}">
+                ${t.trial_enabled ? t.trial_duration_hours + 'h' : 'Off'}
+              </p>
+            </div>
+            <div>
+              <p class="text-gray-400 text-xs">Approval</p>
+              <p class="font-medium text-gray-700">${t.approval_duration_days ? t.approval_duration_days + 'd' : 'Permanent'}</p>
+            </div>
+            <div>
+              <p class="text-gray-400 text-xs">6h Token Quota</p>
+              <p class="font-medium text-gray-700">${t.quota_user_tokens_6h ? formatTokens(t.quota_user_tokens_6h) : 'Unlimited'}</p>
+            </div>
+            <div>
+              <p class="text-gray-400 text-xs">Memory</p>
+              <p class="font-medium text-gray-700 text-xs">
+                ${t.memory_diary_enabled !== false ? '📓' : ''}${t.memory_context_enabled !== false ? '🧠' : ''}
+                ${t.memory_chat_rounds || 5}r / ${t.memory_chat_ttl ? Math.round(t.memory_chat_ttl/60)+'m' : '60m'}
+              </p>
+            </div>
+            <div>
+              <p class="text-gray-400 text-xs">Rate / Deploy</p>
+              <p class="font-medium text-gray-700 text-xs">
+                ${t.rate_limit_rpm || 60} rpm · ${t.deploy_free_quota === 0 ? '∞' : (t.deploy_free_quota || 1)} deploy
+              </p>
+            </div>
+            ${t.wecom_kf_open_kfid ? `<div class="col-span-2">
+              <p class="text-gray-400 text-xs">KF ID</p>
+              <p class="font-mono text-xs text-gray-500 select-all truncate" title="${t.wecom_kf_open_kfid}">${t.wecom_kf_open_kfid}</p>
+            </div>` : ''}
+          </div>
+        </div>`;
+    }).join('');
+  } catch (e) {
+    console.error('loadOverview failed:', e);
+  }
+}
+
+// ── Users ──
+async function loadUsers() {
+  const tid = document.getElementById('user-tenant-select').value;
+  if (!tid) return;
+
+  const tbody = document.getElementById('users-tbody');
+  tbody.innerHTML = '<tr><td colspan="7" class="text-center text-gray-400 py-8">Loading...</td></tr>';
+
+  try {
+    const res = await api(`/trial/${tid}/users`);
+    usersData = res.users || [];
+    usersTrialDurationHours = res.trial_duration_hours || 48;
+    document.getElementById('user-count').textContent = `${res.total} users`;
+    renderUsers();
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="7" class="text-center text-red-400 py-8">${e.message}</td></tr>`;
+  }
+}
+
+function filterUsers(status) {
+  currentFilter = status;
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('ring-2', 'ring-blue-400'));
+  event.target.classList.add('ring-2', 'ring-blue-400');
+  renderUsers();
+}
+
+function renderUsers() {
+  const tbody = document.getElementById('users-tbody');
+  let filtered = currentFilter === 'all' ? usersData : usersData.filter(u => u.status === currentFilter);
+
+  if (!filtered.length) {
+    tbody.innerHTML = '<tr><td colspan="8" class="text-center text-gray-400 py-8">No users</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = filtered.map(u => {
+    const uid = u.user_id || '';
+    const shortId = uid.length > 20 ? uid.slice(0, 10) + '...' + uid.slice(-6) : uid;
+    const displayName = escapeHtml(u.display_name || '');
+    const status = u.status || 'trial';
+    let statusHtml = `<span class="status-${status} text-xs px-2 py-0.5 rounded-full font-medium">${status}</span>`;
+    if (status === 'trial' && u.first_seen) {
+      const expiresAt = new Date(new Date(u.first_seen).getTime() + usersTrialDurationHours * 3600000);
+      const remainMs = expiresAt - new Date();
+      if (remainMs > 0) {
+        const remainH = Math.floor(remainMs / 3600000);
+        const remainM = Math.floor((remainMs % 3600000) / 60000);
+        const isLow = remainH < 6;
+        statusHtml += `<br><span class="text-[10px] ${isLow ? 'text-orange-500' : 'text-gray-400'}">${remainH}h${remainM}m left</span>`;
+      } else {
+        statusHtml += `<br><span class="text-[10px] text-red-500">expired (pending sync)</span>`;
+      }
+    } else if (status === 'expired' && u.first_seen) {
+      const expiresAt = new Date(new Date(u.first_seen).getTime() + usersTrialDurationHours * 3600000);
+      statusHtml += `<br><span class="text-[10px] text-gray-400">since ${formatTime(expiresAt.toISOString())}</span>`;
+    } else if (status === 'approved' && u.approved_until) {
+      const untilMs = new Date(u.approved_until) - new Date();
+      const isExpired = untilMs <= 0;
+      const isExpiringSoon = untilMs > 0 && untilMs < 7 * 86400000;
+      const untilDate = formatTime(u.approved_until, { allowFuture: true });
+      const color = isExpired ? 'text-red-500' : isExpiringSoon ? 'text-orange-500' : 'text-gray-400';
+      statusHtml += `<br><span class="text-[10px] ${color}">expires ${untilDate}</span>`;
+    } else if (status === 'approved' && !u.approved_until) {
+      statusHtml += `<br><span class="text-[10px] text-gray-400">permanent</span>`;
+    }
+    const firstSeen = formatTime(u.first_seen);
+    const lastActive = formatTime(u.last_active);
+    const msgCount = u.message_count || '0';
+    const notes = escapeHtml(u.notes || '');
+
+    // Action buttons based on status
+    let actions = '';
+    if (status === 'trial' || status === 'expired') {
+      actions += `<button onclick="approveUser('${uid}')" class="text-xs bg-green-50 text-green-600 px-2 py-1 rounded hover:bg-green-100">Approve</button> `;
+      actions += `<button onclick="userAction('block','${uid}')" class="text-xs bg-red-50 text-red-600 px-2 py-1 rounded hover:bg-red-100">Block</button>`;
+    } else if (status === 'approved') {
+      actions += `<button onclick="approveUser('${uid}')" class="text-xs bg-green-50 text-green-600 px-2 py-1 rounded hover:bg-green-100">Renew</button> `;
+      actions += `<button onclick="userAction('block','${uid}')" class="text-xs bg-red-50 text-red-600 px-2 py-1 rounded hover:bg-red-100">Block</button>`;
+    } else if (status === 'blocked') {
+      actions += `<button onclick="approveUser('${uid}')" class="text-xs bg-green-50 text-green-600 px-2 py-1 rounded hover:bg-green-100">Approve</button>`;
+    }
+    actions += ` <button onclick="userAction('reset','${uid}')" class="text-xs bg-gray-50 text-gray-600 px-2 py-1 rounded hover:bg-gray-100">Reset</button>`;
+
+    return `<tr class="border-b hover:bg-gray-50">
+      <td class="py-2 px-2 font-medium text-gray-800">${displayName || '<span class="text-gray-300 italic">unknown</span>'}</td>
+      <td class="py-2 px-2 font-mono text-xs text-gray-400" title="${uid}">${shortId}</td>
+      <td class="py-2 px-2">${statusHtml}</td>
+      <td class="py-2 px-2 text-gray-500 text-xs">${firstSeen}</td>
+      <td class="py-2 px-2 text-gray-500 text-xs">${lastActive}</td>
+      <td class="py-2 px-2 text-center">${msgCount}</td>
+      <td class="py-2 px-2">
+        <input type="text" value="${notes}" placeholder="Add note..."
+          class="w-full border-0 border-b border-transparent hover:border-gray-300 focus:border-blue-500 focus:outline-none text-xs py-1 bg-transparent"
+          onblur="saveNotes('${uid}', this.value)">
+      </td>
+      <td class="py-2 px-2 text-right whitespace-nowrap">${actions}</td>
+    </tr>`;
+  }).join('');
+}
+
+async function approveUser(userId) {
+  const tid = document.getElementById('user-tenant-select').value;
+  const tenant = tenantsData.find(t => t.tenant_id === tid);
+  const defaultDays = tenant?.approval_duration_days || 30;
+
+  const input = prompt(
+    `Approve user ${userId.slice(0, 16)}...\n\nDuration (days, 0 = permanent):`,
+    String(defaultDays)
+  );
+  if (input === null) return;  // cancelled
+
+  const days = parseInt(input) || 0;
+  try {
+    await api(`/trial/${tid}/user/${userId}/approve`, {
+      method: 'POST',
+      body: JSON.stringify({ duration_days: days }),
+    });
+    await loadUsers();
+  } catch (e) {
+    alert(`Failed: ${e.message}`);
+  }
+}
+
+async function userAction(action, userId) {
+  const tid = document.getElementById('user-tenant-select').value;
+  if (!confirm(`${action} user ${userId.slice(0, 16)}...?`)) return;
+
+  try {
+    await api(`/trial/${tid}/user/${userId}/${action}`, { method: 'POST' });
+    await loadUsers();
+  } catch (e) {
+    alert(`Failed: ${e.message}`);
+  }
+}
+
+async function saveNotes(userId, notes) {
+  const tid = document.getElementById('user-tenant-select').value;
+  try {
+    await api(`/trial/${tid}/user/${userId}/notes`, {
+      method: 'POST',
+      body: JSON.stringify({ notes }),
+    });
+  } catch (e) {
+    console.error('Save notes failed:', e);
+  }
+}
+
+// ── Usage ──
+async function loadUsage() {
+  const monthInput = document.getElementById('usage-month');
+  if (!monthInput.value) {
+    const now = new Date();
+    monthInput.value = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  }
+  const month = monthInput.value;
+
+  const container = document.getElementById('usage-content');
+  container.innerHTML = '<div class="text-gray-400 p-4 text-center">Loading...</div>';
+
+  try {
+    const res = await api(`/usage?month=${month}`);
+    const tenants = res.tenants || {};
+
+    if (!Object.keys(tenants).length) {
+      container.innerHTML = '<div class="text-gray-400 p-8 text-center">No usage data for this month</div>';
+      return;
+    }
+
+    let html = '<div class="overflow-x-auto"><table class="w-full text-sm">';
+    html += `<thead><tr class="border-b text-left text-gray-500">
+      <th class="py-2 px-3">Tenant</th>
+      <th class="py-2 px-3 text-right">API Calls</th>
+      <th class="py-2 px-3 text-right">Input Tokens</th>
+      <th class="py-2 px-3 text-right">Output Tokens</th>
+      <th class="py-2 px-3 text-right">Tool Calls</th>
+      <th class="py-2 px-3 text-right">Rounds</th>
+    </tr></thead><tbody>`;
+
+    let totalCalls = 0, totalIn = 0, totalOut = 0;
+
+    for (const [tid, u] of Object.entries(tenants)) {
+      const calls = parseInt(u.api_calls || 0);
+      const inTok = parseInt(u.input_tokens || 0);
+      const outTok = parseInt(u.output_tokens || 0);
+      const tools = parseInt(u.tool_calls || 0);
+      const rounds = parseInt(u.rounds || 0);
+      totalCalls += calls; totalIn += inTok; totalOut += outTok;
+
+      const tName = tenantsData.find(t => t.tenant_id === tid)?.name || tid;
+      html += `<tr class="border-b hover:bg-gray-50">
+        <td class="py-2 px-3 font-medium">${tName}</td>
+        <td class="py-2 px-3 text-right">${calls.toLocaleString()}</td>
+        <td class="py-2 px-3 text-right">${inTok.toLocaleString()}</td>
+        <td class="py-2 px-3 text-right">${outTok.toLocaleString()}</td>
+        <td class="py-2 px-3 text-right">${tools.toLocaleString()}</td>
+        <td class="py-2 px-3 text-right">${rounds.toLocaleString()}</td>
+      </tr>`;
+    }
+
+    html += `<tr class="border-t-2 font-semibold">
+      <td class="py-2 px-3">Total</td>
+      <td class="py-2 px-3 text-right">${totalCalls.toLocaleString()}</td>
+      <td class="py-2 px-3 text-right">${totalIn.toLocaleString()}</td>
+      <td class="py-2 px-3 text-right">${totalOut.toLocaleString()}</td>
+      <td class="py-2 px-3 text-right" colspan="2"></td>
+    </tr>`;
+
+    html += '</tbody></table></div>';
+
+    // Daily breakdown per tenant — parallel fetch
+    html += '<h3 class="mt-8 mb-4 font-semibold text-gray-700">Daily Breakdown</h3>';
+
+    const tids = Object.keys(tenants);
+    const dailyResults = await Promise.all(
+      tids.map(tid => api(`/usage/${tid}?month=${month}`).catch(() => null))
+    );
+
+    for (let idx = 0; idx < tids.length; idx++) {
+      const tid = tids[idx];
+      const dailyRes = dailyResults[idx];
+      if (!dailyRes) continue;
+      const daily = dailyRes.daily || {};
+      if (!Object.keys(daily).length) continue;
+
+      const tName = tenantsData.find(t => t.tenant_id === tid)?.name || tid;
+      html += `<div class="mb-4">
+        <h4 class="text-sm font-medium text-gray-600 mb-2">${tName}</h4>
+        <div class="flex gap-1 items-end h-16">`;
+
+      const maxCalls = Math.max(...Object.values(daily).map(d => parseInt(d.api_calls || 0)), 1);
+      for (let d = 1; d <= 31; d++) {
+        const ds = String(d).padStart(2, '0');
+        const dc = parseInt(daily[ds]?.api_calls || 0);
+        const h = Math.max(2, (dc / maxCalls) * 100);
+        html += `<div class="flex-1 bg-blue-400 rounded-t opacity-${dc ? '100' : '20'}" style="height:${h}%" title="Day ${d}: ${dc} calls"></div>`;
+      }
+
+      html += '</div><div class="flex gap-1 text-[8px] text-gray-400">';
+      for (let d = 1; d <= 31; d++) html += `<div class="flex-1 text-center">${d}</div>`;
+      html += '</div></div>';
+    }
+
+    container.innerHTML = html;
+  } catch (e) {
+    container.innerHTML = `<div class="text-red-400 p-8 text-center">${e.message}</div>`;
+  }
+}
+
+// ── Instances ──
+let instancesData = [];
+
+async function loadInstances() {
+  const tbody = document.getElementById('instances-tbody');
+  tbody.innerHTML = '<tr><td colspan="6" class="text-center text-gray-400 py-8">Loading...</td></tr>';
+
+  try {
+    const res = await api('/instances');
+    instancesData = res.instances || [];
+    renderInstances();
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="6" class="text-center text-red-400 py-8">${e.message}</td></tr>`;
+  }
+}
+
+function renderInstances() {
+  const tbody = document.getElementById('instances-tbody');
+  if (!instancesData.length) {
+    tbody.innerHTML = '<tr><td colspan="6" class="text-center text-gray-400 py-8">No instances. Click "+ New Instance" to create one.</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = instancesData.map(inst => {
+    const statusColors = {
+      running: 'text-green-600 bg-green-50',
+      exited: 'text-red-600 bg-red-50',
+      not_found: 'text-gray-400 bg-gray-50',
+      created: 'text-blue-600 bg-blue-50',
+    };
+    const sc = statusColors[inst.status] || 'text-gray-600 bg-gray-50';
+    const platformBadge = {
+      feishu: '<span class="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded">Feishu</span>',
+      wecom: '<span class="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded">WeCom</span>',
+      wecom_kf: '<span class="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded">WeCom KF</span>',
+      qq: '<span class="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded">QQ</span>',
+    }[inst.platform] || `<span class="text-xs bg-gray-100 text-gray-700 px-2 py-0.5 rounded">${inst.platform}</span>`;
+
+    let actions = '';
+    if (inst.status === 'running') {
+      actions += `<button onclick="instanceAction('restart','${inst.tenant_id}')" class="text-xs bg-blue-50 text-blue-600 px-2 py-1 rounded hover:bg-blue-100">Restart</button> `;
+      actions += `<button onclick="instanceAction('stop','${inst.tenant_id}')" class="text-xs bg-orange-50 text-orange-600 px-2 py-1 rounded hover:bg-orange-100">Stop</button> `;
+    } else {
+      actions += `<button onclick="instanceAction('restart','${inst.tenant_id}')" class="text-xs bg-blue-50 text-blue-600 px-2 py-1 rounded hover:bg-blue-100">Start</button> `;
+    }
+    actions += `<button onclick="viewInstanceLogs('${inst.tenant_id}')" class="text-xs bg-gray-50 text-gray-600 px-2 py-1 rounded hover:bg-gray-100">Logs</button> `;
+    if (inst.platform === 'wecom_kf') {
+      actions += `<button onclick="showKfPanel('${inst.tenant_id}')" class="text-xs bg-purple-50 text-purple-600 px-2 py-1 rounded hover:bg-purple-100">KF Bots</button> `;
+    }
+    actions += `<button onclick="destroyInstance('${inst.tenant_id}')" class="text-xs bg-red-50 text-red-600 px-2 py-1 rounded hover:bg-red-100">Destroy</button>`;
+
+    // Co-tenants sub-rows
+    const coTenants = (inst.co_tenants || []);
+    const coCount = coTenants.length;
+    const coLabel = coCount > 0
+      ? `<span class="ml-2 text-xs bg-purple-50 text-purple-600 px-1.5 py-0.5 rounded">${coCount} co-hosted</span>`
+      : '';
+
+    let coRows = '';
+    if (coCount > 0) {
+      coRows = coTenants.map(ct => `<tr class="bg-purple-50/40 border-b">
+        <td class="py-1.5 px-3 pl-8 text-gray-600 text-sm">&boxur; ${escapeHtml(ct.name || ct.tenant_id)}</td>
+        <td class="py-1.5 px-3 font-mono text-xs text-gray-400">${ct.tenant_id}</td>
+        <td class="py-1.5 px-3"><span class="text-[10px] text-gray-400">co-hosted</span></td>
+        <td class="py-1.5 px-3 font-mono text-[10px] text-gray-400">${ct.wecom_kf_open_kfid || '-'}</td>
+        <td class="py-1.5 px-3"></td>
+        <td class="py-1.5 px-3 text-right">
+          <button onclick="removeCoTenant('${inst.tenant_id}','${ct.tenant_id}')" class="text-xs bg-red-50 text-red-500 px-2 py-0.5 rounded hover:bg-red-100">Remove</button>
+        </td>
+      </tr>`).join('');
+    }
+
+    return `<tr class="border-b hover:bg-gray-50">
+      <td class="py-2 px-3 font-medium text-gray-800">${escapeHtml(inst.name || '')}${coLabel}</td>
+      <td class="py-2 px-3 font-mono text-xs text-gray-500">${inst.tenant_id}</td>
+      <td class="py-2 px-3">${platformBadge}</td>
+      <td class="py-2 px-3 font-mono text-xs">${inst.port}</td>
+      <td class="py-2 px-3"><span class="${sc} text-xs px-2 py-0.5 rounded-full font-medium">${inst.status}</span></td>
+      <td class="py-2 px-3 text-right whitespace-nowrap">${actions}</td>
+    </tr>${coRows}`;
+  }).join('');
+}
+
+async function instanceAction(action, tenantId) {
+  if (!confirm(`${action} instance "${tenantId}"?`)) return;
+  try {
+    await api(`/instances/${tenantId}/${action}`, { method: 'POST' });
+    await loadInstances();
+  } catch (e) {
+    alert(`Failed: ${e.message}`);
+  }
+}
+
+async function destroyInstance(tenantId) {
+  if (!confirm(`DESTROY instance "${tenantId}"?\n\nThis will stop the container and delete ALL files. This action is IRREVERSIBLE!`)) return;
+  if (!confirm(`Are you REALLY sure? Type the tenant ID to confirm.\n\n(Click OK to proceed)`)) return;
+  try {
+    const res = await fetch(`/admin/api/instances/${tenantId}`, {
+      method: 'DELETE',
+      headers: { 'Authorization': `Bearer ${TOKEN}` },
+    });
+    if (res.status === 401) { logout(); return; }
+    if (!res.ok) { const e = await res.json(); throw new Error(e.detail || 'Failed'); }
+    await loadInstances();
+  } catch (e) {
+    alert(`Destroy failed: ${e.message}`);
+  }
+}
+
+async function removeCoTenant(instanceId, coTenantId) {
+  if (!confirm(`Remove co-hosted tenant "${coTenantId}" from instance "${instanceId}"?\n\nThe container will be restarted.`)) return;
+  try {
+    const res = await fetch(`/admin/api/instances/${instanceId}/co-tenants/${coTenantId}`, {
+      method: 'DELETE',
+      headers: { 'Authorization': `Bearer ${TOKEN}` },
+    });
+    if (res.status === 401) { logout(); return; }
+    if (!res.ok) { const e = await res.json(); throw new Error(e.detail || 'Failed'); }
+    await loadInstances();
+  } catch (e) {
+    alert(`Remove failed: ${e.message}`);
+  }
+}
+
+// ── KF Bot Management Panel ──
+let kfPanelInstance = '';
+
+async function showKfPanel(instanceId) {
+  kfPanelInstance = instanceId;
+  document.getElementById('instances-list-view').classList.add('hidden');
+  const panel = document.getElementById('kf-panel-view');
+  panel.classList.remove('hidden');
+  document.getElementById('kf-panel-title').textContent = `KF Accounts — ${instanceId}`;
+  document.getElementById('kf-accounts-body').innerHTML = '<tr><td colspan="4" class="text-center text-gray-400 py-8">Loading KF accounts from WeChat API...</td></tr>';
+  document.getElementById('kf-add-form').classList.add('hidden');
+
+  try {
+    const res = await api(`/instances/${instanceId}/kf-accounts`);
+    const accounts = res.accounts || [];
+    const tbody = document.getElementById('kf-accounts-body');
+
+    if (!accounts.length) {
+      tbody.innerHTML = '<tr><td colspan="4" class="text-center text-gray-400 py-8">No KF accounts found in this corp</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = accounts.map(a => {
+      const bound = a.bound_tenant;
+      const statusHtml = bound
+        ? `<span class="text-xs bg-green-50 text-green-600 px-2 py-0.5 rounded">Bound: ${bound}</span>`
+        : `<button onclick="startAddCoTenant('${a.open_kfid}', '${escapeHtml(a.name)}')" class="text-xs bg-purple-50 text-purple-600 px-2 py-1 rounded hover:bg-purple-100">+ Add as Bot</button>`;
+      return `<tr class="border-b hover:bg-gray-50">
+        <td class="py-2 px-3 font-medium text-gray-800">${escapeHtml(a.name)}</td>
+        <td class="py-2 px-3 font-mono text-xs text-gray-500 select-all">${a.open_kfid}</td>
+        <td class="py-2 px-3">
+          ${a.avatar ? `<img src="${a.avatar}" class="w-6 h-6 rounded-full inline">` : '<span class="text-gray-300">-</span>'}
+        </td>
+        <td class="py-2 px-3 text-right">${statusHtml}</td>
+      </tr>`;
+    }).join('');
+  } catch (e) {
+    document.getElementById('kf-accounts-body').innerHTML = `<tr><td colspan="4" class="text-center text-red-400 py-8">${e.message}</td></tr>`;
+  }
+}
+
+function hideKfPanel() {
+  document.getElementById('kf-panel-view').classList.add('hidden');
+  document.getElementById('instances-list-view').classList.remove('hidden');
+  loadInstances();
+}
+
+function startAddCoTenant(openKfid, kfName) {
+  const form = document.getElementById('kf-add-form');
+  form.classList.remove('hidden');
+  document.getElementById('kf-add-open-kfid').value = openKfid;
+  document.getElementById('kf-add-kfname').textContent = kfName;
+  // Suggest tenant_id from kf name
+  const suggested = 'kf-' + kfName.replace(/[^a-zA-Z0-9\u4e00-\u9fff]/g, '-').toLowerCase().slice(0, 20);
+  document.getElementById('kf-add-tenant-id').value = suggested;
+  document.getElementById('kf-add-name').value = kfName;
+}
+
+async function submitAddCoTenant(e) {
+  e.preventDefault();
+  const btn = document.getElementById('kf-add-submit-btn');
+  btn.disabled = true;
+  btn.textContent = 'Adding...';
+
+  const template = document.querySelector('input[name="kf-add-template"]:checked')?.value || 'inherit';
+  const body = {
+    tenant_id: document.getElementById('kf-add-tenant-id').value.trim(),
+    name: document.getElementById('kf-add-name').value.trim(),
+    wecom_kf_open_kfid: document.getElementById('kf-add-open-kfid').value,
+    template: template,
+  };
+  // Only send overrides if explicitly set (otherwise inherit from primary)
+  const prompt = document.getElementById('kf-add-prompt').value.trim();
+  if (prompt) body.llm_system_prompt = prompt;
+  if (document.getElementById('kf-add-trial').checked) {
+    body.trial_enabled = true;
+    body.trial_duration_hours = parseInt(document.getElementById('kf-add-trial-hours').value) || 48;
+    body.quota_user_tokens_6h = parseInt(document.getElementById('kf-add-token-quota').value) || 0;
+  }
+
+  // Advanced overrides (only send if explicitly filled)
+  const _intIfSet = (id) => { const v = document.getElementById(id).value; return v !== '' ? parseInt(v) : null; };
+  const advFields = {
+    approval_duration_days: _intIfSet('kf-add-approval-days'),
+    deploy_free_quota: _intIfSet('kf-add-deploy-quota'),
+    rate_limit_rpm: _intIfSet('kf-add-rate-rpm'),
+    rate_limit_user_rpm: _intIfSet('kf-add-rate-user-rpm'),
+    quota_monthly_api_calls: _intIfSet('kf-add-monthly-calls'),
+    quota_monthly_tokens: _intIfSet('kf-add-monthly-tokens'),
+    memory_journal_max: _intIfSet('kf-add-mem-journal'),
+    memory_chat_rounds: _intIfSet('kf-add-mem-rounds'),
+    memory_chat_ttl: _intIfSet('kf-add-mem-ttl'),
+  };
+  for (const [k, v] of Object.entries(advFields)) { if (v !== null) body[k] = v; }
+  // Checkbox overrides (always send if advanced section was opened)
+  if (document.getElementById('kf-add-custom-persona').checked) body.custom_persona = true;
+  body.memory_diary_enabled = document.getElementById('kf-add-mem-diary').checked;
+  body.memory_context_enabled = document.getElementById('kf-add-mem-context').checked;
+  // Admin names
+  const adminNames = document.getElementById('kf-add-admin-names').value.trim();
+  if (adminNames) body.admin_names = adminNames.split(',').map(s => s.trim()).filter(Boolean);
+
+  try {
+    const res = await api(`/instances/${kfPanelInstance}/co-tenants`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+    const hotMsg = res.hot_loaded ? `Yes — ${res.hot_load_note || ''}` : `No — ${res.hot_load_note || 'restart needed'}`;
+    alert(`Co-tenant "${body.tenant_id}" added!\n\nCo-hosted with: ${res.co_hosted_with}\nPort: ${res.port}\nSynced: ${hotMsg}`);
+    document.getElementById('kf-add-form').classList.add('hidden');
+    await showKfPanel(kfPanelInstance);
+  } catch (e) {
+    alert(`Failed: ${e.message}`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Add Co-tenant';
+  }
+}
+
+function showProvisionForm() {
+  document.getElementById('instances-list-view').classList.add('hidden');
+  document.getElementById('provision-form-view').classList.remove('hidden');
+  document.getElementById('provision-status').textContent = '';
+}
+
+function hideProvisionForm() {
+  document.getElementById('provision-form-view').classList.add('hidden');
+  document.getElementById('instances-list-view').classList.remove('hidden');
+}
+
+function platformChanged(platform) {
+  document.getElementById('cred-placeholder').classList.toggle('hidden', !!platform);
+  ['feishu', 'wecom', 'wecom_kf', 'qq'].forEach(p => {
+    document.getElementById(`cred-${p}`).classList.toggle('hidden', p !== platform);
+  });
+}
+
+async function submitProvision(e) {
+  e.preventDefault();
+  const form = e.target;
+  const btn = document.getElementById('provision-submit-btn');
+  const status = document.getElementById('provision-status');
+
+  btn.disabled = true;
+  btn.textContent = 'Creating...';
+  status.textContent = '';
+  status.className = 'text-sm ml-auto';
+
+  const fd = new FormData(form);
+  const body = {};
+
+  // Basic fields
+  body.tenant_id = fd.get('tenant_id');
+  body.name = fd.get('name');
+  body.platform = fd.get('platform');
+
+  // Platform credentials
+  if (body.platform === 'feishu') {
+    ['app_id', 'app_secret', 'verification_token', 'encrypt_key'].forEach(f => {
+      const v = fd.get(f); if (v) body[f] = v;
+    });
+  } else if (body.platform === 'wecom') {
+    ['wecom_corpid', 'wecom_corpsecret', 'wecom_token', 'wecom_encoding_aes_key'].forEach(f => {
+      const v = fd.get(f); if (v) body[f] = v;
+    });
+    const agentId = fd.get('wecom_agent_id');
+    if (agentId) body.wecom_agent_id = parseInt(agentId);
+  } else if (body.platform === 'wecom_kf') {
+    body.wecom_corpid = fd.get('wecom_corpid_kf') || '';
+    ['wecom_kf_secret', 'wecom_kf_token', 'wecom_kf_encoding_aes_key', 'wecom_kf_open_kfid'].forEach(f => {
+      const v = fd.get(f); if (v) body[f] = v;
+    });
+  } else if (body.platform === 'qq') {
+    ['qq_app_id', 'qq_app_secret', 'qq_token'].forEach(f => {
+      const v = fd.get(f); if (v) body[f] = v;
+    });
+  }
+
+  // LLM
+  const prompt = fd.get('llm_system_prompt');
+  if (prompt) body.llm_system_prompt = prompt;
+  body.custom_persona = !!fd.get('custom_persona');
+
+  // Trial & Quota
+  body.trial_enabled = !!fd.get('trial_enabled');
+  if (body.trial_enabled) {
+    body.trial_duration_hours = parseInt(fd.get('trial_duration_hours')) || 48;
+    body.approval_duration_days = parseInt(fd.get('approval_duration_days')) || 30;
+    body.quota_user_tokens_6h = parseInt(fd.get('quota_user_tokens_6h')) || 0;
+  }
+
+  // Advanced: Rate Limits & Monthly Quotas
+  ['rate_limit_rpm', 'rate_limit_user_rpm', 'quota_monthly_api_calls', 'quota_monthly_tokens'].forEach(f => {
+    const v = fd.get(f); if (v !== null && v !== '') body[f] = parseInt(v) || 0;
+  });
+  // Deploy quota
+  const dq = fd.get('deploy_free_quota');
+  if (dq !== null && dq !== '') body.deploy_free_quota = parseInt(dq);
+  // Memory config
+  body.memory_diary_enabled = !!fd.get('memory_diary_enabled');
+  body.memory_context_enabled = !!fd.get('memory_context_enabled');
+  ['memory_journal_max', 'memory_chat_rounds', 'memory_chat_ttl'].forEach(f => {
+    const v = fd.get(f); if (v !== null && v !== '') body[f] = parseInt(v);
+  });
+  // Admin names
+  const an = fd.get('admin_names');
+  if (an) body.admin_names = an.split(',').map(s => s.trim()).filter(Boolean);
+
+  try {
+    const res = await api('/instances', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+
+    status.textContent = `Created! Port: ${res.port}, Webhook: ${res.webhook_path}`;
+    status.className = 'text-sm ml-auto text-green-600';
+
+    // Show webhook info
+    setTimeout(() => {
+      alert(
+        `Instance created successfully!\n\n` +
+        `Tenant: ${res.tenant_id}\n` +
+        `Port: ${res.port}\n` +
+        `Container: ${res.container}\n` +
+        `Webhook: ${res.webhook_path}\n` +
+        `Health: ${res.healthy ? 'OK' : 'Starting...'}\n\n` +
+        `Configure this webhook URL in your platform's developer console.`
+      );
+      hideProvisionForm();
+      loadInstances();
+    }, 500);
+  } catch (e) {
+    status.textContent = `Error: ${e.message}`;
+    status.className = 'text-sm ml-auto text-red-600';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Create Instance';
+  }
+}
+
+// ── Logs ──
+let logsAutoTimer = null;
+
+async function initLogsTab() {
+  // Populate instance select from cached instancesData or fetch
+  const sel = document.getElementById('logs-instance-select');
+  if (!sel.options.length || sel.options.length <= 1) {
+    try {
+      const res = await api('/instances');
+      const instances = res.instances || [];
+      sel.innerHTML = instances.map(i =>
+        `<option value="${i.tenant_id}">${escapeHtml(i.name || i.tenant_id)} (${i.tenant_id})</option>`
+      ).join('');
+      // Also add self (current container) option at the top
+      if (instances.length) {
+        sel.insertAdjacentHTML('afterbegin', '<option value="_self">This container (self)</option>');
+      }
+    } catch (e) {
+      sel.innerHTML = '<option value="_self">This container (self)</option>';
+    }
+  }
+  loadLogs();
+}
+
+async function loadLogs() {
+  const tid = document.getElementById('logs-instance-select').value;
+  const lines = document.getElementById('logs-lines').value;
+  const since = document.getElementById('logs-since').value;
+  const level = document.getElementById('logs-level').value;
+  const grep = document.getElementById('logs-grep').value.trim();
+  const output = document.getElementById('logs-output');
+  const stats = document.getElementById('logs-stats');
+
+  if (!tid) { output.textContent = 'Select an instance'; return; }
+
+  output.textContent = 'Loading...';
+  stats.textContent = '';
+
+  try {
+    let logData;
+    const _ts = Date.now();  // cache-bust
+    if (tid === '_self') {
+      logData = await api(`/logs?lines=${lines}&since=${encodeURIComponent(since)}&grep=${encodeURIComponent(grep)}&level=${encodeURIComponent(level)}&_t=${_ts}`);
+    } else {
+      logData = await api(`/instances/${tid}/logs?lines=${lines}&since=${encodeURIComponent(since)}&grep=${encodeURIComponent(grep)}&level=${encodeURIComponent(level)}&_t=${_ts}`);
+    }
+
+    const logText = logData.logs || '(no logs)';
+    output.textContent = logText;
+
+    // Colorize log lines
+    colorizeLogs(output);
+
+    // Show real-time diagnostics
+    let statsText = `${logData.total_lines} lines`;
+    if (logData.log_source) statsText += ` | ${logData.log_source}`;
+    if (logData.buffer_size >= 0) statsText += ` | buf: ${logData.buffer_size}`;
+    if (logData.errors_tried && logData.errors_tried.length > 0) {
+      statsText += ` | fallback: ${logData.errors_tried.join('; ')}`;
+    }
+    statsText += ` | ${new Date().toLocaleTimeString()}`;
+    stats.textContent = statsText;
+
+    // Error summary
+    const errSummary = document.getElementById('logs-error-summary');
+    const errCount = document.getElementById('logs-error-count');
+    const errDetail = document.getElementById('logs-error-detail');
+    if (logData.error_count > 0) {
+      errSummary.classList.remove('hidden');
+      errCount.textContent = `${logData.error_count} error(s) found`;
+      errDetail.textContent = logData.recent_errors || '';
+    } else {
+      errSummary.classList.add('hidden');
+    }
+
+    // Auto-scroll to bottom
+    output.scrollTop = output.scrollHeight;
+  } catch (e) {
+    output.textContent = `Error: ${e.message}`;
+  }
+
+  // Manage auto-refresh timer
+  clearInterval(logsAutoTimer);
+  if (document.getElementById('logs-auto-refresh').checked) {
+    logsAutoTimer = setInterval(loadLogs, 5000);
+  }
+}
+
+function colorizeLogs(pre) {
+  // Apply colors to log levels using spans
+  let html = escapeHtml(pre.textContent);
+  html = html.replace(/\[ERROR\]/g, '<span class="text-red-400 font-bold">[ERROR]</span>');
+  html = html.replace(/\[WARNING\]/g, '<span class="text-yellow-400">[WARNING]</span>');
+  html = html.replace(/\[INFO\]/g, '<span class="text-green-400">[INFO]</span>');
+  html = html.replace(/\[CRITICAL\]/g, '<span class="text-red-500 font-bold">[CRITICAL]</span>');
+  html = html.replace(/(Traceback \(most recent call last\):)/g, '<span class="text-red-400">$1</span>');
+  html = html.replace(/(Error:|Exception:|Failed:)/g, '<span class="text-red-400">$1</span>');
+  pre.innerHTML = html;
+}
+
+function toggleErrorPanel() {
+  const detail = document.getElementById('logs-error-detail');
+  const btn = document.getElementById('logs-error-toggle');
+  if (detail.classList.contains('hidden')) {
+    detail.classList.remove('hidden');
+    btn.textContent = 'Hide errors';
+  } else {
+    detail.classList.add('hidden');
+    btn.textContent = 'Show errors';
+  }
+}
+
+function scrollLogsToBottom() {
+  const output = document.getElementById('logs-output');
+  output.scrollTop = output.scrollHeight;
+}
+
+function viewInstanceLogs(tenantId) {
+  switchTab('logs');
+  // Wait for tab to initialize, then select the instance
+  setTimeout(() => {
+    const sel = document.getElementById('logs-instance-select');
+    for (const opt of sel.options) {
+      if (opt.value === tenantId) { opt.selected = true; break; }
+    }
+    loadLogs();
+  }, 300);
+}
+
+// Stop auto-refresh when leaving logs tab
+document.getElementById('logs-auto-refresh')?.addEventListener('change', function() {
+  if (!this.checked) clearInterval(logsAutoTimer);
+  else loadLogs();
+});
+
+// ── Helpers ──
+function formatTime(iso, { allowFuture = false } = {}) {
+  if (!iso) return '-';
+  try {
+    const d = new Date(iso);
+    const now = new Date();
+    const diffMs = now - d;
+    // Future dates
+    if (diffMs < 0 && allowFuture) {
+      const futMs = -diffMs;
+      const futMins = Math.floor(futMs / 60000);
+      if (futMins < 60) return `in ${futMins}m`;
+      const futH = Math.floor(futMins / 60);
+      if (futH < 24) return `in ${futH}h${futMins % 60}m`;
+      const futD = Math.floor(futH / 24);
+      if (futD < 365) return `in ${futD}d`;
+      return d.toLocaleDateString('zh-CN', { year: 'numeric', month: 'short', day: 'numeric' });
+    }
+    const diffMins = Math.floor(diffMs / 60000);
+    if (diffMins < 1) return 'just now';
+    if (diffMins < 60) return `${diffMins}m ago`;
+    const diffHours = Math.floor(diffMins / 60);
+    if (diffHours < 24) return `${diffHours}h ago`;
+    const diffDays = Math.floor(diffHours / 24);
+    if (diffDays < 7) return `${diffDays}d ago`;
+    return d.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' });
+  } catch { return iso.slice(0, 16); }
+}
+
+function escapeHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function formatTokens(n) {
+  if (!n) return '0';
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+  if (n >= 1000) return Math.round(n / 1000) + 'K';
+  return String(n);
+}
+
+async function refreshAll() {
+  await loadOverview();
+}
+
+// ── Init ──
+if (TOKEN) {
+  api('/tenants').then(() => showDashboard()).catch(() => {
+    TOKEN = '';
+    localStorage.removeItem('admin_token');
+  });
+}
+
+// ── Identities ──
+async function loadIdentities() {
+  const sel = document.getElementById('identity-tenant-select');
+  // Populate tenant selector if empty
+  if (sel.options.length === 0 && tenantsData.length > 0) {
+    sel.innerHTML = tenantsData.map(t =>
+      `<option value="${t.tenant_id}">${t.name || t.tenant_id}</option>`
+    ).join('');
+  }
+  const tid = sel.value;
+  if (!tid) return;
+
+  // Fetch identities and channels independently (one 404 shouldn't block the other)
+  const [idRes, chRes] = await Promise.allSettled([
+    api(`/identities/${tid}`),
+    api(`/tenants/${tid}/channels`),
+  ]);
+
+  // Render identities
+  const tbody = document.getElementById('identities-tbody');
+  const empty = document.getElementById('identities-empty');
+  const identities = idRes.status === 'fulfilled' ? (idRes.value.identities || []) : [];
+  if (identities.length === 0) {
+    tbody.innerHTML = '';
+    empty.classList.remove('hidden');
+  } else {
+    empty.classList.add('hidden');
+    tbody.innerHTML = identities.map(id => {
+      const linked = id.linked_platforms || {};
+      const platformBadges = Object.entries(linked).map(([p, uid]) =>
+        `<span class="inline-block px-2 py-0.5 rounded text-xs font-medium ${
+          p === 'feishu' ? 'bg-blue-100 text-blue-700' :
+          p === 'wecom' ? 'bg-green-100 text-green-700' :
+          'bg-purple-100 text-purple-700'
+        }">${p}: ${uid.substring(0, 12)}...</span>`
+      ).join(' ');
+      return `<tr class="border-b hover:bg-gray-50">
+        <td class="py-2 pr-4 font-medium">${id.name || '?'}</td>
+        <td class="py-2 pr-4 text-xs text-gray-500 font-mono">${(id.identity_id || '').substring(0, 12)}...</td>
+        <td class="py-2 pr-4">${platformBadges || '<span class="text-gray-400">none</span>'}</td>
+        <td class="py-2 pr-4 text-xs text-gray-500">${(id.created_at || '').substring(0, 16)}</td>
+        <td class="py-2">
+          ${Object.entries(linked).map(([p, uid]) =>
+            `<button onclick="unlinkIdentity('${tid}','${id.identity_id}','${p}')"
+              class="text-xs text-red-500 hover:text-red-700 mr-1">unlink ${p}</button>`
+          ).join('')}
+        </td>
+      </tr>`;
+    }).join('');
+  }
+
+  // Render channels (always clear first to avoid stale data from previous tenant)
+  const chTbody = document.getElementById('channels-tbody');
+  const chEmpty = document.getElementById('channels-empty');
+  const channels = chRes.status === 'fulfilled' ? (chRes.value.channels || []) : [];
+  if (channels.length === 0) {
+    chTbody.innerHTML = '';
+    chEmpty.classList.remove('hidden');
+  } else {
+    chEmpty.classList.add('hidden');
+    chTbody.innerHTML = channels.map(ch => {
+      const statusBadge = ch.enabled
+        ? '<span class="px-2 py-0.5 rounded text-xs bg-green-100 text-green-700">enabled</span>'
+        : '<span class="px-2 py-0.5 rounded text-xs bg-gray-100 text-gray-500">disabled</span>';
+      const creds = [];
+      if (ch.has_feishu) creds.push('feishu');
+      if (ch.has_wecom) creds.push('wecom');
+      if (ch.has_wecom_kf) creds.push('wecom_kf');
+      if (ch.has_qq) creds.push('qq');
+      const platformColors = {
+        feishu: 'bg-blue-100 text-blue-700', wecom: 'bg-green-100 text-green-700',
+        wecom_kf: 'bg-purple-100 text-purple-700', qq: 'bg-orange-100 text-orange-700',
+      };
+      return `<tr class="border-b hover:bg-gray-50">
+        <td class="py-2 pr-4 text-xs font-mono">${ch.channel_id || 'primary'}</td>
+        <td class="py-2 pr-4">
+          <span class="px-2 py-0.5 rounded text-xs font-medium ${
+            platformColors[ch.platform] || 'bg-gray-100 text-gray-700'
+          }">${ch.platform}</span>
+        </td>
+        <td class="py-2 pr-4">${statusBadge}</td>
+        <td class="py-2 pr-4 text-xs text-gray-500">${creds.join(', ') || 'none'}</td>
+        <td class="py-2 text-xs">
+          <button onclick="editChannel('${ch.channel_id}')" class="text-blue-600 hover:text-blue-800 mr-2">edit</button>
+          <button onclick="deleteChannel('${ch.channel_id}')" class="text-red-500 hover:text-red-700">delete</button>
+        </td>
+      </tr>`;
+    }).join('');
+  }
+}
+
+// ── Identity Modal (redesigned) ──
+let _trialUsersCache = [];
+let _identitiesCache = [];
+
+async function showLinkIdentityModal() {
+  const modal = document.getElementById('link-identity-modal');
+  modal.classList.remove('hidden');
+  const tid = document.getElementById('identity-tenant-select').value;
+  if (!tid) return;
+
+  // Load trial users + existing identities in parallel for the dropdowns
+  const userSelect = document.getElementById('link-id-user-select');
+  const targetSelect = document.getElementById('link-id-target');
+  userSelect.innerHTML = '<option value="">Loading...</option>';
+  targetSelect.innerHTML = '<option value="__new__">Create New Identity</option>';
+
+  try {
+    const [usersRes, idsRes] = await Promise.allSettled([
+      api(`/trial/${tid}/users`),
+      api(`/identities/${tid}`),
+    ]);
+    // Populate user dropdown
+    _trialUsersCache = usersRes.status === 'fulfilled' ? (usersRes.value.users || []) : [];
+    userSelect.innerHTML = '<option value="">-- Select a user --</option>';
+    // Determine platform from tenant
+    const tenant = tenantsData.find(t => t.tenant_id === tid);
+    const tPlatform = tenant ? (tenant.platform || '') : '';
+    _trialUsersCache.forEach(u => {
+      const uid = u.user_id || '';
+      const name = u.name || uid.substring(0, 16);
+      const status = u.status || '';
+      const statusTag = status === 'approved' ? ' [approved]' : status === 'blocked' ? ' [blocked]' : '';
+      const pidShort = uid.length > 16 ? uid.substring(0, 14) + '..' : uid;
+      userSelect.innerHTML += `<option value="${uid}" data-platform="${tPlatform}" data-name="${name}">${name} (${tPlatform}: ${pidShort})${statusTag}</option>`;
+    });
+
+    // Populate identity dropdown
+    _identitiesCache = idsRes.status === 'fulfilled' ? (idsRes.value.identities || []) : [];
+    _identitiesCache.forEach(id => {
+      const linked = id.linked_platforms || {};
+      const platforms = Object.keys(linked).join(', ') || 'none';
+      targetSelect.innerHTML += `<option value="${id.identity_id}">${id.name || '?'} (${platforms})</option>`;
+    });
+  } catch (e) {
+    userSelect.innerHTML = '<option value="">Failed to load</option>';
+  }
+
+  // Reset fields
+  document.getElementById('link-id-platform').value = '';
+  document.getElementById('link-id-pid').value = '';
+  document.getElementById('link-id-name').value = '';
+  document.getElementById('link-id-name-row').style.display = '';
+  document.getElementById('link-id-platform-manual').value = '';
+  document.getElementById('link-id-pid-manual').value = '';
+  document.getElementById('link-id-identity-manual').value = '';
+}
+
+function onLinkUserSelect() {
+  const sel = document.getElementById('link-id-user-select');
+  const opt = sel.selectedOptions[0];
+  if (!opt || !sel.value) {
+    document.getElementById('link-id-platform').value = '';
+    document.getElementById('link-id-pid').value = '';
+    document.getElementById('link-id-name').value = '';
+    return;
+  }
+  document.getElementById('link-id-platform').value = opt.dataset.platform || '';
+  document.getElementById('link-id-pid').value = sel.value;
+  document.getElementById('link-id-name').value = opt.dataset.name || '';
+}
+
+function onLinkTargetChange() {
+  const val = document.getElementById('link-id-target').value;
+  // Show name field only for new identity
+  document.getElementById('link-id-name-row').style.display = val === '__new__' ? '' : 'none';
+}
+
+function closeLinkIdentityModal() {
+  document.getElementById('link-identity-modal').classList.add('hidden');
+}
+
+async function submitLinkIdentity() {
+  const tid = document.getElementById('identity-tenant-select').value;
+
+  // Resolve values (manual override takes priority)
+  const manualPlatform = document.getElementById('link-id-platform-manual').value;
+  const manualPid = document.getElementById('link-id-pid-manual').value.trim();
+  const manualIdentity = document.getElementById('link-id-identity-manual').value.trim();
+
+  const platform = manualPlatform || document.getElementById('link-id-platform').value;
+  const pid = manualPid || document.getElementById('link-id-pid').value;
+  const name = document.getElementById('link-id-name').value.trim();
+
+  const targetVal = document.getElementById('link-id-target').value;
+  const identityId = manualIdentity || (targetVal === '__new__' ? '' : targetVal);
+
+  if (!platform || !pid) return alert('Please select a user or manually enter platform + user ID');
+  if (!identityId && !name) return alert('Name is required for new identity');
+
+  try {
+    await api(`/identities/${tid}/link`, {
+      method: 'POST',
+      body: JSON.stringify({ identity_id: identityId, platform, platform_user_id: pid, name }),
+    });
+    closeLinkIdentityModal();
+    loadIdentities();
+  } catch (e) {
+    alert('Link failed: ' + e.message);
+  }
+}
+
+async function unlinkIdentity(tid, identityId, platform) {
+  if (!confirm(`Unlink ${platform} from identity ${identityId.substring(0, 8)}...?`)) return;
+  try {
+    await api(`/identities/${tid}/${identityId}/${platform}`, { method: 'DELETE' });
+    loadIdentities();
+  } catch (e) {
+    alert('Unlink failed: ' + e.message);
+  }
+}
+
+// ── Channel CRUD ──
+
+const _PLATFORM_CREDS = {
+  feishu: ['ch-creds-feishu'],
+  wecom: ['ch-creds-wecom'],
+  wecom_kf: ['ch-creds-wecom_kf'],
+  qq: ['ch-creds-qq'],
+};
+
+function onChannelPlatformChange() {
+  const platform = document.getElementById('ch-platform').value;
+  // Show/hide credential sections
+  for (const [p, ids] of Object.entries(_PLATFORM_CREDS)) {
+    ids.forEach(id => {
+      document.getElementById(id).classList.toggle('hidden', p !== platform);
+    });
+  }
+  // Update webhook URL hint
+  const tid = document.getElementById('identity-tenant-select').value;
+  const webhookBase = window.location.origin;
+  document.getElementById('ch-webhook-url').textContent =
+    `${webhookBase}/webhook/${platform}/${tid}`;
+  // Auto-generate channel ID if empty
+  const chIdInput = document.getElementById('ch-channel-id');
+  if (!chIdInput.value || chIdInput.dataset.auto === '1') {
+    chIdInput.value = `${tid}-${platform}`;
+    chIdInput.dataset.auto = '1';
+  }
+}
+
+function showAddChannelModal() {
+  document.getElementById('channel-modal-title').textContent = 'Add Channel';
+  document.getElementById('ch-edit-id').value = '';
+  document.getElementById('ch-platform').value = 'feishu';
+  document.getElementById('ch-platform').disabled = false;
+  document.getElementById('ch-channel-id').value = '';
+  document.getElementById('ch-channel-id').dataset.auto = '1';
+  document.getElementById('ch-enabled').checked = true;
+  // Clear all credential fields
+  document.querySelectorAll('[id^="ch-"][id$="-id"], [id^="ch-"][id$="-secret"], [id^="ch-"][id$="-token"], [id^="ch-"][id$="-key"], [id^="ch-"][id$="-kfid"]').forEach(el => {
+    if (el.tagName === 'INPUT') el.value = '';
+  });
+  document.getElementById('ch-app-id').value = '';
+  document.getElementById('ch-app-secret').value = '';
+  document.getElementById('ch-verification-token').value = '';
+  document.getElementById('ch-encrypt-key').value = '';
+  document.getElementById('ch-wecom-corpid').value = '';
+  document.getElementById('ch-wecom-corpsecret').value = '';
+  document.getElementById('ch-wecom-agent-id').value = '';
+  document.getElementById('ch-wecom-token').value = '';
+  document.getElementById('ch-wecom-aes-key').value = '';
+  document.getElementById('ch-kf-corpid').value = '';
+  document.getElementById('ch-kf-secret').value = '';
+  document.getElementById('ch-kf-token').value = '';
+  document.getElementById('ch-kf-aes-key').value = '';
+  document.getElementById('ch-kf-open-kfid').value = '';
+  document.getElementById('ch-qq-app-id').value = '';
+  document.getElementById('ch-qq-app-secret').value = '';
+  document.getElementById('ch-qq-token').value = '';
+  onChannelPlatformChange();
+  document.getElementById('channel-modal').classList.remove('hidden');
+}
+
+function editChannel(channelId) {
+  // For edit we just open the modal with the platform pre-selected
+  // Full credential pre-fill would require a detailed GET API — for now just set basics
+  showAddChannelModal();
+  document.getElementById('channel-modal-title').textContent = 'Edit Channel';
+  document.getElementById('ch-edit-id').value = channelId;
+  document.getElementById('ch-channel-id').value = channelId;
+  document.getElementById('ch-channel-id').dataset.auto = '0';
+  // Try to infer platform from channel ID suffix
+  const parts = channelId.split('-');
+  const lastPart = parts[parts.length - 1];
+  if (['feishu', 'wecom', 'qq'].includes(lastPart)) {
+    document.getElementById('ch-platform').value = lastPart;
+  } else if (channelId.includes('wecom_kf') || channelId.includes('kf')) {
+    document.getElementById('ch-platform').value = 'wecom_kf';
+  }
+  onChannelPlatformChange();
+}
+
+async function deleteChannel(channelId) {
+  if (!confirm(`Delete channel "${channelId}"? This cannot be undone.`)) return;
+  const tid = document.getElementById('identity-tenant-select').value;
+  try {
+    await api(`/tenants/${tid}/channels/${channelId}`, { method: 'DELETE' });
+    loadIdentities();
+  } catch (e) {
+    alert('Delete failed: ' + e.message);
+  }
+}
+
+function closeChannelModal() {
+  document.getElementById('channel-modal').classList.add('hidden');
+}
+
+function _gatherChannelBody() {
+  const platform = document.getElementById('ch-platform').value;
+  const body = {
+    platform,
+    channel_id: document.getElementById('ch-channel-id').value.trim(),
+    enabled: document.getElementById('ch-enabled').checked,
+  };
+  // Gather platform-specific creds
+  if (platform === 'feishu') {
+    body.app_id = document.getElementById('ch-app-id').value.trim();
+    body.app_secret = document.getElementById('ch-app-secret').value.trim();
+    body.verification_token = document.getElementById('ch-verification-token').value.trim();
+    body.encrypt_key = document.getElementById('ch-encrypt-key').value.trim();
+  } else if (platform === 'wecom') {
+    body.wecom_corpid = document.getElementById('ch-wecom-corpid').value.trim();
+    body.wecom_corpsecret = document.getElementById('ch-wecom-corpsecret').value.trim();
+    const agentId = document.getElementById('ch-wecom-agent-id').value.trim();
+    if (agentId) body.wecom_agent_id = parseInt(agentId) || 0;
+    body.wecom_token = document.getElementById('ch-wecom-token').value.trim();
+    body.wecom_encoding_aes_key = document.getElementById('ch-wecom-aes-key').value.trim();
+  } else if (platform === 'wecom_kf') {
+    body.wecom_corpid = document.getElementById('ch-kf-corpid').value.trim();
+    body.wecom_kf_secret = document.getElementById('ch-kf-secret').value.trim();
+    body.wecom_kf_token = document.getElementById('ch-kf-token').value.trim();
+    body.wecom_kf_encoding_aes_key = document.getElementById('ch-kf-aes-key').value.trim();
+    body.wecom_kf_open_kfid = document.getElementById('ch-kf-open-kfid').value.trim();
+  } else if (platform === 'qq') {
+    body.qq_app_id = document.getElementById('ch-qq-app-id').value.trim();
+    body.qq_app_secret = document.getElementById('ch-qq-app-secret').value.trim();
+    body.qq_token = document.getElementById('ch-qq-token').value.trim();
+  }
+  // Filter out empty string values (don't send empty creds)
+  return Object.fromEntries(Object.entries(body).filter(([k, v]) => v !== '' || k === 'channel_id' || k === 'platform'));
+}
+
+async function submitChannel() {
+  const tid = document.getElementById('identity-tenant-select').value;
+  const editId = document.getElementById('ch-edit-id').value;
+  const body = _gatherChannelBody();
+
+  if (!body.platform) return alert('Platform is required');
+
+  try {
+    if (editId) {
+      // Edit existing
+      await api(`/tenants/${tid}/channels/${editId}`, {
+        method: 'PUT',
+        body: JSON.stringify(body),
+      });
+    } else {
+      // Add new
+      await api(`/tenants/${tid}/channels`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+    }
+    closeChannelModal();
+    loadIdentities();
+  } catch (e) {
+    alert('Save failed: ' + e.message);
+  }
+}
+
+// ── Super Admin ──
+let saData = { name: '', identities: [] };
+
+async function loadSuperAdmin() {
+  try {
+    saData = await api('/superadmin');
+    document.getElementById('sa-name').value = saData.name || '';
+    renderIdentities();
+  } catch (e) {
+    console.error('load superadmin failed', e);
+  }
+}
+
+function renderIdentities() {
+  const c = document.getElementById('sa-identities');
+  c.innerHTML = (saData.identities || []).map((id, i) => `
+    <div class="flex gap-2 items-center">
+      <select class="sa-platform border rounded px-2 py-1 text-sm" data-i="${i}">
+        <option value="feishu" ${id.platform==='feishu'?'selected':''}>Feishu</option>
+        <option value="wecom" ${id.platform==='wecom'?'selected':''}>WeCom</option>
+        <option value="wecom_kf" ${id.platform==='wecom_kf'?'selected':''}>WeChat KF</option>
+        <option value="qq" ${id.platform==='qq'?'selected':''}>QQ</option>
+      </select>
+      <input class="sa-uid border rounded px-2 py-1 text-sm flex-1" data-i="${i}" value="${id.user_id||''}" placeholder="user_id">
+      <input class="sa-tid border rounded px-2 py-1 text-sm w-32" data-i="${i}" value="${id.tenant_id||''}" placeholder="tenant_id">
+      <input class="sa-label border rounded px-2 py-1 text-sm w-24" data-i="${i}" value="${id.label||''}" placeholder="label">
+      <button onclick="removeIdentity(${i})" class="text-red-500 hover:text-red-700 text-sm">✕</button>
+    </div>
+  `).join('');
+}
+
+function addIdentityRow() {
+  saData.identities = saData.identities || [];
+  saData.identities.push({ platform: 'wecom_kf', user_id: '', tenant_id: '', label: '' });
+  renderIdentities();
+}
+
+function removeIdentity(i) {
+  saData.identities.splice(i, 1);
+  renderIdentities();
+}
+
+async function saveSuperAdmin() {
+  const name = document.getElementById('sa-name').value.trim();
+  const ids = [];
+  document.querySelectorAll('.sa-uid').forEach(el => {
+    const i = parseInt(el.dataset.i);
+    ids[i] = ids[i] || {};
+    ids[i].user_id = el.value.trim();
+  });
+  document.querySelectorAll('.sa-platform').forEach(el => {
+    const i = parseInt(el.dataset.i);
+    ids[i] = ids[i] || {};
+    ids[i].platform = el.value;
+  });
+  document.querySelectorAll('.sa-tid').forEach(el => {
+    const i = parseInt(el.dataset.i);
+    ids[i] = ids[i] || {};
+    ids[i].tenant_id = el.value.trim();
+  });
+  document.querySelectorAll('.sa-label').forEach(el => {
+    const i = parseInt(el.dataset.i);
+    ids[i] = ids[i] || {};
+    ids[i].label = el.value.trim();
+  });
+  try {
+    await api('/superadmin', { method: 'PUT', body: JSON.stringify({ name, identities: ids.filter(Boolean) }) });
+    alert('Saved!');
+  } catch (e) {
+    alert('Save failed: ' + e.message);
+  }
+}
+
+// ── Provision Requests ──
+async function loadProvisionRequests() {
+  const tbody = document.getElementById('requests-tbody');
+  const filter = document.getElementById('req-filter').value;
+  tbody.innerHTML = '<tr><td colspan="6" class="text-center text-gray-400 py-4">Loading...</td></tr>';
+  try {
+    const res = await api(`/provision-requests?status=${filter}`);
+    const reqs = res.requests || [];
+    if (!reqs.length) {
+      tbody.innerHTML = '<tr><td colspan="6" class="text-center text-gray-400 py-8">No requests</td></tr>';
+      return;
+    }
+    const statusColors = { pending: 'text-yellow-600 bg-yellow-50', approved: 'text-green-600 bg-green-50', rejected: 'text-red-600 bg-red-50' };
+    tbody.innerHTML = reqs.map(r => `<tr class="border-b">
+      <td class="py-2 font-mono text-xs">${r.request_id}</td>
+      <td class="py-2">${r.requester_name || r.requester_id?.slice(0,12) || '-'}</td>
+      <td class="py-2">${r.name || '-'}</td>
+      <td class="py-2">${r.platform || '-'}</td>
+      <td class="py-2"><span class="px-2 py-0.5 rounded-full text-xs ${statusColors[r.status]||''}">${r.status}</span></td>
+      <td class="py-2">${r.status === 'pending' ? `
+        <button onclick="approveReq('${r.request_id}')" class="text-green-600 hover:underline text-xs mr-2">Approve</button>
+        <button onclick="rejectReq('${r.request_id}')" class="text-red-600 hover:underline text-xs">Reject</button>
+      ` : (r.reviewed_at ? r.reviewed_at.slice(0,16) : '-')}</td>
+    </tr>`).join('');
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="6" class="text-center text-red-400 py-8">${e.message}</td></tr>`;
+  }
+}
+
+async function approveReq(id) {
+  if (!confirm(`Approve request ${id}? This will auto-provision the instance.`)) return;
+  try {
+    const r = await api(`/provision-requests/${id}/approve`, { method: 'POST' });
+    const pr = r.provision_result;
+    if (pr && pr.ok) alert(`Approved & provisioned! Port: ${pr.port}`);
+    else alert(`Approved, but provision failed: ${(pr||{}).error || 'unknown'}`);
+    loadProvisionRequests();
+  } catch (e) { alert('Failed: ' + e.message); }
+}
+
+async function rejectReq(id) {
+  const reason = prompt('Reject reason (optional):');
+  if (reason === null) return;
+  try {
+    await api(`/provision-requests/${id}/reject`, { method: 'POST', body: JSON.stringify({ reason }) });
+    loadProvisionRequests();
+  } catch (e) { alert('Failed: ' + e.message); }
+}
+
+// ── Edit Tenant Modal ──
+let editingTenantId = '';
+
+async function openEditModal(tid) {
+  editingTenantId = tid;
+  document.getElementById('edit-tid').textContent = tid;
+  document.getElementById('edit-status').textContent = 'Loading...';
+  document.getElementById('edit-tenant-modal').classList.remove('hidden');
+
+  try {
+    const config = await api(`/tenants/${tid}/config`);
+
+    // Show warning if config source is partial (only metadata, missing prompt/tools/memory)
+    const srcEl = document.getElementById('edit-status');
+    if (config._source === 'redis_meta_partial') {
+      srcEl.textContent = 'This tenant runs on another container. Only quota/trial fields are available — prompt, memory, and tools cannot be edited here.';
+      srcEl.className = 'text-sm ml-auto text-amber-600';
+      // Disable fields that are definitely missing from partial metadata
+      document.getElementById('edit-prompt').disabled = true;
+      document.getElementById('edit-prompt').placeholder = '(not available for cross-container tenants)';
+      document.getElementById('edit-custom-persona').disabled = true;
+      document.getElementById('edit-mem-diary').disabled = true;
+      document.getElementById('edit-mem-context').disabled = true;
+      document.getElementById('edit-mem-journal').disabled = true;
+      document.getElementById('edit-mem-rounds').disabled = true;
+      document.getElementById('edit-mem-ttl').disabled = true;
+      document.getElementById('edit-admin-names').disabled = true;
+    } else {
+      srcEl.textContent = '';
+      srcEl.className = 'text-sm ml-auto';
+      // Re-enable fields (in case previously disabled from another tenant)
+      document.getElementById('edit-prompt').disabled = false;
+      document.getElementById('edit-prompt').placeholder = '';
+      document.getElementById('edit-custom-persona').disabled = false;
+      document.getElementById('edit-mem-diary').disabled = false;
+      document.getElementById('edit-mem-context').disabled = false;
+      document.getElementById('edit-mem-journal').disabled = false;
+      document.getElementById('edit-mem-rounds').disabled = false;
+      document.getElementById('edit-mem-ttl').disabled = false;
+      document.getElementById('edit-admin-names').disabled = false;
+    }
+
+    // Populate form
+    document.getElementById('edit-name').value = config.name || '';
+    document.getElementById('edit-prompt').value = config.llm_system_prompt || '';
+    document.getElementById('edit-custom-persona').checked = !!config.custom_persona;
+    document.getElementById('edit-trial-enabled').checked = !!config.trial_enabled;
+    document.getElementById('edit-trial-hours').value = config.trial_duration_hours ?? 48;
+    document.getElementById('edit-approval-days').value = config.approval_duration_days ?? 30;
+    document.getElementById('edit-token-quota').value = config.quota_user_tokens_6h ?? 0;
+    document.getElementById('edit-deploy-quota').value = config.deploy_free_quota ?? 1;
+    document.getElementById('edit-rate-rpm').value = config.rate_limit_rpm ?? 0;
+    document.getElementById('edit-rate-user-rpm').value = config.rate_limit_user_rpm ?? 0;
+    document.getElementById('edit-monthly-calls').value = config.quota_monthly_api_calls ?? 0;
+    document.getElementById('edit-monthly-tokens').value = config.quota_monthly_tokens ?? 0;
+    document.getElementById('edit-mem-diary').checked = config.memory_diary_enabled !== false;
+    document.getElementById('edit-mem-context').checked = config.memory_context_enabled !== false;
+    document.getElementById('edit-mem-journal').value = config.memory_journal_max ?? 800;
+    document.getElementById('edit-mem-rounds').value = config.memory_chat_rounds ?? 5;
+    document.getElementById('edit-mem-ttl').value = config.memory_chat_ttl ?? 3600;
+    document.getElementById('edit-admin-names').value = (config.admin_names || []).join(', ');
+  } catch (e) {
+    document.getElementById('edit-status').textContent = 'Load failed: ' + e.message;
+    document.getElementById('edit-status').className = 'text-sm ml-auto text-red-600';
+  }
+}
+
+function closeEditModal() {
+  document.getElementById('edit-tenant-modal').classList.add('hidden');
+  editingTenantId = '';
+  // Reset disabled state for all fields
+  for (const id of ['edit-prompt','edit-custom-persona','edit-mem-diary','edit-mem-context',
+                     'edit-mem-journal','edit-mem-rounds','edit-mem-ttl','edit-admin-names']) {
+    const el = document.getElementById(id);
+    if (el) { el.disabled = false; el.placeholder = ''; }
+  }
+}
+
+async function submitEditTenant(e) {
+  e.preventDefault();
+  const btn = document.getElementById('edit-submit-btn');
+  const status = document.getElementById('edit-status');
+  btn.disabled = true;
+  btn.textContent = 'Saving...';
+  status.textContent = '';
+
+  const body = {
+    name: document.getElementById('edit-name').value.trim(),
+    trial_enabled: document.getElementById('edit-trial-enabled').checked,
+    trial_duration_hours: parseInt(document.getElementById('edit-trial-hours').value) || 48,
+    approval_duration_days: parseInt(document.getElementById('edit-approval-days').value) || 0,
+    quota_user_tokens_6h: parseInt(document.getElementById('edit-token-quota').value) || 0,
+    deploy_free_quota: parseInt(document.getElementById('edit-deploy-quota').value) || 0,
+    rate_limit_rpm: parseInt(document.getElementById('edit-rate-rpm').value) || 0,
+    rate_limit_user_rpm: parseInt(document.getElementById('edit-rate-user-rpm').value) || 0,
+    quota_monthly_api_calls: parseInt(document.getElementById('edit-monthly-calls').value) || 0,
+    quota_monthly_tokens: parseInt(document.getElementById('edit-monthly-tokens').value) || 0,
+  };
+  // Only include fields that aren't disabled (partial source disables some fields)
+  if (!document.getElementById('edit-prompt').disabled) {
+    body.llm_system_prompt = document.getElementById('edit-prompt').value;
+    body.custom_persona = document.getElementById('edit-custom-persona').checked;
+    body.memory_diary_enabled = document.getElementById('edit-mem-diary').checked;
+    body.memory_context_enabled = document.getElementById('edit-mem-context').checked;
+    body.memory_journal_max = parseInt(document.getElementById('edit-mem-journal').value) || 0;
+    body.memory_chat_rounds = parseInt(document.getElementById('edit-mem-rounds').value) || 5;
+    body.memory_chat_ttl = parseInt(document.getElementById('edit-mem-ttl').value) || 3600;
+    const an = document.getElementById('edit-admin-names').value.trim();
+    if (an) body.admin_names = an.split(',').map(s => s.trim()).filter(Boolean);
+    else body.admin_names = [];
+  }
+
+  try {
+    const res = await api(`/tenants/${editingTenantId}/config`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    });
+    status.textContent = `Saved! Updated: ${res.updated_fields?.join(', ')}`;
+    status.className = 'text-sm ml-auto text-green-600';
+    // Refresh overview after a short delay
+    setTimeout(() => { closeEditModal(); loadOverview(); }, 1500);
+  } catch (e) {
+    status.textContent = 'Failed: ' + e.message;
+    status.className = 'text-sm ml-auto text-red-600';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Save Changes';
+  }
+}
+</script>
+</body>
+</html>
