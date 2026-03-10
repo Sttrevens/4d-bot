@@ -947,7 +947,7 @@ async def handle_message(
     system_prompt = await _build_system_prompt(
         mode, sender_id=sender_id, sender_name=sender_name,
         user_text=user_text, chat_id=chat_id, chat_type=chat_type,
-        task_type=_task_type,
+        task_type=_task_type, actual_tool_names=_loaded_tool_names,
     )
     # 注入工具使用经验（基于历史调用成功/失败率 + 经验教训 + 常用组合）
     try:

@@ -1357,6 +1357,7 @@ async def _build_system_prompt(
     chat_id: str = "",
     chat_type: str = "",
     task_type: str = "",
+    actual_tool_names: set[str] | None = None,
 ) -> str:
     """合并用户配置的人设 + 工具说明 + 模式指令 + 已知用户 + 身份行为准则"""
     from datetime import datetime, timedelta
@@ -1426,7 +1427,7 @@ async def _build_system_prompt(
         prompt += _DEEP_RESEARCH_INSTRUCTIONS
 
     # 注入能力画像（平台感知 + 实际工具能力）
-    prompt += _build_capability_profile(tenant)
+    prompt += _build_capability_profile(tenant, actual_tool_names=actual_tool_names)
 
     if chat_id:
         if chat_type == "group":
@@ -1488,8 +1489,13 @@ async def _build_system_prompt(
     return prompt
 
 
-def _build_capability_profile(tenant) -> str:
-    """根据租户配置动态生成能力画像，让 LLM 了解自己在哪个平台、能做什么、不能做什么。"""
+def _build_capability_profile(tenant, actual_tool_names: set[str] | None = None) -> str:
+    """根据租户配置动态生成能力画像，让 LLM 了解自己在哪个平台、能做什么、不能做什么。
+
+    actual_tool_names: 经过权限/平台/白名单过滤后的实际工具集。
+    如果传入则直接使用，避免能力画像与实际工具不一致（如 instance_management_enabled=False
+    但画像仍声称能创建实例）。
+    """
     from app.tenant.context import get_current_channel
     lines = []
     current_ch = get_current_channel()
@@ -1508,11 +1514,15 @@ def _build_capability_profile(tenant) -> str:
         lines.append("你在 QQ 机器人平台，用户通过 QQ 和你聊天")
         lines.append("只能被动回复（群聊 5 分钟内最多 5 条，单聊 60 分钟窗口），不能主动推送")
 
-    # ── 根据实际工具集描述能力（tools_enabled 为空=全部启用）──
-    _tools = set(tenant.tools_enabled) if tenant.tools_enabled else set(ALL_TOOL_MAP.keys())
-    # 非飞书平台排除飞书工具
-    if platform != "feishu":
-        _tools -= _FEISHU_ONLY_TOOLS
+    # ── 根据实际工具集描述能力 ──
+    # 优先使用调用方传入的已过滤工具集，确保能力画像与 LLM 实际可用工具完全一致
+    if actual_tool_names is not None:
+        _tools = set(actual_tool_names)
+    else:
+        # fallback: 从 tenant config 推算（可能与实际不一致，仅兜底）
+        _tools = set(tenant.tools_enabled) if tenant.tools_enabled else set(ALL_TOOL_MAP.keys())
+        if platform != "feishu":
+            _tools -= _FEISHU_ONLY_TOOLS
 
     if "xhs_search" in _tools or "search_social_media" in _tools:
         lines.append("你能搜索小红书/抖音等社媒平台的用户和内容")
@@ -1572,7 +1582,9 @@ def _build_capability_profile(tenant) -> str:
 
     if not lines:
         return ""
-    return "\n\n[你的能力] " + "。".join(lines) + "。"
+    result = "\n\n[你的能力] " + "。".join(lines) + "。"
+    result += "\n⚠️ 以上是你的全部能力，不要声称拥有上面没列出的能力。如果用户问你能否做某件事而你没有对应的工具，请如实说不能。"
+    return result
 
 
 def _build_deploy_quota_context(tenant, sender_id: str) -> str:

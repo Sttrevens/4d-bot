@@ -149,10 +149,14 @@ async def handle_message(
 
     # 按租户过滤工具集（客户租户不含 self_*/server_*）
     openai_tools, tool_map = _get_tenant_tools(tenant, user_text=user_text)
+    _loaded_tool_names: set[str] = {
+        t["function"]["name"] for t in openai_tools if "function" in t
+    }
 
     system_prompt = await _build_system_prompt(
         mode, sender_id=sender_id, sender_name=sender_name,
         user_text=user_text, chat_id=chat_id, chat_type=chat_type,
+        actual_tool_names=_loaded_tool_names,
     )
     messages: list[dict] = [
         {"role": "system", "content": system_prompt},
