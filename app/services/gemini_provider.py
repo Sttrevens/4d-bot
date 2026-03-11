@@ -1584,7 +1584,24 @@ async def handle_message(
 
             # ── 退出前检查 4b: LLM exit gate（兜底，处理本地检测不了的复杂情况）──
             # fail-OPEN：超时时放行（本地 detect_action_claims 已做了第一道检查）
-            if _exit_gate_nudge_count < _MAX_EXIT_GATE_NUDGES and reply_text and round_num >= _exit_gate_min_round:
+            # ⚠️ 关键守卫：模型已调 ≥3 工具时跳过 LLM exit review。
+            # 原因：模型在积极工作后给出的文本回复大概率是中间汇报/结果报告，
+            # 而非空承诺。LLM reviewer 无法区分人格化语气（"我错了是我傻逼"）
+            # 和真正的空承诺，误判会打断正常任务流导致模型迷失方向。
+            # 本地 detect_action_claims 已覆盖"声称做了但没做"的场景，
+            # LLM gate 只需在零工具调用时兜底。
+            _skip_llm_gate = len(tool_names_called) >= 3
+            if _skip_llm_gate:
+                logger.debug(
+                    "skipping LLM exit review: %d tools already called",
+                    len(tool_names_called),
+                )
+            if (
+                not _skip_llm_gate
+                and _exit_gate_nudge_count < _MAX_EXIT_GATE_NUDGES
+                and reply_text
+                and round_num >= _exit_gate_min_round
+            ):
                 _gate = await llm_exit_review(
                     reply_text, user_text, tool_names_called,
                     gemini_client=client,
@@ -1717,7 +1734,10 @@ async def handle_message(
                 group_name = func_args.get("group", "")
                 reason = func_args.get("reason", "")
                 logger.info("request_more_tools: group=%s reason=%s", group_name, reason)
-                new_oai_tools, new_map = _expand_tool_group(group_name, tenant, _loaded_tool_names)
+                new_oai_tools, new_map = _expand_tool_group(
+                    group_name, tenant, _loaded_tool_names,
+                    _from_request_more_tools=True,
+                )
                 if new_oai_tools:
                     tool_map.update(new_map)
                     new_gemini = _openai_tools_to_gemini(new_oai_tools)

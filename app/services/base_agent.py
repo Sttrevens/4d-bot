@@ -634,6 +634,21 @@ def _get_group_tool_names(groups: set[str]) -> set[str]:
 
 
 # request_more_tools 元工具：LLM 发现需要更多工具时动态加载
+#
+# ⚠️ 安全边界：devops 和 admin 组禁止通过 request_more_tools 动态加载。
+# 原因（第一性原理）：
+#   - devops 包含 self_edit_file / self_write_file / self_safe_deploy —— 代码自修改能力
+#   - admin 包含 provision_tenant / destroy_instance —— 基础设施变更能力
+#   - 如果用户消息的关键词没匹配到这些组，说明用户根本没在做 devops/admin 任务
+#   - bot 在非 devops 场景中自作主张加载这些工具是架构级越权
+#   - 实际事故：日历任务中 bot 被 exit gate nudge 后迷失方向，动态加载了 devops
+#     组，然后读了自己的源码并修改了 calendar_ops.py —— 完全偏离用户意图
+# 如果用户确实需要 devops/admin 能力，初始关键词匹配会在第一轮就加载对应工具组。
+_RESTRICTED_TOOL_GROUPS = frozenset({"devops", "admin"})
+
+_REQUEST_MORE_TOOLS_ALLOWED = [
+    g for g in _GROUP_DESCRIPTIONS.keys() if g not in _RESTRICTED_TOOL_GROUPS
+]
 _REQUEST_MORE_TOOLS_DEF = {
     "name": "request_more_tools",
     "description": (
@@ -646,7 +661,7 @@ _REQUEST_MORE_TOOLS_DEF = {
             "group": {
                 "type": "string",
                 "description": "要加载的工具组名称",
-                "enum": list(_GROUP_DESCRIPTIONS.keys()),
+                "enum": _REQUEST_MORE_TOOLS_ALLOWED,
             },
             "reason": {
                 "type": "string",
@@ -658,11 +673,25 @@ _REQUEST_MORE_TOOLS_DEF = {
 }
 
 
-def _expand_tool_group(group_name: str, tenant, current_tool_names: set[str]) -> tuple[list[dict], dict]:
+def _expand_tool_group(
+    group_name: str, tenant, current_tool_names: set[str],
+    *, _from_request_more_tools: bool = False,
+) -> tuple[list[dict], dict]:
     """动态加载指定工具组的工具定义和处理函数。
 
     返回增量的 (new_openai_tools, new_tool_map)，只包含尚未加载的工具。
+
+    _from_request_more_tools: 如果是通过 request_more_tools 元工具调用的，
+    会拒绝加载 _RESTRICTED_TOOL_GROUPS（devops/admin），防御 LLM 绕过 enum 约束。
     """
+    # 硬防护：通过 request_more_tools 动态请求时，拒绝加载受限工具组
+    if _from_request_more_tools and group_name in _RESTRICTED_TOOL_GROUPS:
+        logger.warning(
+            "blocked dynamic loading of restricted tool group '%s' via request_more_tools",
+            group_name,
+        )
+        return [], {}
+
     group_tools = _TOOL_GROUPS.get(group_name, frozenset())
     if not group_tools:
         return [], {}
@@ -784,8 +813,11 @@ def _get_tenant_tools(
             # 但 tool_defs 只发送匹配组的定义给 LLM
             tool_defs = [t for t in tool_defs if t["name"] in active_tool_names]
             # 追加 request_more_tools 元工具
-            # 构建可用工具组描述（排除已加载的组）
-            remaining = {g: d for g, d in _GROUP_DESCRIPTIONS.items() if g not in active_groups}
+            # 构建可用工具组描述（排除已加载的组 + 受限组）
+            remaining = {
+                g: d for g, d in _GROUP_DESCRIPTIONS.items()
+                if g not in active_groups and g not in _RESTRICTED_TOOL_GROUPS
+            }
             if remaining:
                 tool_defs.append(_REQUEST_MORE_TOOLS_DEF)
                 tool_map["request_more_tools"] = lambda args: (
@@ -1800,10 +1832,14 @@ def detect_action_claims(reply_text: str, tool_names_called: list[str]) -> bool:
     total_calls = len(tool_names_called)
     called = set(tool_names_called)
 
-    # 如果模型已经做了大量工作（≥5 次工具调用），跳过所有检测。
-    # 模型完成总结中提到"修改"/"删除"等词很正常，不是空承诺。
-    if total_calls >= 5:
-        logger.info("action claim check skipped: %d total tool calls (likely completion summary)", total_calls)
+    # 如果模型已经在积极工作（≥3 次工具调用），跳过所有检测。
+    # 模型在做了实际工作后的文本回复（中间汇报/结果报告/完成总结）
+    # 中提到"修改"/"删除"/"创建"等词很正常，不是空承诺。
+    # 阈值从 5 降到 3：3 次工具调用足以说明模型在干活。
+    # 之前阈值 5 导致调了 3-4 个工具的 bot 被误判为空承诺并 nudge，
+    # nudge 消息反而让 bot 迷失方向（如日历任务中跑去改源码）。
+    if total_calls >= 3:
+        logger.info("action claim check skipped: %d total tool calls (likely working/reporting)", total_calls)
         return False
 
     for pattern, required_tools in _ACTION_CLAIM_PATTERNS:
