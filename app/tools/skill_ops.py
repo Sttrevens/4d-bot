@@ -299,17 +299,18 @@ def _install_as_module(url: str, *, prefetched_content: str | None = None) -> To
     if not module_name:
         module_name = "imported_skill"
 
-    # 写入 capability module
-    os.makedirs(_MODULES_DIR, exist_ok=True)
-    path = os.path.join(_MODULES_DIR, f"{module_name}.md")
-    is_update = os.path.exists(path)
+    # 写入 Redis per-tenant capability module
+    from app.tenant.context import get_current_tenant
+    tenant = get_current_tenant()
+    tenant_id = tenant.tenant_id
+    redis_key = f"modules:{tenant_id}:{module_name}"
+    _MODULE_TTL = 365 * 86400  # 1 year
 
-    try:
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(content)
-    except Exception as e:
-        logger.error("save module from github failed: %s", e)
-        return ToolResult.error(f"保存模块失败：{e}")
+    is_update = redis_exec("EXISTS", redis_key) == 1
+    result_set = redis_exec("SET", redis_key, content, "EX", str(_MODULE_TTL))
+    if result_set != "OK":
+        logger.error("save module to redis failed: key=%s", redis_key)
+        return ToolResult.error("保存模块到 Redis 失败")
 
     repo_info = _extract_repo_info(url)
     source_str = f"github:{repo_info[0]}/{repo_info[1]}" if repo_info else url
@@ -323,7 +324,7 @@ def _install_as_module(url: str, *, prefetched_content: str | None = None) -> To
         f"✅ 已{action}知识模块 **{module_name}**（{len(content)} 字符）\n\n"
         f"描述: {description}\n"
         f"来源: {source_str}\n"
-        f"存储: app/knowledge/modules/{module_name}.md\n\n"
+        f"存储: Redis modules:{tenant_id}:{module_name}\n\n"
         f"使用方式：\n"
         f"- 对话中调用 `load_capability_module(\"{module_name}\")` 按需加载\n"
         f"- 或在 tenants.json 的 `capability_modules` 中添加 `\"{module_name}\"` 自动注入 system prompt"

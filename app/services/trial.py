@@ -77,7 +77,10 @@ def check_trial(tenant_id: str, user_id: str, duration_hours: int = 48,
             # 检查审批是否过期
             approved_until = info.get("approved_until", "")
             if approved_until and _is_approval_expired(approved_until):
-                redis.execute("HSET", key, "status", "expired")
+                redis.pipeline([
+                    ["HSET", key, "status", "expired"],
+                    ["EXPIRE", key, str(90 * 86400)],
+                ])
                 return False, (
                     "您的使用授权已到期，请联系管理员重新审批。"
                 )
@@ -92,7 +95,10 @@ def check_trial(tenant_id: str, user_id: str, duration_hours: int = 48,
         first_seen = info.get("first_seen", "")
         if first_seen and _is_expired(first_seen, duration_hours):
             # 过期 → 更新状态
-            redis.execute("HSET", key, "status", "expired")
+            redis.pipeline([
+                ["HSET", key, "status", "expired"],
+                ["EXPIRE", key, str(90 * 86400)],
+            ])
             return False, (
                 f"您的 {duration_hours} 小时免费试用已结束。"
                 "如需继续使用，请联系管理员开通正式账号。"
@@ -134,6 +140,7 @@ def _touch(key: str, display_name: str = "") -> None:
     # 每次活跃时刷新名字（用户可能改名）
     if display_name:
         cmds.append(["HSET", key, "display_name", display_name])
+    cmds.append(["EXPIRE", key, str(90 * 86400)])
     redis.pipeline(cmds)
 
 
@@ -270,6 +277,7 @@ def approve_user(tenant_id: str, user_id: str, approved_by: str = "admin",
         else:
             # 永久：清除之前可能存在的到期时间
             cmds.append(["HDEL", key, "approved_until"])
+        cmds.append(["EXPIRE", key, str(90 * 86400)])
         redis.pipeline(cmds)
         logger.info("trial: approved user=%s tenant=%s by=%s days=%s",
                     user_id[:16], tenant_id, approved_by, duration_days or "permanent")
@@ -285,7 +293,10 @@ def block_user(tenant_id: str, user_id: str) -> bool:
         return False
     key = _user_key(tenant_id, user_id)
     try:
-        redis.execute("HSET", key, "status", "blocked")
+        redis.pipeline([
+            ["HSET", key, "status", "blocked"],
+            ["EXPIRE", key, str(90 * 86400)],
+        ])
         logger.info("trial: blocked user=%s tenant=%s", user_id[:16], tenant_id)
         return True
     except Exception:
@@ -312,7 +323,10 @@ def set_user_notes(tenant_id: str, user_id: str, notes: str) -> bool:
         return False
     key = _user_key(tenant_id, user_id)
     try:
-        redis.execute("HSET", key, "notes", notes)
+        redis.pipeline([
+            ["HSET", key, "notes", notes],
+            ["EXPIRE", key, str(90 * 86400)],
+        ])
         return True
     except Exception:
         return False

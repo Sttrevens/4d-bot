@@ -1114,55 +1114,105 @@ def _load_capability_modules(module_names: list[str]) -> str:
         if not all(c.isalnum() or c in "_-" for c in name):
             logger.warning("invalid module name: %s", name)
             continue
-        path = os.path.join(_MODULES_DIR, f"{name}.md")
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                content = f.read()
-            if len(content) > 4000:
-                content = content[:4000] + "\n... (模块内容已截断)"
-            if total_len + len(content) > 12000:
-                logger.info("capability modules budget exceeded, skipping %s", name)
-                break
-            loaded.append(content)
-            total_len += len(content)
-        except FileNotFoundError:
+        content = load_module_content(name)
+        if content is None:
             logger.warning("capability module not found: %s", name)
+            continue
+        if len(content) > 4000:
+            content = content[:4000] + "\n... (模块内容已截断)"
+        if total_len + len(content) > 12000:
+            logger.info("capability modules budget exceeded, skipping %s", name)
+            break
+        loaded.append(content)
+        total_len += len(content)
     if not loaded:
         return ""
     return "\n\n" + "\n\n".join(loaded)
 
 
 def list_available_modules() -> list[dict]:
-    """列出所有可用的能力模块（供 module_ops 工具调用）。"""
+    """列出所有可用的能力模块（Redis per-tenant + 磁盘内置）。"""
     modules = []
-    if not os.path.isdir(_MODULES_DIR):
-        return modules
-    for fname in sorted(os.listdir(_MODULES_DIR)):
-        if not fname.endswith(".md"):
-            continue
-        name = fname[:-3]
-        path = os.path.join(_MODULES_DIR, fname)
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                first_line = ""
-                for line in f:
-                    line = line.strip()
-                    if line and not line.startswith("#"):
-                        first_line = line
-                        break
-                    if line.startswith("# "):
-                        first_line = line[2:]
-                        break
-            modules.append({"name": name, "description": first_line})
-        except Exception:
-            modules.append({"name": name, "description": "(读取失败)"})
+    seen_names: set[str] = set()
+
+    # 1) Redis per-tenant modules（优先）
+    try:
+        from app.services import redis_client
+        from app.tenant.context import get_current_tenant
+        tenant = get_current_tenant()
+        tid = tenant.tenant_id
+        # SCAN for modules:{tid}:*
+        cursor = "0"
+        prefix = f"modules:{tid}:"
+        while True:
+            result = redis_client.execute("SCAN", cursor, "MATCH", f"{prefix}*", "COUNT", "100")
+            if not result or not isinstance(result, list) or len(result) < 2:
+                break
+            cursor = str(result[0])
+            keys = result[1] if isinstance(result[1], list) else []
+            for key in keys:
+                name = key[len(prefix):]
+                if name and name not in seen_names:
+                    # 提取描述（读前 200 字符）
+                    content = redis_client.execute("GETRANGE", key, "0", "200")
+                    desc = _extract_module_desc(content or "")
+                    modules.append({"name": name, "description": desc, "source": "tenant"})
+                    seen_names.add(name)
+            if cursor == "0":
+                break
+    except Exception:
+        pass  # fail-open: Redis 不可用时仍显示磁盘模块
+
+    # 2) 磁盘内置模块（不覆盖同名 Redis 模块）
+    if os.path.isdir(_MODULES_DIR):
+        for fname in sorted(os.listdir(_MODULES_DIR)):
+            if not fname.endswith(".md"):
+                continue
+            name = fname[:-3]
+            if name in seen_names:
+                continue
+            path = os.path.join(_MODULES_DIR, fname)
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    content = f.read(200)
+                desc = _extract_module_desc(content)
+                modules.append({"name": name, "description": desc, "source": "builtin"})
+            except Exception:
+                modules.append({"name": name, "description": "(读取失败)", "source": "builtin"})
     return modules
 
 
+def _extract_module_desc(content: str) -> str:
+    """从模块内容前几行提取描述。"""
+    import re as _re
+    m = _re.search(r"^#\s+(.+)$", content, _re.MULTILINE)
+    if m:
+        return m.group(1).strip()
+    for line in content.split("\n"):
+        line = line.strip()
+        if line and not line.startswith("#"):
+            return line[:100]
+    return ""
+
+
 def load_module_content(name: str) -> str | None:
-    """读取单个模块内容（供 module_ops 工具调用）。"""
+    """读取单个模块内容（Redis per-tenant 优先，磁盘兜底）。"""
     if not all(c.isalnum() or c in "_-" for c in name):
         return None
+
+    # 1) Redis per-tenant
+    try:
+        from app.services import redis_client
+        from app.tenant.context import get_current_tenant
+        tenant = get_current_tenant()
+        redis_key = f"modules:{tenant.tenant_id}:{name}"
+        content = redis_client.execute("GET", redis_key)
+        if content and isinstance(content, str):
+            return content
+    except Exception:
+        pass  # fail-open
+
+    # 2) 磁盘内置
     path = os.path.join(_MODULES_DIR, f"{name}.md")
     try:
         with open(path, "r", encoding="utf-8") as f:

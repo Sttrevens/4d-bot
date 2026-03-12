@@ -68,7 +68,8 @@ def write_json(key: str, data: dict | list, message: str = "") -> bool:
     full_key = f"{_prefix()}:{key}"
     value = json.dumps(data, ensure_ascii=False)
 
-    result = redis.execute("SET", full_key, value)
+    _MEM_TTL = 365 * 86400  # 1 year
+    result = redis.execute("SET", full_key, value, "EX", str(_MEM_TTL))
     if result == "OK":
         _cache[full_key] = (data, time.time())
         return True
@@ -88,13 +89,15 @@ def append_journal(entry: dict) -> int:
     entry.setdefault("ts", time.time())
     value = json.dumps(entry, ensure_ascii=False)
 
-    # RPUSH + LLEN 用 pipeline 减少 RTT
+    _JOURNAL_TTL = 180 * 86400  # 180 days
+    # RPUSH + EXPIRE + LLEN 用 pipeline 减少 RTT
     results = redis.pipeline([
         ["RPUSH", full_key, value],
+        ["EXPIRE", full_key, str(_JOURNAL_TTL)],
         ["LLEN", full_key],
     ])
 
-    length = results[1] if len(results) > 1 and isinstance(results[1], int) else 0
+    length = results[2] if len(results) > 2 and isinstance(results[2], int) else 0
 
     # 硬上限：压缩失败时的安全阀
     if length > 2000:
@@ -151,10 +154,12 @@ def rewrite_journal(entries: list[dict]) -> bool:
 
     values = [json.dumps(e, ensure_ascii=False) for e in entries]
 
-    # DEL + RPUSH pipeline
+    _JOURNAL_TTL = 180 * 86400  # 180 days
+    # DEL + RPUSH + EXPIRE pipeline
     cmds: list[list[str]] = [["DEL", full_key]]
     # RPUSH 支持多个 value
     cmds.append(["RPUSH", full_key] + values)
+    cmds.append(["EXPIRE", full_key, str(_JOURNAL_TTL)])
     results = redis.pipeline(cmds)
 
     ok = results[-1] is not None if results else False

@@ -12,11 +12,13 @@ bot 可以动态查看、加载、创建和更新能力模块（app/knowledge/mo
 import logging
 import os
 
+from app.services.redis_client import execute as redis_exec
 from app.tools.tool_result import ToolResult
 
 logger = logging.getLogger(__name__)
 
 _MODULES_DIR = os.path.join(os.path.dirname(__file__), "..", "knowledge", "modules")
+_MODULE_TTL = 365 * 86400  # 1 year
 
 
 def list_capability_modules(args: dict) -> ToolResult:
@@ -73,16 +75,16 @@ def save_capability_module(args: dict) -> ToolResult:
     if len(content) < 50:
         return ToolResult.invalid_param("模块内容太短（<50 字符），请提供有意义的领域知识。")
 
-    path = os.path.join(_MODULES_DIR, f"{name}.md")
-    is_update = os.path.exists(path)
+    # 写入 Redis per-tenant
+    from app.tenant.context import get_current_tenant
+    tenant = get_current_tenant()
+    redis_key = f"modules:{tenant.tenant_id}:{name}"
 
-    try:
-        os.makedirs(_MODULES_DIR, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(content)
-    except Exception as e:
-        logger.error("save capability module failed: %s", e)
-        return ToolResult.error(f"保存失败：{e}")
+    is_update = redis_exec("EXISTS", redis_key) == 1
+    result_set = redis_exec("SET", redis_key, content, "EX", str(_MODULE_TTL))
+    if result_set != "OK":
+        logger.error("save capability module to redis failed: key=%s", redis_key)
+        return ToolResult.error("保存模块到 Redis 失败")
 
     action = "更新" if is_update else "创建"
     return ToolResult.success(
