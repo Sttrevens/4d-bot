@@ -1,18 +1,22 @@
 """GitHub Skill 安装工具
 
-从 GitHub 仓库安装自定义工具（skill）。
-代码经过沙箱安全校验后存入 Redis，下次对话自动加载。
+从 GitHub 仓库安装自定义工具和知识模块。
+支持两种格式：
+- Python 工具（.py + TOOL_DEFINITIONS/TOOL_MAP）→ 编译校验后存入 Redis
+- 知识模块（.md，如 SKILL.md）→ 存为 capability module，注入 system prompt
 
 支持的 URL 格式:
 - https://github.com/user/repo/blob/main/tools/my_tool.py
-- https://raw.githubusercontent.com/user/repo/main/tools/my_tool.py
-- github.com/user/repo (会列出可安装的工具)
+- https://github.com/user/repo/blob/main/skills/tdd/SKILL.md
+- https://raw.githubusercontent.com/user/repo/main/path/file.py
+- github.com/user/repo (会列出可安装的工具和知识模块)
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import time
 
@@ -24,15 +28,31 @@ from app.tools.tool_result import ToolResult
 
 logger = logging.getLogger(__name__)
 
-# GitHub raw content URL 模式
+# ── GitHub URL 模式 ──
+# 支持任意文件扩展名（不再限制 .py）
 _GITHUB_BLOB_RE = re.compile(
-    r"github\.com/(?P<owner>[^/]+)/(?P<repo>[^/]+)/blob/(?P<branch>[^/]+)/(?P<path>.+\.py)"
+    r"github\.com/(?P<owner>[^/]+)/(?P<repo>[^/]+)/blob/(?P<branch>[^/]+)/(?P<path>.+)"
 )
 _GITHUB_RAW_RE = re.compile(
-    r"raw\.githubusercontent\.com/(?P<owner>[^/]+)/(?P<repo>[^/]+)/(?P<branch>[^/]+)/(?P<path>.+\.py)"
+    r"raw\.githubusercontent\.com/(?P<owner>[^/]+)/(?P<repo>[^/]+)/(?P<branch>[^/]+)/(?P<path>.+)"
 )
 _GITHUB_REPO_RE = re.compile(
     r"(?:https?://)?github\.com/(?P<owner>[^/]+)/(?P<repo>[^/#?]+)/?$"
+)
+
+# 知识模块文件名模式（大小写不敏感）
+_KNOWLEDGE_FILE_PATTERNS = re.compile(
+    r"(?i)(skill|readme|guide|workflow|runbook|playbook|prompt|instructions?)\.md$"
+)
+# 要排除的 .md 文件（仓库根 README 等非技能文档）
+_SKIP_MD_PATTERNS = re.compile(
+    r"(?i)^readme\.md$|^contributing\.md$|^changelog\.md$|^license"
+    r"|^\.github/|^docs/api|node_modules/"
+)
+
+# capability module 存储目录
+_MODULES_DIR = os.path.join(
+    os.path.dirname(__file__), "..", "knowledge", "modules"
 )
 
 # Redis key helpers (复用 custom_tool_ops 的结构)
@@ -44,13 +64,11 @@ def _index_key(tenant_id: str) -> str:
 
 
 def _to_raw_url(url: str) -> str | None:
-    """将 GitHub blob URL 转换为 raw URL。"""
+    """将 GitHub blob/raw URL 转换为 raw content URL。支持任意文件类型。"""
     url = url.strip()
     # 已经是 raw URL
-    m = _GITHUB_RAW_RE.search(url)
-    if m:
+    if _GITHUB_RAW_RE.search(url):
         return url
-
     # blob URL → raw URL
     m = _GITHUB_BLOB_RE.search(url)
     if m:
@@ -58,68 +76,120 @@ def _to_raw_url(url: str) -> str | None:
             f"https://raw.githubusercontent.com/{m.group('owner')}/"
             f"{m.group('repo')}/{m.group('branch')}/{m.group('path')}"
         )
-
     return None
 
 
 def _extract_repo_info(url: str) -> tuple[str, str] | None:
     """从 URL 提取 (owner, repo)。"""
-    m = _GITHUB_REPO_RE.search(url)
-    if m:
-        return m.group("owner"), m.group("repo")
-    m = _GITHUB_BLOB_RE.search(url)
-    if m:
-        return m.group("owner"), m.group("repo")
-    m = _GITHUB_RAW_RE.search(url)
-    if m:
-        return m.group("owner"), m.group("repo")
+    for pat in (_GITHUB_REPO_RE, _GITHUB_BLOB_RE, _GITHUB_RAW_RE):
+        m = pat.search(url)
+        if m:
+            return m.group("owner"), m.group("repo")
     return None
 
 
-def install_skill(tenant_id: str, url: str, risk_level: str = "yellow") -> ToolResult:
-    """从 GitHub URL 安装 skill（自定义工具）。
+def _derive_module_name(path: str) -> str:
+    """从文件路径推导 capability module 名称。
 
-    流程: 下载代码 → 安全校验 → 编译验证 → 存入 Redis
+    策略：
+    - skills/brainstorming/SKILL.md → brainstorming
+    - guides/tdd-workflow.md → tdd-workflow
+    - prompts/code_review.md → code_review
+    - SKILL.md (根目录) → 用仓库名（调用方处理）
+    """
+    parts = path.replace("\\", "/").split("/")
+    filename = parts[-1]
+    stem = filename.rsplit(".", 1)[0]  # 去掉 .md
+
+    # 如果文件名是通用名（SKILL, README 等），用父目录名
+    if re.match(r"(?i)^(skill|readme|guide|instructions?)$", stem):
+        if len(parts) >= 2:
+            return parts[-2]  # 父目录名
+    return stem
+
+
+def _download_file(url: str) -> tuple[str | None, str | None]:
+    """下载 GitHub 文件，返回 (content, error_message)。"""
+    raw_url = _to_raw_url(url)
+    if not raw_url:
+        return None, (
+            "URL 格式不支持。请提供以下格式之一:\n"
+            "- https://github.com/user/repo/blob/main/path/file.py\n"
+            "- https://github.com/user/repo/blob/main/path/SKILL.md\n"
+            "- https://raw.githubusercontent.com/user/repo/main/path/file"
+        )
+    try:
+        resp = httpx.get(raw_url, timeout=15, follow_redirects=True)
+        resp.raise_for_status()
+        content = resp.text
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            return None, f"文件不存在: {raw_url}"
+        return None, f"下载失败 (HTTP {e.response.status_code}): {raw_url}"
+    except Exception as e:
+        return None, f"下载失败: {e}"
+
+    if not content.strip():
+        return None, "下载的文件为空"
+    return content, None
+
+
+# ═══════════════════════════════════════════════════════
+#  核心安装逻辑
+# ═══════════════════════════════════════════════════════
+
+def install_skill(tenant_id: str, url: str, risk_level: str = "yellow") -> ToolResult:
+    """从 GitHub URL 安装 skill。
+
+    自动检测文件类型：
+    - .py → Python 工具（编译校验 → Redis）
+    - .md → 知识模块（存为 capability module）
+    - 仓库 URL → 列出可安装的文件
     """
     if not tenant_id:
         return ToolResult.invalid_param("缺少 tenant_id")
     if not url:
         return ToolResult.invalid_param("请提供 GitHub URL")
 
-    # 检查是否是仓库 URL（没有具体文件路径）
+    # 仓库 URL（没有具体文件路径）→ 浏览仓库
     if _GITHUB_REPO_RE.search(url):
         return _browse_repo(url)
 
-    # 转换为 raw URL
-    raw_url = _to_raw_url(url)
-    if not raw_url:
+    # 检测文件类型
+    url_lower = url.lower()
+    if url_lower.endswith(".md"):
+        return _install_as_module(url)
+    elif url_lower.endswith(".py"):
+        return _install_as_tool(tenant_id, url, risk_level)
+    else:
+        # 尝试作为 .md 或 .py 处理
+        # 先下载看内容
+        content, err = _download_file(url)
+        if err:
+            return ToolResult.error(err)
+        # 如果看起来像 Python 代码
+        if "TOOL_DEFINITIONS" in content or "TOOL_MAP" in content:
+            return _install_as_tool(tenant_id, url, risk_level)
+        # 如果看起来像 Markdown
+        if content.lstrip().startswith("#") or content.lstrip().startswith("---"):
+            return _install_as_module(url, prefetched_content=content)
         return ToolResult.invalid_param(
-            "URL 格式不支持。请提供以下格式之一:\n"
-            "- https://github.com/user/repo/blob/main/path/tool.py\n"
-            "- https://raw.githubusercontent.com/user/repo/main/path/tool.py"
+            f"无法识别文件类型。支持 .py（Python 工具）和 .md（知识模块）。\n"
+            f"URL: {url}"
         )
 
-    # 1. 下载代码
-    try:
-        resp = httpx.get(raw_url, timeout=15, follow_redirects=True)
-        resp.raise_for_status()
-        code = resp.text
-    except httpx.HTTPStatusError as e:
-        if e.response.status_code == 404:
-            return ToolResult.not_found(f"文件不存在: {raw_url}")
-        return ToolResult.api_error(f"下载失败 (HTTP {e.response.status_code}): {raw_url}")
-    except Exception as e:
-        return ToolResult.api_error(f"下载失败: {e}")
 
-    if not code.strip():
-        return ToolResult.error("下载的文件为空")
+def _install_as_tool(tenant_id: str, url: str, risk_level: str = "yellow") -> ToolResult:
+    """安装 Python 工具（.py 文件）。原有逻辑不变。"""
+    content, err = _download_file(url)
+    if err:
+        return ToolResult.error(err)
 
-    # 文件太大拒绝
-    if len(code) > 50000:
-        return ToolResult.error(f"代码文件太大（{len(code)}字符），最大 50000")
+    if len(content) > 50000:
+        return ToolResult.error(f"代码文件太大（{len(content)}字符），最大 50000")
 
-    # 2. 安全校验
-    violations = validate_code(code)
+    # 安全校验
+    violations = validate_code(content)
     if violations:
         return ToolResult.blocked(
             f"代码安全检查未通过（使用了不允许的模块或函数）:\n"
@@ -127,8 +197,8 @@ def install_skill(tenant_id: str, url: str, risk_level: str = "yellow") -> ToolR
             + "\n\n允许的模块: json, re, time, datetime, math, hashlib, httpx, bs4 等"
         )
 
-    # 3. 编译验证
-    module_dict, errors = compile_tool(code)
+    # 编译验证
+    module_dict, errors = compile_tool(content)
     if errors:
         return ToolResult.error(
             f"代码编译失败:\n" + "\n".join(f"- {e}" for e in errors)
@@ -143,7 +213,7 @@ def install_skill(tenant_id: str, url: str, risk_level: str = "yellow") -> ToolR
             "Skill 文件必须导出这两个变量，格式参考项目内 app/tools/ 下的工具文件。"
         )
 
-    # 4. 安装每个工具
+    # 安装每个工具
     installed: list[str] = []
     from app.tools.custom_tool_ops import _BUILTIN_TOOL_NAMES  # noqa
 
@@ -159,20 +229,18 @@ def install_skill(tenant_id: str, url: str, risk_level: str = "yellow") -> ToolR
         if name not in tool_map:
             continue
 
-        # 写入 Redis
         now = str(int(time.time()))
         schema_json = json.dumps(schema, ensure_ascii=False)
         key = _tool_key(tenant_id, name)
         idx = _index_key(tenant_id)
 
-        # 提取来源信息
         repo_info = _extract_repo_info(url)
         source = f"github:{repo_info[0]}/{repo_info[1]}" if repo_info else f"github:{url}"
 
         results = redis_pipeline([
             ["HSET", key, "name", name],
             ["HSET", key, "description", desc],
-            ["HSET", key, "code", code],
+            ["HSET", key, "code", content],
             ["HSET", key, "input_schema", schema_json],
             ["HSET", key, "risk_level", risk_level],
             ["HSET", key, "created_at", now],
@@ -192,15 +260,82 @@ def install_skill(tenant_id: str, url: str, risk_level: str = "yellow") -> ToolR
 
     tools_list = "\n".join(installed)
     return ToolResult.success(
-        f"已安装 {len(installed)} 个 skill:\n{tools_list}\n\n"
+        f"✅ 已安装 {len(installed)} 个工具 skill:\n{tools_list}\n\n"
         f"来源: {url}\n"
         f"风险级别: {risk_level}\n"
         f"下次对话中将自动可用。"
     )
 
 
+def _install_as_module(url: str, *, prefetched_content: str | None = None) -> ToolResult:
+    """安装知识模块（.md 文件）。
+
+    将 Markdown 内容存为 capability module（app/knowledge/modules/），
+    供 system prompt 注入或 load_capability_module 按需加载。
+    """
+    if prefetched_content:
+        content = prefetched_content
+    else:
+        content, err = _download_file(url)
+        if err:
+            return ToolResult.error(err)
+
+    if len(content) > 30000:
+        return ToolResult.error(
+            f"文件太大（{len(content)} 字符），最大 30000。\n"
+            "知识模块应精简为核心工作流和关键指令。"
+        )
+
+    # 从 URL 推导模块名
+    m = _GITHUB_BLOB_RE.search(url) or _GITHUB_RAW_RE.search(url)
+    if m:
+        path = m.group("path")
+        module_name = _derive_module_name(path)
+    else:
+        module_name = "imported_skill"
+
+    # 清理模块名（只保留字母数字下划线横杠）
+    module_name = re.sub(r"[^a-zA-Z0-9_-]", "_", module_name).strip("_")
+    if not module_name:
+        module_name = "imported_skill"
+
+    # 写入 capability module
+    os.makedirs(_MODULES_DIR, exist_ok=True)
+    path = os.path.join(_MODULES_DIR, f"{module_name}.md")
+    is_update = os.path.exists(path)
+
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+    except Exception as e:
+        logger.error("save module from github failed: %s", e)
+        return ToolResult.error(f"保存模块失败：{e}")
+
+    repo_info = _extract_repo_info(url)
+    source_str = f"github:{repo_info[0]}/{repo_info[1]}" if repo_info else url
+    action = "更新" if is_update else "安装"
+
+    # 提取描述（取 markdown 第一个标题或前 100 字符）
+    desc_match = re.search(r"^#\s+(.+)$", content, re.MULTILINE)
+    description = desc_match.group(1).strip() if desc_match else content[:100].strip()
+
+    return ToolResult.success(
+        f"✅ 已{action}知识模块 **{module_name}**（{len(content)} 字符）\n\n"
+        f"描述: {description}\n"
+        f"来源: {source_str}\n"
+        f"存储: app/knowledge/modules/{module_name}.md\n\n"
+        f"使用方式：\n"
+        f"- 对话中调用 `load_capability_module(\"{module_name}\")` 按需加载\n"
+        f"- 或在 tenants.json 的 `capability_modules` 中添加 `\"{module_name}\"` 自动注入 system prompt"
+    )
+
+
+# ═══════════════════════════════════════════════════════
+#  仓库浏览
+# ═══════════════════════════════════════════════════════
+
 def _browse_repo(url: str) -> ToolResult:
-    """浏览 GitHub 仓库，列出可安装的 .py 文件。"""
+    """浏览 GitHub 仓库，列出可安装的工具（.py）和知识模块（.md）。"""
     info = _extract_repo_info(url)
     if not info:
         return ToolResult.invalid_param("无法解析仓库 URL")
@@ -212,7 +347,6 @@ def _browse_repo(url: str) -> ToolResult:
     try:
         resp = httpx.get(api_url, timeout=15, headers={"Accept": "application/vnd.github.v3+json"})
         if resp.status_code == 404:
-            # 尝试 master 分支
             api_url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/master?recursive=1"
             resp = httpx.get(api_url, timeout=15, headers={"Accept": "application/vnd.github.v3+json"})
         resp.raise_for_status()
@@ -221,13 +355,18 @@ def _browse_repo(url: str) -> ToolResult:
 
     tree = resp.json().get("tree", [])
 
-    # 筛选 .py 文件（排除 __init__.py, setup.py, test 文件等）
-    py_files = []
+    # 分类：Python 工具 和 知识模块
+    py_files: list[str] = []
+    md_files: list[str] = []
+
     for item in tree:
         path = item.get("path", "")
+        if item.get("type") != "blob":
+            continue
+
+        # Python 工具文件
         if (
-            item.get("type") == "blob"
-            and path.endswith(".py")
+            path.endswith(".py")
             and "__init__" not in path
             and "setup.py" not in path
             and "test" not in path.lower()
@@ -235,21 +374,56 @@ def _browse_repo(url: str) -> ToolResult:
         ):
             py_files.append(path)
 
-    if not py_files:
-        return ToolResult.error(f"仓库 {owner}/{repo} 中没有找到可安装的 .py 文件")
+        # 知识模块文件
+        elif (
+            path.endswith(".md")
+            and not _SKIP_MD_PATTERNS.search(path)
+            and (
+                _KNOWLEDGE_FILE_PATTERNS.search(path)
+                or "/skills/" in path.lower()
+                or "/prompts/" in path.lower()
+                or "/guides/" in path.lower()
+            )
+        ):
+            md_files.append(path)
 
-    # 构建结果
-    files_list = "\n".join(
-        f"- `{p}` → 安装命令: install_github_skill(url=\"https://github.com/{owner}/{repo}/blob/main/{p}\")"
-        for p in py_files[:20]
-    )
-    if len(py_files) > 20:
-        files_list += f"\n  ... 还有 {len(py_files) - 20} 个文件"
+    if not py_files and not md_files:
+        return ToolResult.error(
+            f"仓库 {owner}/{repo} 中没有找到可安装的文件。\n"
+            f"支持的格式：.py（Python 工具）和 .md（知识模块，如 SKILL.md）"
+        )
 
-    return ToolResult.success(
-        f"仓库 **{owner}/{repo}** 中找到 {len(py_files)} 个 Python 文件:\n\n{files_list}\n\n"
-        f"选择要安装的文件，我会下载并校验后安装。"
-    )
+    # 检测分支名（从 API URL 推断）
+    branch = "main" if "main" in api_url else "master"
+
+    parts: list[str] = [f"仓库 **{owner}/{repo}** 中找到的可安装内容：\n"]
+
+    if md_files:
+        parts.append(f"### 📚 知识模块（{len(md_files)} 个 .md 文件）\n")
+        for p in md_files[:15]:
+            module_name = _derive_module_name(p)
+            parts.append(
+                f"- `{p}` → 模块名: **{module_name}**\n"
+                f"  安装: `install_github_skill(url=\"https://github.com/{owner}/{repo}/blob/{branch}/{p}\")`"
+            )
+        if len(md_files) > 15:
+            parts.append(f"  ... 还有 {len(md_files) - 15} 个模块")
+        parts.append("")
+
+    if py_files:
+        parts.append(f"### 🔧 Python 工具（{len(py_files)} 个 .py 文件）\n")
+        for p in py_files[:15]:
+            parts.append(
+                f"- `{p}`\n"
+                f"  安装: `install_github_skill(url=\"https://github.com/{owner}/{repo}/blob/{branch}/{p}\")`"
+            )
+        if len(py_files) > 15:
+            parts.append(f"  ... 还有 {len(py_files) - 15} 个文件")
+        parts.append("")
+
+    parts.append("选择要安装的文件，我会自动检测格式并安装。")
+
+    return ToolResult.success("\n".join(parts))
 
 
 def list_installed_skills(tenant_id: str) -> ToolResult:
@@ -286,7 +460,6 @@ def uninstall_skill(tenant_id: str, name: str) -> ToolResult:
     key = _tool_key(tenant_id, name)
     idx = _index_key(tenant_id)
 
-    # 检查是否存在
     exists = redis_exec("EXISTS", key)
     if not exists:
         return ToolResult.not_found(f"未找到 skill '{name}'")
@@ -307,10 +480,11 @@ TOOL_DEFINITIONS = [
     {
         "name": "install_github_skill",
         "description": (
-            "从 GitHub 安装 skill（自定义工具）。"
-            "传入 GitHub 文件 URL，自动下载代码、安全校验、安装。"
-            "如果只传仓库 URL（不含文件路径），会列出可安装的工具文件。"
-            "安装后下次对话自动可用。"
+            "从 GitHub 安装 skill（自定义工具或知识模块）。"
+            "支持两种格式：\n"
+            "- .py 文件（Python 工具）：自动下载、安全校验、安装为可调用工具\n"
+            "- .md 文件（知识模块，如 SKILL.md）：安装为 capability module，可通过 load_capability_module 加载\n"
+            "如果只传仓库 URL（不含文件路径），会列出可安装的工具和知识模块。"
         ),
         "input_schema": {
             "type": "object",
@@ -318,14 +492,16 @@ TOOL_DEFINITIONS = [
                 "url": {
                     "type": "string",
                     "description": (
-                        "GitHub URL。可以是文件 URL（直接安装）或仓库 URL（浏览可安装文件）。"
-                        "例: https://github.com/user/repo/blob/main/tools/my_tool.py"
+                        "GitHub URL。可以是文件 URL（直接安装）或仓库 URL（浏览可安装文件）。\n"
+                        "例: https://github.com/user/repo/blob/main/tools/my_tool.py\n"
+                        "例: https://github.com/user/repo/blob/main/skills/tdd/SKILL.md\n"
+                        "例: https://github.com/user/repo（浏览仓库）"
                     ),
                 },
                 "risk_level": {
                     "type": "string",
                     "enum": ["green", "yellow", "red"],
-                    "description": "风险级别: green=只读, yellow=写操作需确认, red=高风险需确认。默认 yellow。",
+                    "description": "风险级别（仅对 .py 工具有效）: green=只读, yellow=写操作需确认, red=高风险需确认。默认 yellow。",
                     "default": "yellow",
                 },
             },

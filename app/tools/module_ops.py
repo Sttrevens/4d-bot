@@ -65,9 +65,9 @@ def save_capability_module(args: dict) -> ToolResult:
         return ToolResult.invalid_param("模块名不能超过 50 个字符")
 
     # 内容大小保护
-    if len(content) > 5000:
+    if len(content) > 30000:
         return ToolResult.invalid_param(
-            f"模块内容 {len(content)} 字符，超过 5000 上限。"
+            f"模块内容 {len(content)} 字符，超过 30000 上限。"
             "请精简内容，只保留核心工作流和关键知识。"
         )
     if len(content) < 50:
