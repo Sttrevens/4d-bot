@@ -486,7 +486,7 @@ async def _heartbeat_loop() -> None:
                     redis.execute("DEL", "bot:in_flight")
         except Exception:
             pass
-        await asyncio.sleep(300)
+        await asyncio.sleep(600)  # 10 分钟 (was 5min→10min; saves ~144 cmds/day per container)
 
 
 async def _recover_missed_messages() -> None:
