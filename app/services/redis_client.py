@@ -4,8 +4,9 @@
 使用 Upstash REST API，不需要 redis-py 依赖。
 
 Upstash 免费方案限制：
-- 10,000 commands/day（足够 60 租户日常使用）
+- 500,000 commands/day（后台轮询 3 容器 ~130K/day 空闲消耗）
 - 256MB 存储（记忆数据远低于此）
+- 内置 circuit breaker：限额耗尽时自动熔断 60 秒，避免无效请求
 
 ╔══════════════════════════════════════════════════════════════════╗
 ║  ⛔ 严禁让 Redis 客户端继承 HTTPS_PROXY / HTTP_PROXY ！         ║
@@ -26,11 +27,42 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from typing import Any
 
 import httpx
 
 logger = logging.getLogger(__name__)
+
+# ── Circuit Breaker ──
+# 当 Upstash 返回 "max requests limit exceeded" 时，停止请求 _CB_COOLDOWN 秒。
+# 避免后台轮询（tenant_sync 5s / task_watchdog 30s）在限额耗尽后继续无效请求。
+_CB_COOLDOWN = 60  # 熔断冷却期（秒）
+_cb_open_until: float = 0.0  # 熔断截止时间戳（0 = 正常）
+
+
+def _cb_trip(error_msg: str) -> None:
+    """触发熔断"""
+    global _cb_open_until
+    _cb_open_until = time.monotonic() + _CB_COOLDOWN
+    logger.warning("Redis circuit breaker OPEN for %ds: %s", _CB_COOLDOWN, error_msg[:120])
+
+
+def _cb_is_open() -> bool:
+    """检查熔断是否生效"""
+    global _cb_open_until
+    if _cb_open_until <= 0:
+        return False
+    if time.monotonic() >= _cb_open_until:
+        _cb_open_until = 0.0
+        logger.info("Redis circuit breaker CLOSED (cooldown expired)")
+        return False
+    return True
+
+
+def _is_rate_limit_error(error_str: str) -> bool:
+    """检测是否为限额错误"""
+    return "max requests limit" in error_str.lower() or "rate limit" in error_str.lower()
 
 _REDIS_URL = os.getenv("UPSTASH_REDIS_REST_URL", "").strip().rstrip("/")
 _REDIS_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN", "").strip()
@@ -77,6 +109,8 @@ def execute(*args: str | int) -> Any:
     if not available():
         logger.warning("Redis not configured, command skipped: %s", args[0] if args else "?")
         return None
+    if _cb_is_open():
+        return None
 
     try:
         with httpx.Client(timeout=10, proxy=_REDIS_PROXY, trust_env=False) as client:
@@ -87,7 +121,11 @@ def execute(*args: str | int) -> Any:
             )
             data = resp.json()
             if "error" in data:
-                logger.warning("Redis error: %s (cmd=%s)", data["error"], args[0])
+                err = data["error"]
+                if _is_rate_limit_error(str(err)):
+                    _cb_trip(str(err))
+                else:
+                    logger.warning("Redis error: %s (cmd=%s)", err, args[0])
                 return None
             return data.get("result")
     except Exception:
@@ -103,6 +141,8 @@ def pipeline(commands: list[list[str | int]]) -> list[Any]:
     """
     if not available():
         return [None] * len(commands)
+    if _cb_is_open():
+        return [None] * len(commands)
 
     try:
         with httpx.Client(timeout=15, proxy=_REDIS_PROXY, trust_env=False) as client:
@@ -113,6 +153,11 @@ def pipeline(commands: list[list[str | int]]) -> list[Any]:
             )
             results = resp.json()
             if isinstance(results, list):
+                # 检查 pipeline 结果中是否有限额错误
+                for r in results:
+                    if isinstance(r, dict) and "error" in r and _is_rate_limit_error(str(r["error"])):
+                        _cb_trip(str(r["error"]))
+                        return [None] * len(commands)
                 return [r.get("result") if isinstance(r, dict) else r for r in results]
             return [None] * len(commands)
     except Exception:

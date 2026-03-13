@@ -376,17 +376,25 @@ def _find_event_calendar(event_id: str, calendar_id: str = "") -> tuple[str, dic
     Returns (encoded_cal_id, event_data, error_msg)。
     找到返回 (id, data, "")，找不到返回 ("", None, error)。
     指定了 calendar_id 时只查该日历。
+
+    优先查主日历（与 create_event 用同一个 _resolve_calendar_id），
+    找不到再 fallback 到其他日历。避免在共享/只读日历上找到 event
+    但后续 PATCH 没权限（193001/193002 错误）。
     """
     use_user = _use_user()
     if calendar_id:
         cal_ids = [calendar_id]
     else:
-        cal_ids = _get_all_calendar_ids()
-        if not cal_ids:
-            cal_id = _resolve_calendar_id()
-            if cal_id.startswith("[ERROR]"):
-                return "", None, cal_id
-            cal_ids = [cal_id]
+        # 优先主日历（与 create_event 一致）
+        primary = _get_primary_calendar_id()
+        if primary.startswith("[ERROR]"):
+            return "", None, primary
+        cal_ids = [primary]
+        # fallback: 其他日历（去重）
+        all_cals = _get_all_calendar_ids()
+        for cid in all_cals:
+            if cid not in cal_ids:
+                cal_ids.append(cid)
 
     last_error = ""
     for cid in cal_ids:
@@ -774,6 +782,7 @@ def update_event(
     attendee_emails: list[str] | None = None,
     attendee_chat_ids: list[str] | None = None,
     attendee_ability: str = "",
+    timezone: str = "",
 ) -> ToolResult:
     """修改飞书日程（只更新传入的字段，有 auth 用用户身份，无 auth 用 bot 身份）"""
     # 在多个日历中查找 event
@@ -781,8 +790,25 @@ def update_event(
     if err:
         return ToolResult.api_error(err)
 
-    tz = _get_user_tz()
+    # 确定时区：优先用显式传入的 timezone 参数（与 create_event 一致）
+    explicit_tz = None
+    if timezone:
+        try:
+            explicit_tz = ZoneInfo(timezone)
+        except (KeyError, ValueError):
+            explicit_tz = _tz_from_city(timezone)
+            if not explicit_tz:
+                logger.warning("update_event: invalid timezone '%s', falling back to user tz", timezone)
+
+    tz = explicit_tz or _get_user_tz()
     tz_name = str(tz)
+
+    # 如果有显式时区，追加到时间字符串让 _parse_time 处理
+    if explicit_tz:
+        if start_time and not start_time.rstrip().endswith(str(explicit_tz)):
+            start_time = f"{start_time} {explicit_tz}"
+        if end_time and not end_time.rstrip().endswith(str(explicit_tz)):
+            end_time = f"{end_time} {explicit_tz}"
 
     body: dict = {}
     if summary:
@@ -1203,6 +1229,11 @@ TOOL_DEFINITIONS = [
                 "calendar_id": {
                     "type": "string",
                     "description": "日历 ID。不填则用主日历。",
+                    "default": "",
+                },
+                "timezone": {
+                    "type": "string",
+                    "description": "时区（IANA 格式如 America/Los_Angeles）。修改跨时区活动时间时设置，不填则用用户默认时区。",
                     "default": "",
                 },
             },
