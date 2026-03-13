@@ -46,13 +46,12 @@ _TENANT_META_FIELDS = (
     "memory_chat_ttl", "memory_journal_max", "custom_persona",
 )
 
-_TENANT_META_TTL = 86400  # 24h, refreshed on each startup
-
-
 def publish_tenant_meta() -> int:
     """Publish local tenant metadata to Redis for cross-container admin visibility.
 
     Called from main.py startup. Each container publishes its own tenants.
+    No TTL — keys persist until explicitly deleted. Prevents dashboard losing
+    tenants when containers are temporarily down.
     """
     if not redis.available():
         return 0
@@ -64,7 +63,6 @@ def publish_tenant_meta() -> int:
             redis.execute(
                 "SET", f"admin:tenant:{tid}",
                 json.dumps(meta, ensure_ascii=False),
-                "EX", str(_TENANT_META_TTL),
             )
             count += 1
         except Exception:
@@ -72,42 +70,72 @@ def publish_tenant_meta() -> int:
     return count
 
 
+def _scan_redis_keys(pattern: str) -> list[tuple[str, str]]:
+    """SCAN Redis for keys matching pattern. Returns [(extracted_id, full_key), ...]."""
+    results: list[tuple[str, str]] = []
+    prefix = pattern.replace("*", "")  # e.g. "admin:tenant:" or "tenant_cfg:"
+    cursor = "0"
+    for _ in range(50):
+        result = redis.execute("SCAN", cursor, "MATCH", pattern, "COUNT", "50")
+        if not result or not isinstance(result, list) or len(result) < 2:
+            break
+        cursor = str(result[0])
+        keys = result[1] if isinstance(result[1], list) else []
+        for key in keys:
+            tid = key.replace(prefix, "", 1) if isinstance(key, str) else ""
+            if tid:
+                results.append((tid, key))
+        if cursor == "0":
+            break
+    return results
+
+
 def _get_all_tenants() -> list[dict]:
-    """Get all tenant metadata from Redis (cross-container) + local registry fallback."""
+    """Get all tenant metadata from local registry + Redis (cross-container).
+
+    Three sources (priority order):
+    1. Local registry (current container's tenants)
+    2. Redis admin:tenant:* (metadata published by all containers, no TTL)
+    3. Redis tenant_cfg:* (full configs for dashboard-added tenants, no TTL)
+    """
     tenants_map: dict[str, dict] = {}
 
-    # Local registry first
+    # Source 1: Local registry
     for tid, t in tenant_registry.all_tenants().items():
         tenants_map[tid] = {f: getattr(t, f, None) for f in _TENANT_META_FIELDS}
         tenants_map[tid]["tenant_id"] = tid
 
-    # Redis: other containers' tenants
+    # Source 2 + 3: Redis
     if redis.available():
         try:
-            # Phase 1: SCAN 收集所有 key
-            remote_keys = []
-            cursor = "0"
-            for _ in range(50):
-                result = redis.execute("SCAN", cursor, "MATCH", "admin:tenant:*", "COUNT", "50")
-                if not result or not isinstance(result, list) or len(result) < 2:
-                    break
-                cursor = str(result[0])
-                keys = result[1] if isinstance(result[1], list) else []
-                for key in keys:
-                    tid = key.replace("admin:tenant:", "", 1) if isinstance(key, str) else ""
-                    if tid and tid not in tenants_map:
-                        remote_keys.append((tid, key))
-                if cursor == "0":
-                    break
+            # Phase 1: SCAN admin:tenant:* (metadata from all containers)
+            remote_keys = [
+                (tid, key) for tid, key in _scan_redis_keys("admin:tenant:*")
+                if tid not in tenants_map
+            ]
 
-            # Phase 2: pipeline 批量 GET（1 次 HTTP 代替 N 次）
-            if remote_keys:
-                commands = [["GET", key] for _, key in remote_keys]
+            # Phase 2: SCAN tenant_cfg:* (dashboard-added tenants, full config)
+            cfg_keys = [
+                (tid, key) for tid, key in _scan_redis_keys("tenant_cfg:*")
+                if tid not in tenants_map and not any(t == tid for t, _ in remote_keys)
+            ]
+
+            # Phase 3: pipeline batch GET
+            all_keys = remote_keys + cfg_keys
+            if all_keys:
+                commands = [["GET", key] for _, key in all_keys]
                 responses = redis.pipeline(commands)
-                for (tid, _), data in zip(remote_keys, responses):
-                    if data:
+                for (tid, _), data in zip(all_keys, responses):
+                    if data and tid not in tenants_map:
                         try:
-                            tenants_map[tid] = json.loads(data)
+                            parsed = json.loads(data)
+                            # tenant_cfg:* has full config; extract meta fields
+                            meta = {}
+                            for f in _TENANT_META_FIELDS:
+                                if f in parsed:
+                                    meta[f] = parsed[f]
+                            meta["tenant_id"] = tid
+                            tenants_map[tid] = meta
                         except (json.JSONDecodeError, TypeError):
                             pass
         except Exception:
