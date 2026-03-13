@@ -54,19 +54,32 @@ def publish_tenant_meta() -> int:
     tenants when containers are temporarily down.
     """
     if not redis.available():
+        logger.warning("publish_tenant_meta: Redis not available (missing UPSTASH env vars?), skipping %d tenants",
+                        len(tenant_registry.all_tenants()))
         return 0
     count = 0
+    failed = 0
     for tid, t in tenant_registry.all_tenants().items():
         meta = {f: getattr(t, f, None) for f in _TENANT_META_FIELDS}
         meta["tenant_id"] = tid
         try:
-            redis.execute(
+            result = redis.execute(
                 "SET", f"admin:tenant:{tid}",
                 json.dumps(meta, ensure_ascii=False),
             )
-            count += 1
+            if result is None:
+                # Circuit breaker open or silent failure — key was NOT written
+                failed += 1
+                logger.warning("publish_tenant_meta: SET returned None for %s (circuit breaker open?)", tid)
+            else:
+                count += 1
         except Exception:
-            logger.debug("publish_tenant_meta failed for %s", tid, exc_info=True)
+            failed += 1
+            logger.warning("publish_tenant_meta failed for %s", tid, exc_info=True)
+    if failed:
+        logger.warning("publish_tenant_meta: %d/%d tenants failed to publish — "
+                        "other containers will NOT see these tenants in dashboard",
+                        failed, count + failed)
     return count
 
 
@@ -114,11 +127,15 @@ def _get_all_tenants() -> list[dict]:
                 if tid not in tenants_map
             ]
 
+            logger.info("_get_all_tenants: found %d remote admin:tenant:* keys (excluding %d local)",
+                        len(remote_keys), len(tenants_map))
+
             # Phase 2: SCAN tenant_cfg:* (dashboard-added tenants, full config)
             cfg_keys = [
                 (tid, key) for tid, key in _scan_redis_keys("tenant_cfg:*")
                 if tid not in tenants_map and not any(t == tid for t, _ in remote_keys)
             ]
+            logger.info("_get_all_tenants: found %d tenant_cfg:* keys", len(cfg_keys))
 
             # Phase 3: pipeline batch GET
             all_keys = remote_keys + cfg_keys
@@ -139,8 +156,11 @@ def _get_all_tenants() -> list[dict]:
                         except (json.JSONDecodeError, TypeError):
                             pass
         except Exception:
-            logger.debug("_get_all_tenants Redis scan failed", exc_info=True)
+            logger.warning("_get_all_tenants Redis scan failed", exc_info=True)
+    else:
+        logger.info("_get_all_tenants: Redis not available, returning only %d local tenants", len(tenants_map))
 
+    logger.info("_get_all_tenants: returning %d tenants total", len(tenants_map))
     return sorted(tenants_map.values(), key=lambda t: t.get("tenant_id", ""))
 
 
@@ -166,6 +186,33 @@ async def dashboard_page():
     if _DASHBOARD_HTML.exists():
         return HTMLResponse(_DASHBOARD_HTML.read_text("utf-8"))
     return HTMLResponse("<h1>Dashboard HTML not found</h1>", status_code=500)
+
+
+# ── Redis 诊断 ──
+
+@router.get("/api/redis-debug")
+async def api_redis_debug(_token: str = Depends(_verify_token)):
+    """Redis connectivity diagnostics for debugging cross-container visibility."""
+    diag = redis.diagnostics()
+
+    # Check admin:tenant:* keys
+    admin_keys = []
+    cfg_keys = []
+    if diag["ping"]:
+        admin_keys = _scan_redis_keys("admin:tenant:*")
+        cfg_keys = _scan_redis_keys("tenant_cfg:*")
+
+    return JSONResponse({
+        "redis": diag,
+        "local_tenants": list(tenant_registry.all_tenants().keys()),
+        "admin_tenant_keys": [tid for tid, _ in admin_keys],
+        "tenant_cfg_keys": [tid for tid, _ in cfg_keys],
+        "summary": {
+            "local_count": len(tenant_registry.all_tenants()),
+            "admin_tenant_count": len(admin_keys),
+            "tenant_cfg_count": len(cfg_keys),
+        },
+    })
 
 
 # ── 租户列表 ──

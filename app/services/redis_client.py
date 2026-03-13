@@ -110,6 +110,7 @@ def execute(*args: str | int) -> Any:
         logger.warning("Redis not configured, command skipped: %s", args[0] if args else "?")
         return None
     if _cb_is_open():
+        logger.debug("Redis command skipped (circuit breaker open): %s", args[0] if args else "?")
         return None
 
     try:
@@ -169,3 +170,20 @@ def ping() -> bool:
     """测试 Redis 连通性"""
     result = execute("PING")
     return result == "PONG"
+
+
+def diagnostics() -> dict:
+    """Return Redis diagnostic info for admin debugging."""
+    import math
+    cb_remaining = 0.0
+    if _cb_open_until > 0:
+        cb_remaining = max(0, _cb_open_until - time.monotonic())
+    return {
+        "configured": available(),
+        "url_set": bool(_REDIS_URL),
+        "token_set": bool(_REDIS_TOKEN),
+        "proxy": _REDIS_PROXY or "(none)",
+        "circuit_breaker_open": _cb_is_open(),
+        "circuit_breaker_remaining_s": round(cb_remaining, 1),
+        "ping": ping() if available() and not _cb_is_open() else False,
+    }
