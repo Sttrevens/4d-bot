@@ -150,7 +150,12 @@
                 "set_reminder",
                 "list_reminders",
                 "cancel_reminder",
-                "update_reminder"
+                "update_reminder",
+                "learn_skill",
+                "install_skill_md",
+                "list_learned_skills",
+                "remove_skill",
+                "share_skill"
             ],
 
             "self_iteration_enabled": false,
