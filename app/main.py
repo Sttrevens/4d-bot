@@ -243,6 +243,9 @@ async def _startup_sync():
     start_sync_listener()
     logger.info("startup: tenant sync listener started")
 
+    # 启动跨容器日志推送（每 30 秒把 LOG_BUFFER 尾部写入 Redis，供 dashboard 跨容器读取）
+    _bg_tasks.append(asyncio.create_task(_log_push_loop()))
+
     # 重启恢复：检查停机期间的未回复消息
     _bg_tasks.append(asyncio.create_task(_recover_missed_messages()))
 
@@ -461,6 +464,50 @@ async def _tenant_meta_refresh_loop() -> None:
                 logger.info("tenant_meta_refresh: published %d tenants", count)
         except Exception:
             logger.warning("tenant_meta_refresh failed", exc_info=True)
+
+
+async def _log_push_loop() -> None:
+    """每 30 秒把 LOG_BUFFER 最近 N 行推到 Redis，供 dashboard 跨容器读取日志。
+
+    Redis key: logs:{tenant_id} → JSON {lines, ts, tenant_id}
+    TTL: 120 秒（容器停了自动过期，不留垃圾数据）
+
+    每个容器只推自己加载的租户的日志（所有本容器租户共享同一个 LOG_BUFFER，
+    因为一个容器只有一个 uvicorn 进程）。
+    """
+    import json as _json
+    import time as _t
+    from app.services import redis_client as redis
+    from app.tenant.registry import tenant_registry
+
+    _PUSH_INTERVAL = 30  # 秒
+    _PUSH_LINES = 300    # 推最近 300 行
+
+    await asyncio.sleep(15)  # 等启动完成，LOG_BUFFER 有内容
+
+    while True:
+        try:
+            if redis.available() and LOG_BUFFER:
+                # 取 LOG_BUFFER 最近 N 行
+                buf_list = list(LOG_BUFFER)
+                tail = buf_list[-_PUSH_LINES:] if len(buf_list) > _PUSH_LINES else buf_list
+                payload = _json.dumps({
+                    "lines": tail,
+                    "ts": _t.time(),
+                    "count": len(tail),
+                }, ensure_ascii=False)
+
+                # 为本容器的每个租户都写一份（dashboard 按 tenant_id 查）
+                all_tids = list(tenant_registry.all_tenants().keys())
+                if all_tids:
+                    cmds = []
+                    for tid in all_tids:
+                        key = f"logs:{tid}"
+                        cmds.append(["SET", key, payload, "EX", "120"])
+                    redis.pipeline(cmds)
+        except Exception:
+            pass  # fail-open，不影响业务
+        await asyncio.sleep(_PUSH_INTERVAL)
 
 
 async def _heartbeat_loop() -> None:
