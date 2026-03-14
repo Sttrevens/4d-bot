@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 _QUEUE_KEY = "tenant_sync:queue"
 _CFG_PREFIX = "tenant_cfg:"
 _MAX_QUEUE_LEN = 100
-_POLL_INTERVAL = 15  # seconds (was 5; reduced to save Redis commands ~5760/day per container)
+_POLL_INTERVAL = 60  # seconds (was 15→60; saves ~4320 cmds/day per container on Upstash free tier)
 
 # 每个容器维护自己的 last_processed_ts
 _last_processed_ts: float = 0.0

@@ -441,7 +441,20 @@ async def debug_ip():
 
 
 async def _tenant_meta_refresh_loop() -> None:
-    """每 12 小时刷新 tenant metadata 到 Redis，确保运行时配置变更同步到 dashboard。"""
+    """刷新 tenant metadata 到 Redis。
+
+    启动后 90 秒首次重试（绕过 circuit breaker 60s 冷却），之后每 12 小时刷新。
+    """
+    # 启动后 90 秒延迟重试：如果首次 publish 被 circuit breaker 阻断，
+    # 等冷却期过后再试一次（circuit breaker cooldown = 60s）
+    await asyncio.sleep(90)
+    try:
+        from app.admin.routes import publish_tenant_meta
+        count = publish_tenant_meta()
+        logger.info("tenant_meta_refresh: startup retry published %d tenants", count)
+    except Exception:
+        logger.warning("tenant_meta_refresh: startup retry failed", exc_info=True)
+
     while True:
         await asyncio.sleep(12 * 3600)  # 12 小时
         try:
@@ -450,7 +463,7 @@ async def _tenant_meta_refresh_loop() -> None:
             if count:
                 logger.info("tenant_meta_refresh: published %d tenants", count)
         except Exception:
-            logger.debug("tenant_meta_refresh failed", exc_info=True)
+            logger.warning("tenant_meta_refresh failed", exc_info=True)
 
 
 async def _log_push_loop() -> None:
@@ -520,7 +533,7 @@ async def _heartbeat_loop() -> None:
                     redis.execute("DEL", "bot:in_flight")
         except Exception:
             pass
-        await asyncio.sleep(300)
+        await asyncio.sleep(600)  # 10 分钟 (was 5min→10min; saves ~144 cmds/day per container)
 
 
 async def _recover_missed_messages() -> None:

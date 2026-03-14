@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 # ── 配置 ──
 
-_CHECK_INTERVAL = 60        # 计划步骤检查间隔（秒）
+_CHECK_INTERVAL = 120       # 计划步骤检查间隔（秒）(was 60→120; saves ~720 cmds/day per container)
 _REMINDER_MAX_SLEEP = 1800  # 提醒循环最大 sleep（30 分钟，无提醒时）
 _WORK_HOUR_START = 9        # 工作时间开始（点）
 _WORK_HOUR_END = 21         # 工作时间结束（点）

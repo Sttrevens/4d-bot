@@ -23,7 +23,7 @@ from dataclasses import dataclass, asdict
 
 logger = logging.getLogger(__name__)
 
-_WATCHDOG_INTERVAL = 60  # 扫描间隔（秒）(was 30; reduced to save Redis commands)
+_WATCHDOG_INTERVAL = 180  # 扫描间隔（秒）(was 60→180; saves ~960 cmds/day per container)
 _TASK_TTL = 300  # 任务记录 TTL（秒），过期自动清理
 _COOLDOWN = 30  # 任务记录后等多久再检查（秒），给 Layer 1 留时间
 _MAX_RETRIES = 1  # 每个任务最多重试次数
