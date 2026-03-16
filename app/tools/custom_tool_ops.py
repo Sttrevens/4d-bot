@@ -325,6 +325,7 @@ TOOL_DEFINITIONS = [
             "一个代码块可以定义多个工具（函数），此时 name 参数可以作为工具组名（如 feishu_ops）。"
             "handler 函数接收 dict 参数，返回 ToolResult。可以使用 httpx 发网络请求、bs4 解析 HTML。"
             "\n\nsandbox_caps 提供的图片处理能力（沙箱内可用）:\n"
+            "- list_user_images() → list[str]: 列出 /tmp/user_img_* 所有的图片文件名\n"
             "- read_user_image(path) → bytes: 安全读取 /tmp/user_img_* 图片文件\n"
             "- slice_image_grid(data, rows, cols, target_row=N) → list[bytes] | bytes: "
             "将图片按网格切片（适合 sprite sheet 等密集图逐行分析）\n"

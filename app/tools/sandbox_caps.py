@@ -231,6 +231,21 @@ def read_user_image(path: str) -> bytes | str:
         return f"读取失败: {e}"
 
 
+def list_user_images() -> list[str] | str:
+    """列出 /tmp 目录下所有用户上传的图片文件（以 user_img_ 开头）。
+
+    安全限制:
+    - 只列出匹配前缀的文件名
+    - 不返回完整路径，只返回文件名
+    """
+    try:
+        # 只列出 /tmp 下以 user_img_ 开头的文件
+        files = [f for f in os.listdir("/tmp") if f.startswith("user_img_")]
+        return sorted(files)
+    except Exception as e:
+        return f"列出文件失败: {e}"
+
+
 def slice_image_grid(
     image_data: bytes,
     rows: int,

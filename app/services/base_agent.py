@@ -1065,6 +1065,10 @@ _MODULE_KEYWORDS: dict[str, list[str]] = {
         "市场", "客服", "项目管理", "调研", "通用",
         "什么类型", "推荐", "模板",
     ],
+    "html_slides": [
+        "PPT", "ppt", "幻灯片", "演示", "slides", "presentation",
+        "deck", "slide deck", "keynote", "演示文稿",
+    ],
 }
 
 

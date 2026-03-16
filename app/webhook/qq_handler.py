@@ -26,7 +26,7 @@ from app.tenant.context import (
 )
 from app.tenant.registry import tenant_registry
 from app.webhook.base import (
-    MessageDedup, UserStateManager, tuk, split_reply,
+    MessageDedup, UserStateManager, tuk, split_reply, strip_markdown,
     handle_mode_command,
     DEFAULT_PROCESS_TIMEOUT,
 )
@@ -239,7 +239,8 @@ async def _process_and_reply(
             if not reply:
                 return
 
-            # QQ 消息长度限制，分段发送
+            # QQ 不渲染 markdown，发送前清洗；分段发送
+            reply = strip_markdown(reply)
             chunks = split_reply(reply, max_len=_channel.max_message_length)
             for chunk in chunks:
                 await qq_api.reply_text(qq_chat_id, qq_msg_id, chunk, is_group=is_group)

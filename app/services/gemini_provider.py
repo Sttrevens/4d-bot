@@ -578,6 +578,7 @@ async def _run_sub_agent(
     _loop_start = time.monotonic()
     _escalated = False
     _pro_failures = 0
+    _exit_nudged = False  # 防止 exit gate nudge 死循环，最多 nudge 一次
     # Sub-agent URL 溯源
     _sub_seen_urls: set[str] = extract_urls(user_text)
     _sub_blocked_urls: set[str] = set()
@@ -649,10 +650,35 @@ async def _run_sub_agent(
             elif part.text and not getattr(part, 'thought', False):
                 text_parts.append(part.text)
 
-        # 没有工具调用 → 子 agent 完成了工作
+        # 没有工具调用 → 子 agent 可能完成了工作，需要验证
         if not function_calls:
             reply = "\n".join(text_parts).strip()
             if reply:
+                # ── Sub-agent exit gate: 用 LLM 判断是否真的完成 ──
+                # 防止 sub-agent 在第一轮就返回"搞定了/请查看附件"但实际没调工具
+                # 只 nudge 一次，避免死循环
+                if not _exit_nudged:
+                    _exit_verdict = await llm_exit_review(
+                        reply, user_text, tool_names_called,
+                        gemini_client=client,
+                    )
+                    if _exit_verdict == "nudge":
+                        _exit_nudged = True
+                        logger.info(
+                            "sub-agent [%s] exit gate: nudging (reply claims action, "
+                            "tools_called=%s)", sub_agent_type, tool_names_called,
+                        )
+                        # 把模型的回复加入上下文，再追加 nudge 消息让它实际执行
+                        contents.append(content_obj)
+                        contents.append(types.Content(
+                            role="user",
+                            parts=[types.Part(text=(
+                                "你刚才描述了要做的事情，但还没有实际调用工具执行。"
+                                "请现在调用相应的工具来完成任务，不要只是描述。"
+                            ))],
+                        ))
+                        continue  # 回到 loop 让模型重新生成（这次带工具调用）
+
                 _elapsed = time.monotonic() - _loop_start
                 logger.info(
                     "sub-agent [%s] completed in %d rounds (%.0fs), reply=%d chars",

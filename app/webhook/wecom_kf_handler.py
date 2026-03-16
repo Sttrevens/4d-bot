@@ -32,7 +32,7 @@ from app.tenant.registry import tenant_registry
 from app.services.error_log import record_error
 from app.webhook.base import (
     MessageDedup, UserStateManager, tuk,
-    split_reply, handle_mode_command, handle_status_command,
+    split_reply, strip_markdown, handle_mode_command, handle_status_command,
     DEFAULT_PROCESS_TIMEOUT, DEFAULT_MAX_USER_TEXT_LEN,
 )
 
@@ -118,6 +118,7 @@ def _find_local_tenant_by_kfid(open_kfid: str):
 _PROCESS_TIMEOUT = DEFAULT_PROCESS_TIMEOUT
 _MAX_USER_TEXT_LEN = DEFAULT_MAX_USER_TEXT_LEN
 _MAX_REPLY_LEN = 2000
+_MAX_REPLY_BYTES = 3800  # 企微 API text 字段字节限制（~4096 减去 JSON 包装开销）
 # 超过此秒数的旧消息不再处理（防止服务重启后重放历史消息）
 _STALE_MSG_THRESHOLD = 300  # 5 分钟
 
@@ -1016,7 +1017,8 @@ async def _process_and_reply(
             if reply:
                 _archive_kf_msg(external_userid, "assistant", reply)
 
-            for chunk in split_reply(reply, _MAX_REPLY_LEN):
+            display_reply = strip_markdown(reply) if reply else reply
+            for chunk in split_reply(display_reply, _MAX_REPLY_LEN, max_bytes=_MAX_REPLY_BYTES):
                 await _safe_send(external_userid, chunk, hit_send_limit)
 
         except asyncio.TimeoutError:
@@ -1054,7 +1056,8 @@ async def _do_agent_work(
     mode = _state.get_mode(external_userid)
 
     async def _send_progress(msg: str) -> None:
-        for chunk in split_reply(msg, _MAX_REPLY_LEN):
+        msg = strip_markdown(msg)
+        for chunk in split_reply(msg, _MAX_REPLY_LEN, max_bytes=_MAX_REPLY_BYTES):
             await _safe_send(external_userid, chunk, _hit_send_limit)
 
     from app.router.intent import route_message

@@ -10,7 +10,7 @@ import json
 import logging
 import re
 
-from app.channels.base import Channel, IncomingMessage
+from app.channels.base import Channel, ChannelCapabilities, IncomingMessage, FEISHU_CAPABILITIES
 from app.services.feishu import FeishuClient
 
 logger = logging.getLogger(__name__)
@@ -30,8 +30,19 @@ class FeishuChannel(Channel):
         return "feishu"
 
     @property
+    def capabilities(self) -> ChannelCapabilities:
+        return FEISHU_CAPABILITIES
+
+    @property
     def max_message_length(self) -> int:
         return 4000
+
+    @property
+    def prompt_hint(self) -> str:
+        return (
+            "用户在飞书上与你对话。你可以创建飞书文档、多维表格、日历事件、"
+            "发送邮件、管理任务等。回复支持 Markdown 格式。"
+        )
 
     # ── 消息发送 ──
 

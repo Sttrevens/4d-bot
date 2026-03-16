@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 
-from app.channels.base import Channel, IncomingMessage
+from app.channels.base import Channel, ChannelCapabilities, IncomingMessage, QQ_CAPABILITIES
 from app.services import qq as qq_api
 
 logger = logging.getLogger(__name__)
@@ -27,9 +27,20 @@ class QQChannel(Channel):
         return "qq"
 
     @property
+    def capabilities(self) -> ChannelCapabilities:
+        return QQ_CAPABILITIES
+
+    @property
     def max_message_length(self) -> int:
         # QQ 群消息长度限制较短
         return 2000
+
+    @property
+    def prompt_hint(self) -> str:
+        return (
+            "用户在 QQ 上与你对话。QQ 消息长度限制较短（2000字符），"
+            "请尽量简洁回复。不支持 Markdown 渲染。"
+        )
 
     # ── 消息发送 ──
 

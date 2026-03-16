@@ -204,6 +204,13 @@ class TenantConfig:
     # 0 = 无限制（适用于管理员租户）
     deploy_free_quota: int = 1          # 每用户免费部署次数（默认 1 次）
 
+    # ── Agent 路由绑定（借鉴 OpenClaw binding 系统）──
+    # 同一个 bot 可以有多个人格，按 channel/chat/user 路由
+    # 空列表 = 不启用（用 tenant 级别的统一配置）
+    # 配置示例见 app/channels/routing.py 顶部注释
+    agent_profiles: list[dict] = field(default_factory=list)   # list of AgentProfile dicts
+    agent_bindings: list[dict] = field(default_factory=list)   # list of AgentBinding dicts
+
     # ── Channel 辅助方法 ──
 
     def get_channels(self) -> list[ChannelConfig]:
