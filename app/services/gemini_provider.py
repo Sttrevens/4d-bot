@@ -93,6 +93,37 @@ User message:
 """
 
 
+def _classify_intent_keywords(user_text: str) -> dict:
+    """关键词 fallback 分类器 —— 当 LLM 分类失败时使用，保证总能返回有效结果。"""
+    t = user_text.lower()
+    groups = ["core"]
+    task_type = "normal"
+
+    # 研究/调研
+    if re.search(r"(调研|竞品|分析.*市场|行业报告|research|competitor|社媒|数据.*收集)", t):
+        task_type = "research"
+        groups.append("research")
+    # 日历/文档/任务 → feishu_collab
+    if re.search(r"(日历|日程|日历|会议|calendar|任务|文档|多维表格|bitable)", t):
+        groups.append("feishu_collab")
+    # 代码/部署
+    if re.search(r"(代码|bug|fix|deploy|部署|git|pr|分支|commit|push)", t):
+        task_type = "deep"
+        groups.append("code_dev")
+    # 服务器
+    if re.search(r"(服务器|日志|log|重启|restart|进程|docker)", t):
+        groups.append("devops")
+    # 导出/视频
+    if re.search(r"(导出|pdf|ppt|export|视频|video|youtube|bilibili)", t):
+        groups.append("content")
+    # provision
+    if re.search(r"(创建.*bot|部署.*实例|开通|provision)", t):
+        task_type = "provision"
+        groups.append("admin")
+
+    return {"type": task_type, "groups": list(dict.fromkeys(groups))}
+
+
 async def _classify_intent_llm(
     client: genai.Client,
     model_name: str,
@@ -116,7 +147,7 @@ async def _classify_intent_llm(
             contents=_CLASSIFY_PROMPT + truncated,
             config=types.GenerateContentConfig(
                 temperature=0.0,
-                max_output_tokens=60,
+                max_output_tokens=100,
                 # 禁止 thinking，否则输出可能被 thinking 消耗导致 text 为空
                 thinking_config=types.ThinkingConfig(include_thoughts=False),
                 # 强制 JSON 输出
@@ -125,8 +156,8 @@ async def _classify_intent_llm(
         )
         raw = (resp.text or "").strip()
         if not raw:
-            logger.warning("LLM intent classification returned empty text")
-            return None
+            logger.warning("LLM intent classification returned empty text, using keyword fallback")
+            return _classify_intent_keywords(user_text)
         # response_mime_type="application/json" 保证输出是纯 JSON
         # 但 CF Worker 代理可能不传递 mime_type，模型返回非 JSON（如 "Here is"）
         # 多层防御：code block → regex JSON 提取 → 直接 parse
@@ -137,7 +168,7 @@ async def _classify_intent_llm(
             raw = raw.strip()
         if not raw:
             logger.warning("LLM intent classification returned empty JSON after stripping code block")
-            return None
+            return _classify_intent_keywords(user_text)
         # 如果 raw 不是以 { 开头，尝试从中提取 JSON 对象
         if not raw.startswith("{"):
             import re as _re_local
@@ -146,7 +177,7 @@ async def _classify_intent_llm(
                 raw = m.group(0)
             else:
                 logger.warning("LLM intent classification: no JSON found in raw=%r", raw[:100])
-                return None
+                return _classify_intent_keywords(user_text)
         result = json.loads(raw)
         task_type = result.get("type", "normal")
         groups = result.get("groups", ["core"])
@@ -163,10 +194,10 @@ async def _classify_intent_llm(
         return {"type": task_type, "groups": groups}
     except json.JSONDecodeError as e:
         logger.warning("LLM intent classification: invalid JSON (%s), raw=%r, falling back to keywords", e, raw[:100] if raw else "(empty)")
-        return None
+        return _classify_intent_keywords(user_text)
     except Exception as e:
         logger.warning("LLM intent classification failed (%s), falling back to keywords", e)
-        return None
+        return _classify_intent_keywords(user_text)
 
 
 # ── Code Preflight: 代码修改任务的上下文预加载 ──
@@ -1256,6 +1287,8 @@ async def handle_message(
     _MAX_DELIVERABLE_NUDGES = 2
     _exit_gate_nudge_count = 0  # LLM exit gate 催促计数（允许最多 2 次）
     _MAX_EXIT_GATE_NUDGES = 3
+    _assertion_nudge_count = 0  # P2: 事实断言防幻觉守卫计数（最多 1 次）
+    _custom_tool_thrashing_nudged = False  # P4: 自定义工具 thrashing 检测（最多 nudge 1 次）
     _empty_content_retries = 0  # 空响应重试计数（最多 3 次后用事实性总结退出）
     _pro_failures = 0  # 强模型连续 fallback 次数（熔断器）
     _PRO_CIRCUIT_BREAKER = 2  # 连续 fallback 2 次后禁用强模型
@@ -1648,6 +1681,33 @@ async def handle_message(
                     ))
                     continue
 
+            # ── P2: 事实断言防幻觉守卫（架构层） ──
+            # 当模型声称"你之前说的是X"但从未调用 fetch_chat_history 验证时，
+            # 强制打回让它先查聊天记录，避免编造用户未说过的话。
+            # 仅在用户质疑（"不对"/"错了"/"日期不对"等）时触发，最多 nudge 1 次。
+            if (
+                reply_text
+                and _assertion_nudge_count < 1
+                and re.search(r"(你之前说|你说过|你提到过|你之前提到|你说的是|你原话)", reply_text)
+                and "fetch_chat_history" not in tool_names_called
+                and re.search(r"(不对|错了|不是|搞错|弄错|日期不对|时间不对|wrong)", user_text, re.IGNORECASE)
+            ):
+                _assertion_nudge_count += 1
+                logger.info(
+                    "P2 hallucination guard: reply asserts user's words without checking history, nudging (reply: %s)",
+                    reply_text[:80],
+                )
+                contents.append(content_obj)
+                contents.append(types.Content(
+                    role="user",
+                    parts=[types.Part(text=(
+                        "⛔ 你声称用户之前说了某句话，但你没有用 fetch_chat_history 验证。"
+                        "在断言用户说过什么之前，必须先调用 fetch_chat_history 查看原始对话记录。"
+                        "不要凭记忆回忆用户的原话——记忆可能出错。请先查记录再回复。"
+                    ))],
+                ))
+                continue
+
             if reply_text:
                 reply = _strip_hallucinated_code_blocks(_strip_degenerate_repetition(reply_text))
             else:
@@ -1922,6 +1982,26 @@ async def handle_message(
 
         # 将 function response 加入 contents（与 model 交替，保持 user/model 节奏）
         contents.append(types.Content(role="user", parts=response_parts))
+
+        # ── P4: 自定义工具 thrashing 检测 ──
+        # 连续 3+ 次 test_custom_tool/create_custom_tool 调用（多为失败重试），
+        # 说明 LLM 在用错误的方式解决问题，注入 nudge 引导回到正轨。
+        # 最多注入 1 次，避免反复打断。
+        if not _custom_tool_thrashing_nudged:
+            _recent_custom = [n for n in tool_names_called[-6:] if n in ("test_custom_tool", "create_custom_tool")]
+            if len(_recent_custom) >= 3:
+                _custom_tool_thrashing_nudged = True
+                logger.info("P4: custom tool thrashing detected (%d recent), injecting nudge", len(_recent_custom))
+                contents.append(types.Content(
+                    role="user",
+                    parts=[types.Part(text=(
+                        "\u26a0\ufe0f 你已连续多次创建/测试自定义工具但都失败了。停下来换个思路：\n"
+                        "1. 先用 fetch_chat_history 查看用户原始消息，确认需求\n"
+                        "2. 检查已有工具列表，看有没有直接能用的（如 search_logs、export_file）\n"
+                        "3. 如果之前某个工具报错，分析错误消息而不是重写一个新工具\n"
+                        "大多数任务不需要自定义工具。"
+                    ))],
+                ))
 
         # ── 主动升级检测：首轮结果暗示任务复杂 → 后续轮次直接用强模型 ──
         if strong_model and not _escalated and strong_model != model_name:

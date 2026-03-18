@@ -637,6 +637,33 @@ def create_event(
     if event_id:
         result_lines += _add_attendees(encoded_cal_id, event_id, attendee_open_ids, attendee_emails, attendee_chat_ids)
 
+    # ── P6: 创建后交叉验证 ──
+    # 在返回结果中明确显示事件的日期/时间（用户时区），帮助 LLM 和用户验证
+    try:
+        _start_epoch = int(start_ts)
+        _end_epoch = int(end_ts) if end_ts else _start_epoch + 3600
+        _evt_start = datetime.fromtimestamp(_start_epoch, tz=tz)
+        _evt_end = datetime.fromtimestamp(_end_epoch, tz=tz)
+        _today_in_tz = datetime.now(tz).date()
+        _evt_date = _evt_start.date()
+        result_lines.append(
+            f"  事件时间: {_evt_start.strftime('%Y-%m-%d %H:%M')} ~ {_evt_end.strftime('%H:%M')} ({tz_name})"
+        )
+        # 如果用户时区的"今天"和事件日期不一致，给出明确提醒
+        _days_diff = (_evt_date - _today_in_tz).days
+        if _days_diff == 0:
+            result_lines.append(f"  \u2713 日期确认: 事件在今天 ({_today_in_tz})")
+        elif _days_diff == 1:
+            result_lines.append(f"  日期确认: 事件在明天 ({_evt_date})")
+        elif _days_diff == -1:
+            result_lines.append(f"  \u26a0\ufe0f 日期确认: 事件在昨天 ({_evt_date})，今天是 {_today_in_tz}。请确认日期是否正确。")
+        elif _days_diff < -1:
+            result_lines.append(
+                f"  \u26a0\ufe0f 日期确认: 事件日期 {_evt_date} 在 {abs(_days_diff)} 天前，今天是 {_today_in_tz}。请确认日期是否正确。"
+            )
+    except (ValueError, TypeError, OSError):
+        pass
+
     return ToolResult.success("\n".join(result_lines))
 
 

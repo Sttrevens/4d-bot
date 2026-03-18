@@ -919,14 +919,18 @@ _INSTRUCTIONS = """
 - 创建后同一对话内立即可用，下次对话也会自动加载
 - 代码可用 httpx（网络请求）、bs4（HTML 解析）和 sandbox_caps（系统能力），不能直接访问文件系统
 - sandbox_caps 提供的能力（from app.tools.sandbox_caps import ...）：
-  · download_video(url) — 下载视频（YouTube/B站等），返回 VideoData(info, data, mime_type) 或错误字符串
-  · get_video_info(url) — 只获取元信息不下载，返回 VideoInfo(title, uploader, duration, url)
-  · gemini_analyze_video(data, prompt) — 上传视频到 Gemini 分析，返回 AnalysisResult(text, model)
-  · gemini_analyze_image(data, prompt) — 图片分析，同上
-  · web_search(query, max_results=5) — 搜索互联网，返回 list[SearchResult(title, body, href)] 或错误字符串
-  · get_process_info() — 获取 bot 进程状态，返回 ProcessInfo(status, uptime_seconds, memory_mb, pid, ...)
-  · read_server_logs(num_lines=100) — 读取最近日志（最多500行），返回字符串
-  · search_logs(keyword, num_lines=50) — 日志关键词搜索（最多200条），返回字符串
+  · download_video(url) → VideoData(info, data, mime_type) | str（错误时返回纯字符串）
+  · get_video_info(url) → VideoInfo(title, uploader, duration, url) | str
+  · gemini_analyze_video(data, prompt) → AnalysisResult(text, model) | str。成功时用 result.text 取分析文本
+  · gemini_analyze_image(data, prompt) → AnalysisResult(text, model) | str。⚠️ 成功时返回 AnalysisResult 对象（用 result.text 取文本），失败时返回纯字符串。判断方式：if isinstance(result, str) 则为错误，否则用 result.text
+  · read_user_image(path) → bytes | str。成功返回 bytes，失败返回错误字符串
+  · list_user_images() → list[str] | str
+  · web_search(query, max_results=5) → list[SearchResult(title, body, href)] | str
+  · get_process_info() → ProcessInfo(status, uptime_seconds, memory_mb, pid, ...) | str
+  · read_server_logs(num_lines=100) → str（日志文本）
+  · search_logs(keyword, num_lines=50) → str
+  · slice_image_grid(image_data, rows, cols) → list[bytes] | bytes | str
+  ⚠️ 沙箱内可用的 Python 内建函数：int/float/str/bool/list/dict/set/tuple/len/range/enumerate/zip/map/filter/sorted/min/max/sum/abs/round/isinstance/hasattr/getattr/setattr/type/print/ValueError/TypeError 等。不可用：open/eval/exec/__import__
 - risk_level: green=只读查询, yellow=写操作（执行前向用户确认）, red=批量/第三方账号操作
 - tenant_id 系统自动填充，你不需要管
 
@@ -988,6 +992,7 @@ _FEISHU_INSTRUCTIONS = """
 文档：用户要求修改/更新/重写文档时，先 read_feishu_doc 读原文 → 修改内容 → update_feishu_doc 写回。只是追加内容用 write_feishu_doc。不要把内容发给用户让他自己复制粘贴！直接改文档。
 
 日历：查日程先 list_calendars 拿 calendar_id；event_id 必须带 _0 后缀。
+⚠️ 相对日期（今天/明天/后天/周X）必须以上方「当前时间」显示的日期为准，不要自己推算。用户说"今天"就是上面显示的今天日期，不要用别的日期。创建日程后检查返回结果中的「日期确认」信息，确保日期正确。
 
 任务：找任务优先从清单搜（list_feishu_tasklists → list_tasklist_tasks(keyword)），list_feishu_tasks 只能看个人任务。关键词没匹配到时工具会返回全部列表，直接从中找，不要反复换关键词。
 
