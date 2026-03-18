@@ -154,6 +154,10 @@ from app.tools.image_ops import (
     TOOL_DEFINITIONS as IMAGE_TOOLS,
     TOOL_MAP as IMAGE_TOOL_MAP,
 )
+from app.tools.skill_mgmt_ops import (
+    TOOL_DEFINITIONS as SKILL_MGMT_TOOLS,
+    TOOL_MAP as SKILL_MGMT_TOOL_MAP,
+)
 from app.services import user_registry
 from app.services import memory as bot_memory
 from app.services import planner as bot_planner
@@ -212,6 +216,7 @@ ALL_TOOL_MAP = {
     **REMINDER_TOOL_MAP,
     **IDENTITY_TOOL_MAP,
     **IMAGE_TOOL_MAP,
+    **SKILL_MGMT_TOOL_MAP,
 }
 
 # 自我迭代相关工具名（客户租户禁用）
@@ -221,7 +226,7 @@ _SELF_ITERATION_TOOLS = frozenset(SELF_TOOL_MAP.keys()) | frozenset(SERVER_TOOL_
 _INSTANCE_MGMT_TOOLS = frozenset(PROVISION_TOOL_MAP.keys()) | frozenset(CUSTOMER_TOOL_MAP.keys())
 
 # 自定义工具元操作名（需要自动注入 tenant_id）
-_CUSTOM_TOOL_META_NAMES = frozenset(CUSTOM_TOOL_MAP.keys()) | frozenset(SKILL_TOOL_MAP.keys())
+_CUSTOM_TOOL_META_NAMES = frozenset(CUSTOM_TOOL_MAP.keys()) | frozenset(SKILL_TOOL_MAP.keys()) | frozenset(SKILL_MGMT_TOOL_MAP.keys())
 
 # 飞书专属工具名（企微租户禁用 — 这些工具依赖飞书 API / user_access_token）
 _FEISHU_ONLY_TOOLS = (
@@ -262,6 +267,7 @@ _ALL_TOOL_DEFS = (
     + REMINDER_TOOLS
     + IDENTITY_TOOLS
     + IMAGE_TOOLS
+    + SKILL_MGMT_TOOLS
 )
 
 
@@ -838,6 +844,19 @@ def _get_tenant_tools(
                 tool_map.update(custom_map)
         except Exception:
             logger.warning("failed to load custom tools for tenant %s", tenant.tenant_id, exc_info=True)
+
+    # ── 动态加载触发匹配的 skill 工具（从 Redis）──
+    if tenant.tenant_id and user_text:
+        try:
+            from app.tools.skill_engine import load_triggered_skills
+            _, skill_tool_defs, skill_tool_map = load_triggered_skills(
+                tenant.tenant_id, user_text
+            )
+            if skill_tool_defs:
+                tool_defs.extend(skill_tool_defs)
+                tool_map.update(skill_tool_map)
+        except Exception:
+            logger.warning("failed to load skill tools for tenant %s", tenant.tenant_id, exc_info=True)
 
     return _to_openai_tools(tool_defs), tool_map
 
@@ -1495,6 +1514,16 @@ async def _build_system_prompt(
                 logger.info("auto-discovered capability module: %s", m)
     if module_names:
         prompt += _load_capability_modules(module_names)
+
+    # 触发匹配的 skill instructions 注入
+    if user_text and tenant.tenant_id:
+        try:
+            from app.tools.skill_engine import load_triggered_skills
+            skill_instructions, _, _ = load_triggered_skills(tenant.tenant_id, user_text)
+            if skill_instructions:
+                prompt += skill_instructions
+        except Exception:
+            logger.warning("failed to load skill instructions", exc_info=True)
 
     # 根据用户身份注入不同行为准则（custom_persona 租户有独立人设，跳过通用准则）
     if not tenant.custom_persona:
