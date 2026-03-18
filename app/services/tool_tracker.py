@@ -376,3 +376,80 @@ def build_combo_hint(tenant_id: str, active_tool_names: set[str]) -> str:
     if not hints:
         return ""
     return "\n\n[常用工具组合]\n" + "\n".join(hints)
+
+
+# ── Per-Tool 可观测性（GTC OpenTelemetry 借鉴）──
+# 提供全量工具性能概览，用于 admin dashboard 展示和性能优化决策
+
+def get_all_tool_stats_summary(tenant_id: str) -> list[dict[str, Any]]:
+    """获取租户下所有工具的性能统计汇总。
+
+    返回按调用次数降序排列的工具列表，每个包含：
+    - name: 工具名
+    - calls: 总调用次数
+    - successes / failures: 成功/失败次数
+    - success_rate: 成功率（百分比）
+    - avg_latency_ms: 平均延迟（毫秒）
+    - last_error: 最近一次错误信息
+    - last_error_at: 最近错误时间戳
+    """
+    if not tenant_id:
+        return []
+    try:
+        from app.services.redis_client import execute, available
+        if not available():
+            return []
+        # SCAN 所有 tool_stats:{tenant_id}:* 的 key
+        cursor = "0"
+        prefix = f"tool_stats:{tenant_id}:"
+        all_keys: list[str] = []
+        for _ in range(100):  # 安全上限，避免无限循环
+            result = execute("SCAN", cursor, "MATCH", f"{prefix}*", "COUNT", "100")
+            if not result or not isinstance(result, list) or len(result) < 2:
+                break
+            cursor = result[0]
+            keys = result[1] if isinstance(result[1], list) else []
+            all_keys.extend(keys)
+            if cursor == "0":
+                break
+
+        if not all_keys:
+            return []
+
+        # 批量获取所有工具的统计
+        from app.services.redis_client import pipeline as redis_pipeline
+        commands = [["HGETALL", k] for k in all_keys]
+        raw_results = redis_pipeline(commands)
+
+        summaries: list[dict[str, Any]] = []
+        for key, raw in zip(all_keys, raw_results):
+            if not raw or not isinstance(raw, list):
+                continue
+            # 解析 HGETALL 结果
+            stats: dict[str, str] = {}
+            for i in range(0, len(raw), 2):
+                stats[raw[i]] = raw[i + 1]
+
+            tool_name = key[len(prefix):]  # 去掉前缀得到工具名
+            calls = int(stats.get("calls", 0))
+            successes = int(stats.get("successes", 0))
+            failures = int(stats.get("failures", 0))
+            total_latency = float(stats.get("total_latency_ms", 0))
+
+            summaries.append({
+                "name": tool_name,
+                "calls": calls,
+                "successes": successes,
+                "failures": failures,
+                "success_rate": round(successes / calls * 100, 1) if calls > 0 else 0,
+                "avg_latency_ms": round(total_latency / calls, 1) if calls > 0 else 0,
+                "last_error": stats.get("last_error", ""),
+                "last_error_at": stats.get("last_error_at", ""),
+            })
+
+        # 按调用次数降序
+        summaries.sort(key=lambda x: x["calls"], reverse=True)
+        return summaries
+    except Exception:
+        logger.debug("tool_tracker: get_all_stats_summary failed", exc_info=True)
+        return []

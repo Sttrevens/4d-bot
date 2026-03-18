@@ -152,6 +152,11 @@ class TenantConfig:
     # 仅平台管理员租户开启；客户租户禁用，防止修改共享代码
     self_iteration_enabled: bool = False
 
+    # ── Auto-fix 策略（per-tenant 权限边界）──
+    # 配置 auto-fix 可修改的文件路径前缀列表（GTC OpenShell 借鉴）
+    # 空列表 = 使用全局默认（app/tools/, app/knowledge/）
+    autofix_allowed_paths: list[str] = field(default_factory=list)
+
     # ── 实例管理 ──
     # 开启后可通过 bot tool 创建/管理其他租户实例（Phase 2 Control Plane）
     # 适用于销售/售后 bot，为客户自助开通独立 bot 实例

@@ -1202,8 +1202,11 @@ async def handle_message(
     # ── Sub-Agent 委托：复杂任务交给隔离的子 agent 执行 ──
     # 纯文本任务（无多模态附件）且匹配子 agent 类型 → 委托执行
     # 子 agent 有独立上下文、独立预算，工具调用不污染主 agent
+    _sub_agent_type: str | None = None
     if not image_urls:
-        _sub_agent_type = should_delegate_to_sub_agent(_task_type, user_text)
+        _sub_agent_type = should_delegate_to_sub_agent(_task_type, user_text, _llm_groups)
+
+    if _sub_agent_type:
         if _sub_agent_type:
             logger.info("delegating to sub-agent [%s] for task type '%s'",
                         _sub_agent_type, _task_type)
@@ -1282,6 +1285,15 @@ async def handle_message(
             if isinstance(msg, dict) and msg.get("content"):
                 _seen_urls.update(extract_urls(str(msg["content"])))
     _escalated = False  # 标记是否已提前升级到强模型
+    # ── Hybrid Model 路由（GTC AI-Q 模式）──
+    # 子 agent 已经委托走了 → Flash 足够（子 agent 自己有 Pro 升级逻辑）
+    # 主 agent 处理多域任务（未委托）→ 提前用 Pro（编排决策需要更强推理）
+    if (not _sub_agent_type and _task_type in ("deep", "normal")
+            and _llm_groups and len(_llm_groups - {"core"}) >= 2
+            and strong_model and strong_model != model_name):
+        logger.info("hybrid routing: multi-domain task (%s), starting with Pro for orchestration",
+                    _llm_groups)
+        _escalated = True  # 直接用 Pro，不等 round 6
     _nudged = False  # 标记是否已追加过 unfulfilled promise 催促
     _deliverable_nudge_count = 0  # 交付物催促计数（允许最多 2 次）
     _MAX_DELIVERABLE_NUDGES = 2

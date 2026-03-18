@@ -257,23 +257,42 @@ def _extract_source_context(errors: list) -> str:
 # 注意：读取（self_read_file / self_search_code 等）不受限制，auto-fix 可以读任何文件来诊断问题。
 #       限制的只是写入操作（self_write_file / self_edit_file）。
 
-_ALLOWED_WRITE_PATHS = (
+# 全局默认 allowlist（向后兼容）
+_DEFAULT_ALLOWED_WRITE_PATHS = (
     "app/tools/",      # 工具函数 — auto-fix 的核心修复范围
     "app/knowledge/",  # 知识库 — bot 自我学习
 )
+
+
+def _get_allowed_write_paths() -> tuple[str, ...]:
+    """获取当前租户的 auto-fix 可写路径列表（per-tenant 策略引擎）。
+
+    GTC OpenShell 借鉴：不同 bot 实例可以有不同的 auto-fix 权限边界。
+    优先级：tenant.autofix_allowed_paths（列表）> 全局默认
+    """
+    try:
+        from app.tenant.context import get_current_tenant
+        tenant = get_current_tenant()
+        paths = getattr(tenant, "autofix_allowed_paths", None)
+        if paths and isinstance(paths, (list, tuple)):
+            return tuple(paths)
+    except Exception:
+        pass
+    return _DEFAULT_ALLOWED_WRITE_PATHS
 
 
 def _execute_tool(func_name: str, func_args: dict, tool_map: dict) -> str:
     """执行工具调用并返回结果字符串（含安全检查）"""
     from app.tools.tool_result import ToolResult
 
-    # 安全检查：auto-fix 只能修改应用层文件（allowlist 白名单策略）
+    # 安全检查：auto-fix 只能修改应用层文件（per-tenant allowlist 策略）
     if func_name in ("self_write_file", "self_edit_file"):
         path = func_args.get("path", "")
-        if not any(path.startswith(allowed) for allowed in _ALLOWED_WRITE_PATHS):
+        allowed = _get_allowed_write_paths()
+        if not any(path.startswith(a) for a in allowed):
             return (
                 f"不允许修改 {path}（超出 auto-fix 修复范围）。\n"
-                f"auto-fix 只能修改应用层代码：{', '.join(_ALLOWED_WRITE_PATHS)}\n"
+                f"auto-fix 只能修改应用层代码：{', '.join(allowed)}\n"
                 f"如果 bug 在基础设施层，请在修复报告中描述问题和建议方案，管理员会人工处理。"
             )
 

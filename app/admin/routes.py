@@ -1651,3 +1651,39 @@ async def api_delete_channel(
     _persist_channels(tenant_id, channels)
 
     return {"ok": True, "channel_id": channel_id, "action": "deleted"}
+
+
+# ── Per-Tool 可观测性 API（GTC 借鉴）──
+
+@router.get("/api/tools/{tenant_id}/stats")
+async def api_tool_stats(tenant_id: str, _token: str = Depends(_verify_token)):
+    """获取租户下所有工具的性能统计汇总（调用次数、成功率、平均延迟等）"""
+    from app.services.tool_tracker import get_all_tool_stats_summary
+    summaries = get_all_tool_stats_summary(tenant_id)
+    return {
+        "tenant_id": tenant_id,
+        "tool_count": len(summaries),
+        "tools": summaries,
+    }
+
+
+@router.get("/api/tools/{tenant_id}/combos")
+async def api_tool_combos(tenant_id: str, _token: str = Depends(_verify_token)):
+    """获取租户下的高频工具调用组合"""
+    from app.services.tool_tracker import get_frequent_combos
+    combos = get_frequent_combos(tenant_id, min_freq=2)
+    return {
+        "tenant_id": tenant_id,
+        "combos": [{"sequence": c, "count": n} for c, n in combos],
+    }
+
+
+@router.get("/api/tools/{tenant_id}/lessons")
+async def api_tool_lessons(tenant_id: str, _token: str = Depends(_verify_token)):
+    """获取租户下的工具使用经验教训"""
+    from app.services.tool_tracker import get_recent_lessons
+    lessons = get_recent_lessons(tenant_id, limit=50)
+    return {
+        "tenant_id": tenant_id,
+        "lessons": lessons,
+    }
