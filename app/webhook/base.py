@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time as _time
 from collections import OrderedDict, defaultdict
 from typing import Callable, Awaitable
@@ -51,27 +52,65 @@ def tuk(sender_id: str) -> str:
     return f"{tenant.tenant_id}:{sender_id}"
 
 
-def split_reply(text: str, max_len: int = 2000) -> list[str]:
+def split_reply(text: str, max_len: int = 2000, *, max_bytes: int = 0) -> list[str]:
     """将回复按消息限制分段（在换行处断开，避免硬切断句子）。
 
     适用于企微/企微客服等有消息长度限制的平台。
     飞书使用 bubble 方式发送，不使用此函数。
+
+    Args:
+        max_len: 字符数上限（兜底，防止单条消息过长）
+        max_bytes: UTF-8 字节数上限。>0 时同时按字节分段。
+                   企微 API 的 text content 字段有字节限制，
+                   中文字符 3 字节/字，2000 字符可能超过 API 字节限制。
     """
-    if len(text) <= max_len:
+    if len(text) <= max_len and (max_bytes <= 0 or len(text.encode("utf-8")) <= max_bytes):
         return [text]
 
     chunks: list[str] = []
     while text:
-        if len(text) <= max_len:
+        if len(text) <= max_len and (max_bytes <= 0 or len(text.encode("utf-8")) <= max_bytes):
             chunks.append(text)
             break
-        # 尽量在换行处断开
+
+        # 先按字符数找切点
         cut = text.rfind("\n", 0, max_len)
         if cut < max_len // 2:
             cut = max_len
+
+        # 如果启用了字节限制，进一步收缩切点
+        if max_bytes > 0:
+            while cut > 0 and len(text[:cut].encode("utf-8")) > max_bytes:
+                # 在当前 cut 之前找换行
+                new_cut = text.rfind("\n", 0, cut)
+                if new_cut < cut // 2:
+                    # 没有合适的换行，按字节硬切（不切断多字节字符）
+                    cut = _safe_byte_cut(text, max_bytes)
+                    break
+                cut = new_cut
+
+        if cut <= 0:
+            cut = _safe_byte_cut(text, max_bytes) if max_bytes > 0 else max_len
+
         chunks.append(text[:cut])
         text = text[cut:].lstrip("\n")
     return chunks
+
+
+def _safe_byte_cut(text: str, max_bytes: int) -> int:
+    """在不超过 max_bytes 的前提下找到最大字符切点（不切断多字节字符）。"""
+    encoded = text.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return len(text)
+    # 二分查找安全切点
+    lo, hi = 0, len(text)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if len(text[:mid].encode("utf-8")) <= max_bytes:
+            lo = mid
+        else:
+            hi = mid - 1
+    return lo if lo > 0 else 1
 
 
 def truncate_text(text: str, max_len: int, label: str = "文本") -> str:
@@ -80,6 +119,63 @@ def truncate_text(text: str, max_len: int, label: str = "文本") -> str:
         return text
     logger.warning("%s truncated: %d -> %d chars", label, len(text), max_len)
     return text[:max_len] + f"\n\n... ({label}过长已截断，原文共 {len(text)} 字符)"
+
+
+# ── Markdown 清洗（IM 平台不渲染 markdown）──
+
+# 预编译正则：匹配 markdown 语法，转为 IM 友好的纯文本
+_MD_HEADING = re.compile(r"^#{1,6}\s+", re.MULTILINE)           # ### 标题
+_MD_BOLD3 = re.compile(r"\*{3}(.+?)\*{3}")                      # ***加粗斜体***
+_MD_BOLD2 = re.compile(r"\*{2}(.+?)\*{2}")                      # **加粗**
+_MD_ITALIC1 = re.compile(r"\*(.+?)\*")                           # *斜体*
+_MD_STRIKETHROUGH = re.compile(r"~~(.+?)~~")                     # ~~删除线~~
+_MD_INLINE_CODE = re.compile(r"`([^`]+)`")                       # `行内代码`
+_MD_LINK = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")                # [文字](链接)
+_MD_IMAGE = re.compile(r"!\[([^\]]*)\]\([^)]+\)")                # ![alt](url)
+_MD_BLOCKQUOTE = re.compile(r"^\s*>\s?", re.MULTILINE)           # > 引用（含缩进）
+_MD_HR = re.compile(r"^-{3,}$|^\*{3,}$|^_{3,}$", re.MULTILINE)  # --- 分割线
+_MD_UNORDERED = re.compile(r"^(\s*)[*+-]\s", re.MULTILINE)       # * / - / + 列表
+_MD_CODE_BLOCK = re.compile(r"```[\s\S]*?```")                   # ```代码块```
+
+
+def strip_markdown(text: str) -> str:
+    """将 markdown 格式文本转为 IM 友好的纯文本。
+
+    微信/企微等 IM 平台不渲染 markdown，用户只会看到一堆星号和井号。
+    此函数在发送前清洗 markdown 语法，保留可读内容。
+
+    转换规则：
+    - ### 标题 → 标题（去掉 # 前缀）
+    - **加粗** → 加粗（去掉星号）
+    - [文字](链接) → 文字 (链接)（保留链接文本）
+    - ```代码块``` → 代码内容（去掉围栏）
+    - > 引用 → 引用（去掉 > 前缀）
+    - --- 分割线 → ——（转为中文破折号分割）
+    - * 列表 → - 列表（统一用减号）
+    """
+    # 代码块：去掉围栏，保留内容
+    text = _MD_CODE_BLOCK.sub(lambda m: m.group(0).strip("`").strip(), text)
+    # 图片：保留 alt 文本
+    text = _MD_IMAGE.sub(r"\1", text)
+    # 链接：保留文字和 URL
+    text = _MD_LINK.sub(r"\1 (\2)", text)
+    # 标题：去掉 # 前缀
+    text = _MD_HEADING.sub("", text)
+    # 加粗/斜体：按星号数量从多到少替换（避免 ** 被拆成两个 *）
+    text = _MD_BOLD3.sub(r"\1", text)
+    text = _MD_BOLD2.sub(r"\1", text)
+    text = _MD_ITALIC1.sub(r"\1", text)
+    # 删除线
+    text = _MD_STRIKETHROUGH.sub(r"\1", text)
+    # 行内代码
+    text = _MD_INLINE_CODE.sub(r"\1", text)
+    # 引用
+    text = _MD_BLOCKQUOTE.sub("", text)
+    # 分割线
+    text = _MD_HR.sub("——", text)
+    # 无序列表：统一用 -
+    text = _MD_UNORDERED.sub(r"\1- ", text)
+    return text
 
 
 # ── 消息去重 ──

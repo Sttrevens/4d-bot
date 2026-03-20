@@ -104,6 +104,11 @@ async def route_message(
     # ── 跨平台身份解析 ──
     current_ch = get_current_channel()
     channel_platform = current_ch.platform if current_ch else tenant.platform
+
+    # ── Agent Profile 路由（借鉴 OpenClaw binding 系统）──
+    # 如果 tenant 配置了 agent_profiles + agent_bindings，
+    # 按 channel/chat/user 匹配最佳 profile，覆盖 tenant 级配置
+    _apply_agent_profile(tenant, channel_platform, chat_id, chat_type, sender_id)
     _resolve_identity(tenant, channel_platform, sender_id, sender_name)
 
     # ── 前置检查：配额 ──
@@ -322,3 +327,56 @@ def _record(
             record_user_tokens(tenant_id, sender_id, total_tokens)
     except Exception:
         logger.debug("usage recording failed", exc_info=True)
+
+
+def _apply_agent_profile(
+    tenant, channel_platform: str, chat_id: str, chat_type: str, sender_id: str,
+) -> None:
+    """按 channel/chat/user 匹配 agent profile，覆盖 tenant 运行时配置。
+
+    借鉴 OpenClaw 的 binding-based routing：
+    同一个 bot 可以在不同 channel/chat 上展现不同人格。
+
+    如果没配置 agent_profiles/agent_bindings，此函数是 no-op。
+    匹配到 profile 后，动态修改 tenant 的运行时属性（不影响持久化）。
+    """
+    if not tenant.agent_profiles or not tenant.agent_bindings:
+        return
+
+    try:
+        from app.channels.routing import (
+            resolve_agent_profile,
+            parse_profiles_from_config,
+            parse_bindings_from_config,
+        )
+
+        profiles = parse_profiles_from_config(tenant.agent_profiles)
+        bindings = parse_bindings_from_config(tenant.agent_bindings)
+
+        profile = resolve_agent_profile(
+            profiles, bindings,
+            platform=channel_platform,
+            chat_id=chat_id,
+            chat_type=chat_type,
+            sender_id=sender_id,
+        )
+
+        if not profile:
+            return
+
+        # 覆盖 tenant 运行时配置（不写回持久化）
+        if profile.system_prompt:
+            tenant.llm_system_prompt = profile.system_prompt
+        if profile.tools_enabled:
+            tenant.tools_enabled = profile.tools_enabled
+        if profile.model:
+            tenant.llm_model = profile.model
+        if profile.custom_persona:
+            tenant.custom_persona = profile.custom_persona
+
+        logger.info(
+            "agent_profile: applied profile='%s' (%s) for platform=%s",
+            profile.profile_id, profile.name, channel_platform,
+        )
+    except Exception:
+        logger.debug("agent_profile resolution failed", exc_info=True)

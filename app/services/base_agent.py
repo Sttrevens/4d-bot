@@ -938,14 +938,18 @@ _INSTRUCTIONS = """
 - 创建后同一对话内立即可用，下次对话也会自动加载
 - 代码可用 httpx（网络请求）、bs4（HTML 解析）和 sandbox_caps（系统能力），不能直接访问文件系统
 - sandbox_caps 提供的能力（from app.tools.sandbox_caps import ...）：
-  · download_video(url) — 下载视频（YouTube/B站等），返回 VideoData(info, data, mime_type) 或错误字符串
-  · get_video_info(url) — 只获取元信息不下载，返回 VideoInfo(title, uploader, duration, url)
-  · gemini_analyze_video(data, prompt) — 上传视频到 Gemini 分析，返回 AnalysisResult(text, model)
-  · gemini_analyze_image(data, prompt) — 图片分析，同上
-  · web_search(query, max_results=5) — 搜索互联网，返回 list[SearchResult(title, body, href)] 或错误字符串
-  · get_process_info() — 获取 bot 进程状态，返回 ProcessInfo(status, uptime_seconds, memory_mb, pid, ...)
-  · read_server_logs(num_lines=100) — 读取最近日志（最多500行），返回字符串
-  · search_logs(keyword, num_lines=50) — 日志关键词搜索（最多200条），返回字符串
+  · download_video(url) → VideoData(info, data, mime_type) | str（错误时返回纯字符串）
+  · get_video_info(url) → VideoInfo(title, uploader, duration, url) | str
+  · gemini_analyze_video(data, prompt) → AnalysisResult(text, model) | str。成功时用 result.text 取分析文本
+  · gemini_analyze_image(data, prompt) → AnalysisResult(text, model) | str。⚠️ 成功时返回 AnalysisResult 对象（用 result.text 取文本），失败时返回纯字符串。判断方式：if isinstance(result, str) 则为错误，否则用 result.text
+  · read_user_image(path) → bytes | str。成功返回 bytes，失败返回错误字符串
+  · list_user_images() → list[str] | str
+  · web_search(query, max_results=5) → list[SearchResult(title, body, href)] | str
+  · get_process_info() → ProcessInfo(status, uptime_seconds, memory_mb, pid, ...) | str
+  · read_server_logs(num_lines=100) → str（日志文本）
+  · search_logs(keyword, num_lines=50) → str
+  · slice_image_grid(image_data, rows, cols) → list[bytes] | bytes | str
+  ⚠️ 沙箱内可用的 Python 内建函数：int/float/str/bool/list/dict/set/tuple/len/range/enumerate/zip/map/filter/sorted/min/max/sum/abs/round/isinstance/hasattr/getattr/setattr/type/print/ValueError/TypeError 等。不可用：open/eval/exec/__import__
 - risk_level: green=只读查询, yellow=写操作（执行前向用户确认）, red=批量/第三方账号操作
 - tenant_id 系统自动填充，你不需要管
 
@@ -1007,6 +1011,7 @@ _FEISHU_INSTRUCTIONS = """
 文档：用户要求修改/更新/重写文档时，先 read_feishu_doc 读原文 → 修改内容 → update_feishu_doc 写回。只是追加内容用 write_feishu_doc。不要把内容发给用户让他自己复制粘贴！直接改文档。
 
 日历：查日程先 list_calendars 拿 calendar_id；event_id 必须带 _0 后缀。
+⚠️ 相对日期（今天/明天/后天/周X）必须以上方「当前时间」显示的日期为准，不要自己推算。用户说"今天"就是上面显示的今天日期，不要用别的日期。创建日程后检查返回结果中的「日期确认」信息，确保日期正确。
 
 任务：找任务优先从清单搜（list_feishu_tasklists → list_tasklist_tasks(keyword)），list_feishu_tasks 只能看个人任务。关键词没匹配到时工具会返回全部列表，直接从中找，不要反复换关键词。
 
@@ -1089,6 +1094,10 @@ _MODULE_KEYWORDS: dict[str, list[str]] = {
         "无人机探测", "净空保护", "黑飞", "飞手", "低空经济",
         "招标", "安保", "反制", "射频", "干扰", "晴空",
         "活动安保", "禁飞区", "无人机防御",
+    ],
+    "html_slides": [
+        "PPT", "ppt", "幻灯片", "演示", "slides", "presentation",
+        "deck", "slide deck", "keynote", "演示文稿",
     ],
 }
 
@@ -1347,52 +1356,112 @@ SUB_AGENT_TYPES = {
         "tool_groups": {"core", "code_dev", "devops"},
         "system_suffix": "\n\n[代码操作模式]\n修改代码后必须验证：读取修改结果确认变更正确。",
     },
+    "feishu": {
+        "description": "飞书协作子代理：日历、文档、任务、表格、消息、邮件等飞书工作流",
+        "max_rounds": 15,
+        "budget_seconds": 120,
+        "stall_multiplier": 1.0,
+        "tool_groups": {"core", "feishu_collab"},
+        "system_suffix": (
+            "\n\n[飞书协作模式]\n"
+            "你是飞书工作流专家。处理日历、文档、任务、表格、消息、邮件等操作。\n"
+            "关键规则：\n"
+            "- 日历：时间格式 'YYYY-MM-DD HH:MM'，相对日期（今天/明天）以系统提示中的「当前时间」为准\n"
+            "- 文档：先 read_feishu_doc 读原文，再 update_feishu_doc 写回。不要只给文字让用户复制\n"
+            "- 任务：找任务优先 list_feishu_tasklists → list_tasklist_tasks(keyword)\n"
+            "- 多维表格：先 list_bitable_tables 拿 table_id → list_bitable_fields 了解表结构 → 再读写\n"
+            "- event_id 必须带 _0 后缀\n"
+        ),
+    },
+    "admin": {
+        "description": "管理运维子代理：实例管理、部署、服务器运维、权限管理",
+        "max_rounds": 10,
+        "budget_seconds": 120,
+        "stall_multiplier": 1.0,
+        "tool_groups": {"core", "admin", "devops"},
+        "system_suffix": (
+            "\n\n[管理运维模式]\n"
+            "你是 bot 管理和运维专家。处理实例部署、服务器监控、包管理等操作。\n"
+            "注意：部署和删除操作不可逆，执行前确认用户意图。\n"
+        ),
+    },
 }
 
 
-def should_delegate_to_sub_agent(task_type: str, user_text: str) -> str | None:
+def should_delegate_to_sub_agent(task_type: str, user_text: str, suggested_groups: list[str] | None = None) -> str | None:
     """判断是否应该委托给子 agent 执行。
 
-    返回子 agent 类型名（"research"/"content"/"code"）或 None（不委托）。
-    仅对 research 和 deep 类型的复杂任务进行委托。
+    返回子 agent 类型名（"research"/"content"/"code"/"feishu"/"admin"）或 None（不委托）。
+
+    路由策略（GTC Sub-Agent 分解）：
+    - 默认尽量委托给专业子 agent，减少主 agent 工具数量
+    - 只在多域交叉任务（如"查日历然后写代码"）时走主 agent
+    - 短消息 / quick 类型不委托（开销不值得）
     """
     if not user_text:
         return None
 
-    # 开通/租户管理类任务不委托给子 agent，由主 agent 处理（需要 admin 工具组）
-    _provision_kw = {"开通", "租户", "provision", "新bot", "创建bot", "部署bot"}
-    if any(kw in user_text.lower() for kw in _provision_kw):
+    text_lower = user_text.lower()
+
+    # quick 类型不委托（简单问候/闲聊，主 agent 直接处理更快）
+    if task_type == "quick":
         return None
 
-    # 研究类任务 → research 子 agent
+    # ── 关键词集合（用于单域 vs 多域判定）──
+    _feishu_kw = {"日历", "日程", "calendar", "文档", "document", "纪要", "minutes",
+                  "任务", "task", "tasklist", "多维表格", "bitable", "邮件", "mail",
+                  "群", "群消息", "发消息", "send_message", "加日程", "创建日程",
+                  "会议", "meeting", "审批", "approval", "提醒", "remind"}
+    _code_kw = {"代码", "code", "bug", "重构", "refactor", "debug", "issue",
+                "pr", "pull request", "分支", "branch", "commit", "git"}
+    _research_kw = {"调研", "研究", "竞品", "分析", "小红书", "xhs", "抖音", "douyin",
+                    "tiktok", "博主", "粉丝", "社媒", "搜索", "search", "市场"}
+    _admin_kw = {"开通", "租户", "provision", "新bot", "创建bot", "部署bot",
+                 "实例", "instance", "容器", "container", "重启", "restart",
+                 "安装", "install", "包", "package"}
+    _content_kw = {"生成报告", "导出", "export", "pdf", "csv", "写报告",
+                   "生成文件", "生成文档", "写文章", "生成ppt", "写ppt"}
+
+    # ── 计算每个域的匹配度 ──
+    matches: dict[str, int] = {}
+    for domain, kw_set in [("feishu", _feishu_kw), ("code", _code_kw),
+                           ("research", _research_kw), ("admin", _admin_kw),
+                           ("content", _content_kw)]:
+        count = sum(1 for kw in kw_set if kw in text_lower)
+        if count:
+            matches[domain] = count
+
+    # 也参考 LLM 意图分类的建议分组
+    if suggested_groups:
+        _group_to_domain = {
+            "feishu_collab": "feishu", "code_dev": "code",
+            "research": "research", "admin": "admin", "content": "content",
+        }
+        for g in suggested_groups:
+            if g in _group_to_domain:
+                d = _group_to_domain[g]
+                matches[d] = matches.get(d, 0) + 1
+
+    if not matches:
+        return None
+
+    # ── 多域交叉：2+ 个域同时匹配 → 不委托，走主 agent（需要跨域工具）──
+    matched_domains = [d for d, c in matches.items() if c >= 1]
+    if len(matched_domains) >= 2:
+        # 例外：research + content 天然搭配，委托给 research（已包含 content 工具组）
+        if set(matched_domains) <= {"research", "content"}:
+            return "research"
+        logger.info("multi-domain task (%s), not delegating to sub-agent", matched_domains)
+        return None
+
+    # ── 单域匹配 → 委托给对应子 agent ──
+    domain = matched_domains[0]
+
+    # task_type 覆盖（LLM 分类优先于关键词）
     if task_type == "research":
         return "research"
 
-    # deep 类任务中的代码操作 → code 子 agent
-    # 但如果用户任务涉及飞书操作（日历/群/文档等），不委托给 code 子 agent
-    # （code 子 agent 没有飞书工具，委托了也做不了）
-    if task_type == "deep":
-        text_lower = user_text.lower()
-        feishu_kw = {"日历", "日程", "calendar", "文档", "document", "群", "chat",
-                     "邀请", "invite", "权限", "permission", "任务", "task",
-                     "多维表格", "bitable", "审批", "approval", "邮件", "mail"}
-        if any(kw in text_lower for kw in feishu_kw):
-            return None  # 飞书任务需要完整工具集，不委托子 agent
-        code_kw = {"代码", "code", "bug", "重构", "refactor",
-                   "debug", "issue", "deploy", "部署"}
-        if any(kw in text_lower for kw in code_kw):
-            return "code"
-
-    # 内容生成任务 → content 子 agent
-    # 用户明确要求生成文件/文档/报告时委托（research 类型有自己的路径，这里捕获非 research 的内容生成）
-    if task_type in ("normal", "deep"):
-        content_kw = {"生成报告", "导出", "export", "pdf", "csv", "写报告",
-                      "生成文件", "生成文档", "写文章", "生成ppt", "写ppt"}
-        text_lower = user_text.lower()
-        if any(kw in text_lower for kw in content_kw):
-            return "content"
-
-    return None
+    return domain
 
 
 def build_sub_agent_system_prompt(

@@ -537,34 +537,49 @@ def create_event(
     attendee_ability: str = "",
     calendar_id: str = "",
     timezone: str = "",
+    start_timezone: str = "",
+    end_timezone: str = "",
 ) -> ToolResult:
     """创建飞书日程（有 auth 在用户日历创建，无 auth 在 bot 日历创建并邀请）"""
     cal_id = _resolve_calendar_id(calendar_id)
     if cal_id.startswith("[ERROR]"):
         return ToolResult.api_error(cal_id)
 
-    # 确定时区：优先用显式传入的 timezone 参数
-    explicit_tz = None
-    if timezone:
+    # 确定时区：支持跨时区事件（start_timezone/end_timezone 优先于 timezone）
+    def _resolve_tz(tz_str: str) -> ZoneInfo | None:
+        if not tz_str:
+            return None
         try:
-            explicit_tz = ZoneInfo(timezone)
-            logger.info("create_event: using explicit timezone=%s", timezone)
+            return ZoneInfo(tz_str)
         except (KeyError, ValueError):
-            # 尝试城市名映射
-            explicit_tz = _tz_from_city(timezone)
-            if explicit_tz:
-                logger.info("create_event: timezone '%s' mapped to %s via city", timezone, explicit_tz)
-            else:
-                logger.warning("create_event: invalid timezone '%s', falling back to user tz", timezone)
+            mapped = _tz_from_city(tz_str)
+            if mapped:
+                logger.info("create_event: timezone '%s' mapped to %s via city", tz_str, mapped)
+            return mapped
 
-    # 如果有显式时区，追加到时间字符串末尾让 _parse_time 处理
-    _tz_for_parse = explicit_tz
-    if _tz_for_parse:
-        # 直接将时区附加到时间字符串，_parse_time 已支持 IANA 时区名
-        if not any(start_time.rstrip().endswith(z) for z in (str(_tz_for_parse),)):
-            start_time = f"{start_time} {_tz_for_parse}"
-        if end_time and not any(end_time.rstrip().endswith(z) for z in (str(_tz_for_parse),)):
-            end_time = f"{end_time} {_tz_for_parse}"
+    explicit_start_tz = _resolve_tz(start_timezone) or _resolve_tz(timezone)
+    explicit_end_tz = _resolve_tz(end_timezone) or _resolve_tz(timezone)
+
+    if explicit_start_tz:
+        logger.info("create_event: start timezone=%s", explicit_start_tz)
+    if explicit_end_tz and explicit_end_tz != explicit_start_tz:
+        logger.info("create_event: end timezone=%s (cross-timezone event)", explicit_end_tz)
+
+    # Fix 4: end_timezone 缺失警告 — 检测可能的跨时区事件
+    _tz_warning = ""
+    if start_timezone and not end_timezone and end_time:
+        logger.warning("create_event: start_timezone='%s' set but end_timezone missing. "
+                        "If this is a cross-timezone event (e.g. flight), end_timezone should also be set.", start_timezone)
+        _tz_warning = (f"⚠️ 注意: 设置了 start_timezone='{start_timezone}' 但未设置 end_timezone。"
+                       f"如果这是跨时区事件（如航班），请同时设置 end_timezone，否则结束时间将使用 start_timezone。")
+
+    # 将时区附加到时间字符串末尾让 _parse_time 处理
+    if explicit_start_tz:
+        if not any(start_time.rstrip().endswith(z) for z in (str(explicit_start_tz),)):
+            start_time = f"{start_time} {explicit_start_tz}"
+    if end_time and explicit_end_tz:
+        if not any(end_time.rstrip().endswith(z) for z in (str(explicit_end_tz),)):
+            end_time = f"{end_time} {explicit_end_tz}"
 
     start_ts = _parse_time(start_time)
     if not start_ts:
@@ -578,23 +593,53 @@ def create_event(
         end_ts = str(int(start_ts) + 3600)
 
     # 过去日期警告：如果开始时间在过去 24 小时以前，很可能是年份错误
+    # 但允许用户明确补录历史日程（description 或 summary 含"补录"/"记录"/"历史"等关键词）
     try:
         _start_epoch = int(start_ts)
         _now_epoch = int(time.time())
         _days_ago = (_now_epoch - _start_epoch) / 86400
         if _days_ago > 1:
-            _when = f"{int(_days_ago)} 天前" if _days_ago < 365 else f"{_days_ago/365:.1f} 年前"
-            return ToolResult.error(
-                f"⚠️ 开始时间 {start_time} 是过去的日期（{_when}）。"
-                "这很可能是年份错误（例如活动页面显示的是去年的日期）。"
-                "请和用户确认正确的日期和年份后重试。"
-                "如果用户确实要创建过去的日程，请在 description 中注明。"
+            _backfill_keywords = ("补录", "记录", "历史", "之前", "过去", "backfill", "historical")
+            _is_backfill = any(
+                kw in (description or "") or kw in (summary or "")
+                for kw in _backfill_keywords
             )
+            if not _is_backfill:
+                _when = f"{int(_days_ago)} 天前" if _days_ago < 365 else f"{_days_ago/365:.1f} 年前"
+                return ToolResult.error(
+                    f"⚠️ 开始时间 {start_time} 是过去的日期（{_when}）。"
+                    "这很可能是年份错误（例如活动页面显示的是去年的日期）。"
+                    "请和用户确认正确的日期和年份后重试。"
+                    "如果用户确实要创建过去的日程，请在 summary 或 description 中加入「补录」或「历史」。"
+                )
+            else:
+                logger.info("create_event: past date allowed (backfill: %s)", summary[:50])
     except (ValueError, TypeError):
         pass
 
-    tz = explicit_tz or _get_user_tz()
+    tz = explicit_start_tz or _get_user_tz()
     tz_name = str(tz)
+
+    # ── 去重检查：同一时间段内是否已有相似标题的事件 ──
+    try:
+        _start_dt = datetime.fromtimestamp(int(start_ts), tz=tz)
+        _check_start = _start_dt.strftime("%Y-%m-%d")
+        _check_end = (_start_dt + timedelta(days=1)).strftime("%Y-%m-%d")
+        _existing = list_events(start_date=_check_start, end_date=_check_end, max_results=20, calendar_id=calendar_id)
+        if _existing.success and _existing.data:
+            _existing_text = str(_existing.data)
+            # 提取 summary 的核心词（去掉标点、空格后的前 10 个字符）
+            import re as _re_dedup
+            _core = _re_dedup.sub(r'[\s\-\[\]()（）：:,，。]', '', summary)[:15]
+            if _core and _core in _existing_text:
+                logger.warning("create_event: potential duplicate detected for '%s' on %s", summary[:30], _check_start)
+                return ToolResult.error(
+                    f"⚠️ 在 {_check_start} 附近已存在相似标题的日程（包含「{_core[:8]}」）。\n"
+                    f"请先用 list_calendar_events 确认是否已有此事件。"
+                    f"如需更新，请用 update_calendar_event；如确需重新创建，请修改标题后重试。"
+                )
+    except Exception:
+        pass  # 去重检查失败不阻塞创建
 
     body: dict = {
         "summary": summary,
@@ -636,6 +681,48 @@ def create_event(
 
     if event_id:
         result_lines += _add_attendees(encoded_cal_id, event_id, attendee_open_ids, attendee_emails, attendee_chat_ids)
+
+    # ── P6: 创建后交叉验证 ──
+    # 在返回结果中明确显示事件的日期/时间（用户时区），帮助 LLM 和用户验证
+    try:
+        _start_epoch = int(start_ts)
+        _end_epoch = int(end_ts) if end_ts else _start_epoch + 3600
+        _evt_start = datetime.fromtimestamp(_start_epoch, tz=tz)
+        _evt_end = datetime.fromtimestamp(_end_epoch, tz=tz)
+        _today_in_tz = datetime.now(tz).date()
+        _evt_date = _evt_start.date()
+        result_lines.append(
+            f"  事件时间: {_evt_start.strftime('%Y-%m-%d %H:%M')} ~ {_evt_end.strftime('%H:%M')} ({tz_name})"
+        )
+        # 如果用户时区的"今天"和事件日期不一致，给出明确提醒
+        _days_diff = (_evt_date - _today_in_tz).days
+        if _days_diff == 0:
+            result_lines.append(f"  \u2713 日期确认: 事件在今天 ({_today_in_tz})")
+        elif _days_diff == 1:
+            result_lines.append(f"  日期确认: 事件在明天 ({_evt_date})")
+        elif _days_diff == -1:
+            result_lines.append(f"  \u26a0\ufe0f 日期确认: 事件在昨天 ({_evt_date})，今天是 {_today_in_tz}。请确认日期是否正确。")
+        elif _days_diff < -1:
+            result_lines.append(
+                f"  \u26a0\ufe0f 日期确认: 事件日期 {_evt_date} 在 {abs(_days_diff)} 天前，今天是 {_today_in_tz}。请确认日期是否正确。"
+            )
+    except (ValueError, TypeError, OSError):
+        pass
+
+    # 跨时区事件交叉验证：分别显示 start 和 end 在各自时区的时间
+    if explicit_start_tz and explicit_end_tz and explicit_start_tz != explicit_end_tz:
+        try:
+            _s_local = datetime.fromtimestamp(int(start_ts), tz=explicit_start_tz)
+            _e_local = datetime.fromtimestamp(int(end_ts), tz=explicit_end_tz)
+            result_lines.append(
+                f"  跨时区验证: 出发 {_s_local.strftime('%Y-%m-%d %H:%M')} ({explicit_start_tz}) → "
+                f"到达 {_e_local.strftime('%Y-%m-%d %H:%M')} ({explicit_end_tz})"
+            )
+        except (ValueError, TypeError, OSError):
+            pass
+
+    if _tz_warning:
+        result_lines.append(_tz_warning)
 
     return ToolResult.success("\n".join(result_lines))
 
@@ -783,6 +870,8 @@ def update_event(
     attendee_chat_ids: list[str] | None = None,
     attendee_ability: str = "",
     timezone: str = "",
+    start_timezone: str = "",
+    end_timezone: str = "",
 ) -> ToolResult:
     """修改飞书日程（只更新传入的字段，有 auth 用用户身份，无 auth 用 bot 身份）"""
     # 在多个日历中查找 event
@@ -790,25 +879,38 @@ def update_event(
     if err:
         return ToolResult.api_error(err)
 
-    # 确定时区：优先用显式传入的 timezone 参数（与 create_event 一致）
-    explicit_tz = None
-    if timezone:
+    # 确定时区：支持跨时区（start_timezone/end_timezone 优先于 timezone）
+    def _resolve_tz(tz_str: str) -> ZoneInfo | None:
+        if not tz_str:
+            return None
         try:
-            explicit_tz = ZoneInfo(timezone)
+            return ZoneInfo(tz_str)
         except (KeyError, ValueError):
-            explicit_tz = _tz_from_city(timezone)
-            if not explicit_tz:
-                logger.warning("update_event: invalid timezone '%s', falling back to user tz", timezone)
+            mapped = _tz_from_city(tz_str)
+            if not mapped:
+                logger.warning("update_event: invalid timezone '%s', falling back", tz_str)
+            return mapped
 
-    tz = explicit_tz or _get_user_tz()
+    explicit_start_tz = _resolve_tz(start_timezone) or _resolve_tz(timezone)
+    explicit_end_tz = _resolve_tz(end_timezone) or _resolve_tz(timezone)
+
+    tz = explicit_start_tz or _get_user_tz()
     tz_name = str(tz)
 
-    # 如果有显式时区，追加到时间字符串让 _parse_time 处理
-    if explicit_tz:
-        if start_time and not start_time.rstrip().endswith(str(explicit_tz)):
-            start_time = f"{start_time} {explicit_tz}"
-        if end_time and not end_time.rstrip().endswith(str(explicit_tz)):
-            end_time = f"{end_time} {explicit_tz}"
+    # Fix 4: end_timezone 缺失警告
+    _tz_warning = ""
+    if start_timezone and not end_timezone and end_time:
+        logger.warning("update_event: start_timezone='%s' set but end_timezone missing.", start_timezone)
+        _tz_warning = (f"⚠️ 注意: 设置了 start_timezone='{start_timezone}' 但未设置 end_timezone。"
+                       f"如果这是跨时区事件（如航班），请同时设置 end_timezone。")
+
+    # 将时区附加到时间字符串让 _parse_time 处理
+    if start_time and explicit_start_tz:
+        if not start_time.rstrip().endswith(str(explicit_start_tz)):
+            start_time = f"{start_time} {explicit_start_tz}"
+    if end_time and explicit_end_tz:
+        if not end_time.rstrip().endswith(str(explicit_end_tz)):
+            end_time = f"{end_time} {explicit_end_tz}"
 
     body: dict = {}
     if summary:
@@ -846,6 +948,32 @@ def update_event(
     # 添加参与人（通过独立的 attendees API）
     if attendee_open_ids or attendee_emails or attendee_chat_ids:
         result_lines += _add_attendees(encoded_cal_id, event_id, attendee_open_ids, attendee_emails, attendee_chat_ids)
+
+    # Fix 2: 更新后交叉验证 — 显示更新后的时间，帮助验证时区是否正确
+    if "start_time" in body or "end_time" in body:
+        try:
+            _s_ts = body.get("start_time", {}).get("timestamp")
+            _e_ts = body.get("end_time", {}).get("timestamp")
+            if _s_ts:
+                _s_dt = datetime.fromtimestamp(int(_s_ts), tz=tz)
+                _display = f"  更新后开始时间: {_s_dt.strftime('%Y-%m-%d %H:%M')} ({tz_name})"
+                if _e_ts:
+                    _e_dt = datetime.fromtimestamp(int(_e_ts), tz=tz)
+                    _display += f" ~ {_e_dt.strftime('%H:%M')}"
+                result_lines.append(_display)
+            # 跨时区验证
+            if explicit_start_tz and explicit_end_tz and explicit_start_tz != explicit_end_tz and _s_ts and _e_ts:
+                _s_local = datetime.fromtimestamp(int(_s_ts), tz=explicit_start_tz)
+                _e_local = datetime.fromtimestamp(int(_e_ts), tz=explicit_end_tz)
+                result_lines.append(
+                    f"  跨时区验证: {_s_local.strftime('%Y-%m-%d %H:%M')} ({explicit_start_tz}) → "
+                    f"{_e_local.strftime('%Y-%m-%d %H:%M')} ({explicit_end_tz})"
+                )
+        except (ValueError, TypeError, OSError):
+            pass
+
+    if _tz_warning:
+        result_lines.append(_tz_warning)
 
     if not result_lines:
         return ToolResult.invalid_param("没有要更新的内容")
@@ -1049,9 +1177,16 @@ TOOL_DEFINITIONS = [
     {
         "name": "create_calendar_event",
         "description": (
-            "在飞书日历上创建日程/会议。可指定标题、时间、地点、参与人。"
-            "重要：如果活动发生在非用户所在时区的城市（如用户在上海但活动在旧金山），"
-            "必须设置 timezone 参数为活动所在地时区，否则时间会按用户本地时区处理。"
+            "在飞书日历上创建日程/会议。可指定标题、时间、地点、参与人。\n"
+            "【时区处理——⚠️ 绝对禁止手动换算时区！】\n"
+            "start_time/end_time 必须填写活动当地的原始时间，由 harness 自动转换。\n"
+            "示例：航班 21:00 从旧金山出发，06:30+1 到纽约 →\n"
+            "  start_time='2026-03-21 21:00', start_timezone='America/Los_Angeles',\n"
+            "  end_time='2026-03-22 06:30', end_timezone='America/New_York'\n"
+            "错误示范：把 21:00 PT 手动算成北京时间 12:00 再填入 start_time ← 会被 harness 二次转换导致完全错误！\n"
+            "如果活动在非用户所在时区的城市，必须设 timezone 参数。"
+            "跨时区事件（如航班）：出发和到达在不同时区时，用 start_timezone + end_timezone 分别指定。\n"
+            "【参与人规则】只添加用户明确要求邀请的人。不要把文档/图片中出现的联系人（如预订人邮箱）自动加为参与人。"
         ),
         "input_schema": {
             "type": "object",
@@ -1073,9 +1208,25 @@ TOOL_DEFINITIONS = [
                     "type": "string",
                     "description": (
                         "活动所在地时区（IANA 格式）。当活动在用户所在时区以外的城市时必须设置。"
-                        "例如: 'America/Los_Angeles'（旧金山/洛杉矶）, 'America/New_York'（纽约）, "
-                        "'Europe/London'（伦敦）, 'Asia/Tokyo'（东京）。"
-                        "不填则自动检测用户时区（通常是 Asia/Shanghai）。"
+                        "例如: 'America/Los_Angeles'（旧金山/洛杉矶）, 'America/New_York'（纽约）。"
+                        "不填则自动检测用户时区。对跨时区事件，优先用 start_timezone/end_timezone。"
+                    ),
+                    "default": "",
+                },
+                "start_timezone": {
+                    "type": "string",
+                    "description": (
+                        "开始时间的时区（IANA 格式）。用于跨时区事件（如航班）：出发地时区。"
+                        "例如航班 SFO→JFK：start_timezone='America/Los_Angeles', end_timezone='America/New_York'。"
+                        "设置后 harness 自动将两地当地时间转为统一时间戳，无需手动换算时差。"
+                    ),
+                    "default": "",
+                },
+                "end_timezone": {
+                    "type": "string",
+                    "description": (
+                        "结束时间的时区（IANA 格式）。用于跨时区事件（如航班）：到达地时区。"
+                        "不填则与 start_timezone 或 timezone 相同。"
                     ),
                     "default": "",
                 },
@@ -1173,7 +1324,12 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "update_calendar_event",
-        "description": "修改飞书日历上已有的日程。可更新标题、时间、地点、描述、参与人。只传需要改的字段即可。需要 event_id，可先用 list_calendar_events 查到。",
+        "description": (
+            "修改飞书日历上已有的日程。可更新标题、时间、地点、描述、参与人。\n"
+            "只传需要改的字段即可。需要 event_id，可先用 list_calendar_events 查到。\n"
+            "【⚠️ 参与人限制】此工具只能添加参与人，不能移除。要移除参与人，请使用 remove_event_attendees 工具。\n"
+            "【⚠️ 时区处理】修改时间时，start_time/end_time 填当地原始时间，不要手动换算时区！harness 会自动转换。"
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -1234,6 +1390,16 @@ TOOL_DEFINITIONS = [
                 "timezone": {
                     "type": "string",
                     "description": "时区（IANA 格式如 America/Los_Angeles）。修改跨时区活动时间时设置，不填则用用户默认时区。",
+                    "default": "",
+                },
+                "start_timezone": {
+                    "type": "string",
+                    "description": "开始时间的时区（跨时区事件用）。同 create_calendar_event 的 start_timezone。",
+                    "default": "",
+                },
+                "end_timezone": {
+                    "type": "string",
+                    "description": "结束时间的时区（跨时区事件用）。同 create_calendar_event 的 end_timezone。",
                     "default": "",
                 },
             },
@@ -1309,6 +1475,8 @@ TOOL_MAP = {
         attendee_ability=args.get("attendee_ability", ""),
         calendar_id=args.get("calendar_id", ""),
         timezone=args.get("timezone", ""),
+        start_timezone=args.get("start_timezone", ""),
+        end_timezone=args.get("end_timezone", ""),
     ),
     "list_calendar_events": lambda args: list_events(
         start_date=args.get("start_date", ""),
@@ -1333,6 +1501,9 @@ TOOL_MAP = {
         attendee_emails=args.get("attendee_emails"),
         attendee_chat_ids=args.get("attendee_chat_ids"),
         attendee_ability=args.get("attendee_ability", ""),
+        timezone=args.get("timezone", ""),
+        start_timezone=args.get("start_timezone", ""),
+        end_timezone=args.get("end_timezone", ""),
     ),
     "remove_event_attendees": lambda args: remove_event_attendees(
         event_id=args["event_id"],

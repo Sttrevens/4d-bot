@@ -152,6 +152,11 @@ class TenantConfig:
     # 仅平台管理员租户开启；客户租户禁用，防止修改共享代码
     self_iteration_enabled: bool = False
 
+    # ── Auto-fix 策略（per-tenant 权限边界）──
+    # 配置 auto-fix 可修改的文件路径前缀列表（GTC OpenShell 借鉴）
+    # 空列表 = 使用全局默认（app/tools/, app/knowledge/）
+    autofix_allowed_paths: list[str] = field(default_factory=list)
+
     # ── 实例管理 ──
     # 开启后可通过 bot tool 创建/管理其他租户实例（Phase 2 Control Plane）
     # 适用于销售/售后 bot，为客户自助开通独立 bot 实例
@@ -203,6 +208,13 @@ class TenantConfig:
     # 每个用户可免费部署 bot 的次数，仅部署成功才消耗
     # 0 = 无限制（适用于管理员租户）
     deploy_free_quota: int = 1          # 每用户免费部署次数（默认 1 次）
+
+    # ── Agent 路由绑定（借鉴 OpenClaw binding 系统）──
+    # 同一个 bot 可以有多个人格，按 channel/chat/user 路由
+    # 空列表 = 不启用（用 tenant 级别的统一配置）
+    # 配置示例见 app/channels/routing.py 顶部注释
+    agent_profiles: list[dict] = field(default_factory=list)   # list of AgentProfile dicts
+    agent_bindings: list[dict] = field(default_factory=list)   # list of AgentBinding dicts
 
     # ── Channel 辅助方法 ──
 

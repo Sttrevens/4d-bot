@@ -98,7 +98,8 @@ _SAFE_BUILTINS: dict[str, Any] = {
     "all": all, "any": any, "next": next, "iter": iter,
     # 类型判断
     "isinstance": isinstance, "issubclass": issubclass,
-    "callable": callable, "hasattr": hasattr,
+    "callable": callable, "hasattr": hasattr, "getattr": getattr, "setattr": setattr,
+    "type": type,
     # 字符串 & 格式化
     "repr": repr, "format": format, "chr": chr, "ord": ord,
     "hex": hex, "oct": oct, "bin": bin,

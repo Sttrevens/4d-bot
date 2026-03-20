@@ -105,3 +105,7 @@
 - "工具报权限错" → 检查是 app token 还是 user token 问题，app 权限去飞书后台开，user 权限让用户 /auth
 - "API timeout" → 检查是否参数导致（如查询范围过大），还是外部服务确实慢
 - "field validation" → 大概率是传参问题，看 tool_args 里的具体参数值
+
+## 沙箱安全与自定义工具
+
+- 自定义工具沙箱禁止 import os。如果需要列出 /tmp 下的用户图片，应使用 app.tools.sandbox_caps.list_user_images()。已在 sandbox_caps 中添加此函数并更新了 create_custom_tool 的文档。

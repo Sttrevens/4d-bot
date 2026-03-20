@@ -25,7 +25,7 @@ from app.tenant.registry import tenant_registry
 from app.services.error_log import record_error
 from app.webhook.base import (
     MessageDedup, UserStateManager,
-    split_reply, handle_mode_command, handle_status_command,
+    split_reply, strip_markdown, handle_mode_command, handle_status_command,
     DEFAULT_PROCESS_TIMEOUT, DEFAULT_MAX_USER_TEXT_LEN,
 )
 
@@ -40,6 +40,7 @@ _state = UserStateManager()
 _PROCESS_TIMEOUT = DEFAULT_PROCESS_TIMEOUT
 _MAX_USER_TEXT_LEN = DEFAULT_MAX_USER_TEXT_LEN
 _MAX_REPLY_LEN = 2000
+_MAX_REPLY_BYTES = 3800  # 企微 API text 字段字节限制（~4096 减去 JSON 包装开销）
 
 
 # ── 路由 ──
@@ -255,7 +256,8 @@ async def _process_and_reply(userid: str, text: str) -> None:
                 timeout=_PROCESS_TIMEOUT,
             )
 
-            for chunk in split_reply(reply, _MAX_REPLY_LEN):
+            display_reply = strip_markdown(reply) if reply else reply
+            for chunk in split_reply(display_reply, _MAX_REPLY_LEN, max_bytes=_MAX_REPLY_BYTES):
                 await wecom_client.reply_text(userid, chunk)
 
         except asyncio.TimeoutError:
@@ -284,7 +286,8 @@ async def _do_agent_work(userid: str, text: str) -> str:
     mode = _state.get_mode(userid)
 
     async def _send_progress(msg: str) -> None:
-        for chunk in split_reply(msg, _MAX_REPLY_LEN):
+        msg = strip_markdown(msg)
+        for chunk in split_reply(msg, _MAX_REPLY_LEN, max_bytes=_MAX_REPLY_BYTES):
             await wecom_client.reply_text(userid, chunk)
 
     from app.router.intent import route_message
