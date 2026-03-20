@@ -948,6 +948,27 @@ def update_event(
         use_user = _use_user()
         logger.info("update_event: calendar=%s event=%s use_user=%s body=%s",
                      encoded_cal_id[:30], event_id, use_user, body)
+        # ── PATCH 前 GET：记录原始时间戳，判断是否真的有变化 ──
+        pre_get = feishu_get(
+            f"/calendar/v4/calendars/{encoded_cal_id}/events/{event_id}",
+            params={"user_id_type": "open_id"},
+            use_user_token=use_user,
+        )
+        if not isinstance(pre_get, str):
+            pre_evt = pre_get.get("data", {}).get("event", {})
+            pre_start = pre_evt.get("start_time", {})
+            pre_end = pre_evt.get("end_time", {})
+            logger.info("update_event: PRE-PATCH start_time=%s end_time=%s", pre_start, pre_end)
+            logger.info("update_event: PRE-PATCH recurrence=%s is_exception=%s status=%s",
+                         pre_evt.get("recurrence", ""), pre_evt.get("is_exception", ""),
+                         pre_evt.get("status", ""))
+            # 检查是否 no-op（时间戳已经一致）
+            sent_start_ts = body.get("start_time", {}).get("timestamp", "")
+            if sent_start_ts and pre_start.get("timestamp") == sent_start_ts:
+                logger.warning("update_event: PRE-PATCH timestamp ALREADY == sent value %s — PATCH may be no-op!", sent_start_ts)
+        else:
+            logger.warning("update_event: PRE-PATCH GET failed: %s", pre_get)
+
         data = feishu_patch(
             f"/calendar/v4/calendars/{encoded_cal_id}/events/{event_id}",
             json=body,
@@ -960,13 +981,29 @@ def update_event(
                      list(data.keys()) if isinstance(data, dict) else "n/a",
                      list(data.get("data", {}).get("event", {}).keys()))
         updated = data.get("data", {}).get("event", {})
-        # 详细记录 response 的时间和时区（用于诊断 PATCH 是否真正生效）
         resp_start = updated.get("start_time", {})
         resp_end = updated.get("end_time", {})
         logger.info("update_event: response start_time=%s end_time=%s", resp_start, resp_end)
         logger.info("update_event: response recurrence=%s is_exception=%s",
                      updated.get("recurrence", ""), updated.get("is_exception", ""))
-        # PATCH 后立即 GET 验证变更是否持久化
+
+        # ── _0 后缀处理：如果有 _0 后缀，也尝试 PATCH 不带后缀的主事件 ──
+        if event_id.endswith("_0"):
+            base_event_id = event_id[:-2]
+            logger.info("update_event: event_id has _0 suffix, also trying base_id=%s", base_event_id)
+            data2 = feishu_patch(
+                f"/calendar/v4/calendars/{encoded_cal_id}/events/{base_event_id}",
+                json=body,
+                use_user_token=use_user,
+            )
+            if isinstance(data2, str):
+                logger.warning("update_event: PATCH base_id failed: %s", data2)
+            else:
+                updated2 = data2.get("data", {}).get("event", {})
+                logger.info("update_event: PATCH base_id response start_time=%s end_time=%s",
+                             updated2.get("start_time", {}), updated2.get("end_time", {}))
+
+        # ── PATCH 后 GET 验证 ──
         verify = feishu_get(
             f"/calendar/v4/calendars/{encoded_cal_id}/events/{event_id}",
             params={"user_id_type": "open_id"},
@@ -977,7 +1014,6 @@ def update_event(
             v_start = v_event.get("start_time", {})
             v_end = v_event.get("end_time", {})
             logger.info("update_event: VERIFY GET start_time=%s end_time=%s", v_start, v_end)
-            # 检查 timestamp 是否真的变了
             sent_start_ts = body.get("start_time", {}).get("timestamp", "")
             got_start_ts = v_start.get("timestamp", "")
             if sent_start_ts and got_start_ts and sent_start_ts != got_start_ts:
