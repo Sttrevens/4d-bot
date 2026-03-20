@@ -17,9 +17,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY requirements.txt .
 ARG PIP_INDEX_URL=https://pypi.org/simple
+ARG PIP_PROXY
 # 主索引用阿里云镜像加速，找不到的包（如 yt-dlp）回退到官方 PyPI
-RUN pip install --no-cache-dir -r requirements.txt \
-    -i ${PIP_INDEX_URL} --extra-index-url https://pypi.org/simple
+# --timeout 120: 防止国内网络慢导致 ReadTimeoutError（默认 15s 太短）
+# --retries 3: 下载失败自动重试（网络抖动常见于 files.pythonhosted.org）
+RUN if [ -n "$PIP_PROXY" ]; then export HTTPS_PROXY=$PIP_PROXY HTTP_PROXY=$PIP_PROXY; fi && \
+    pip install --no-cache-dir -r requirements.txt \
+    -i ${PIP_INDEX_URL} --extra-index-url https://pypi.org/simple \
+    --timeout 120 --retries 3
 
 # CJK 字体：下载独立 TTF（TrueType 轮廓），不用 TTC / OTF (CFF/CID-keyed)
 # NotoSansCJK 是 CID-keyed CFF 格式，fpdf2 兼容性差 → 改用 NotoSansSC（Google Fonts 版，TTF 格式）

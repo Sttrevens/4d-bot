@@ -92,7 +92,9 @@ jobs:
             # HTTPS_PROXY/HTTP_PROXY: 传给 BuildKit 拉取 Docker Hub 基础镜像（python:3.12-slim）
             # --build-arg PLAYWRIGHT_PROXY: 传给 Dockerfile 内 playwright install 的 fallback
             HTTPS_PROXY=$BUILD_PROXY HTTP_PROXY=$BUILD_PROXY \
-              docker compose --env-file /dev/null build --build-arg PLAYWRIGHT_PROXY="$BUILD_PROXY"
+              docker compose --env-file /dev/null build \
+              --build-arg PLAYWRIGHT_PROXY="$BUILD_PROXY" \
+              --build-arg PIP_PROXY="$BUILD_PROXY"
 
             # Phase 1 已部署：3 个 bot 各自在 provisioned 容器中运行
             # 只需要 build 镜像（上面已完成），不再启动根 compose 的遗留容器
