@@ -619,6 +619,7 @@ def create_event(
 
     tz = explicit_start_tz or _get_user_tz()
     tz_name = str(tz)
+    end_tz_name = str(explicit_end_tz) if explicit_end_tz else tz_name
 
     # ── 去重检查：同一时间段内是否已有相似标题的事件 ──
     try:
@@ -644,7 +645,7 @@ def create_event(
     body: dict = {
         "summary": summary,
         "start_time": {"timestamp": start_ts, "timezone": tz_name},
-        "end_time": {"timestamp": end_ts, "timezone": tz_name},
+        "end_time": {"timestamp": end_ts, "timezone": end_tz_name},
         "need_notification": True,
     }
     if description:
@@ -896,6 +897,7 @@ def update_event(
 
     tz = explicit_start_tz or _get_user_tz()
     tz_name = str(tz)
+    end_tz_name = str(explicit_end_tz) if explicit_end_tz else tz_name
 
     # Fix 4: end_timezone 缺失警告
     _tz_warning = ""
@@ -924,7 +926,7 @@ def update_event(
         ts = _parse_time(end_time)
         if not ts:
             return ToolResult.invalid_param(f"无法解析结束时间: {end_time}")
-        body["end_time"] = {"timestamp": ts, "timezone": tz_name}
+        body["end_time"] = {"timestamp": ts, "timezone": end_tz_name}
     if description:
         body["description"] = description
     if location:
