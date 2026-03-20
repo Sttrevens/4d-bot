@@ -647,6 +647,15 @@
                   <input id="kf-add-admin-names" type="text" placeholder="吴天骄, Steven"
                     class="w-full border rounded-lg px-3 py-2 text-sm bg-white">
                 </div>
+
+                <!-- Capability Modules -->
+                <div>
+                  <p class="text-xs font-medium text-gray-500 mb-2">Capability Modules</p>
+                  <p class="text-[10px] text-gray-400 mb-2">选择预装的能力模组（注入领域知识到 system prompt）</p>
+                  <div id="kf-add-module-checkboxes" class="grid grid-cols-2 gap-2">
+                    <div class="text-gray-400 text-xs py-2">Loading modules...</div>
+                  </div>
+                </div>
               </div>
             </details>
             <div class="flex items-center gap-3">
@@ -1685,6 +1694,7 @@ async function showKfPanel(instanceId) {
   document.getElementById('kf-panel-title').textContent = `KF Accounts — ${instanceId}`;
   document.getElementById('kf-accounts-body').innerHTML = '<tr><td colspan="4" class="text-center text-gray-400 py-8">Loading KF accounts from WeChat API...</td></tr>';
   document.getElementById('kf-add-form').classList.add('hidden');
+  loadModuleRegistry('kf-add-module-checkboxes');
 
   try {
     const res = await api(`/instances/${instanceId}/kf-accounts`);
@@ -1775,6 +1785,10 @@ async function submitAddCoTenant(e) {
   // Admin names
   const adminNames = document.getElementById('kf-add-admin-names').value.trim();
   if (adminNames) body.admin_names = adminNames.split(',').map(s => s.trim()).filter(Boolean);
+  // Capability modules
+  const selectedModules = [...document.querySelectorAll('#kf-add-module-checkboxes input[name="cap_module"]:checked')]
+    .map(cb => cb.value);
+  if (selectedModules.length) body.capability_modules = selectedModules;
 
   try {
     const res = await api(`/instances/${kfPanelInstance}/co-tenants`, {
@@ -1800,31 +1814,31 @@ function showProvisionForm() {
   loadModuleRegistry();
 }
 
-async function loadModuleRegistry() {
-  const container = document.getElementById('module-checkboxes');
+async function loadModuleRegistry(containerId) {
+  // Load module registry into one or all module checkbox containers
+  const ids = containerId ? [containerId] : ['module-checkboxes', 'kf-add-module-checkboxes'];
   try {
     const data = await api('/module-registry');
     const modules = data.modules || [];
-    if (!modules.length) {
-      container.innerHTML = '<div class="text-gray-400 text-xs py-2">No modules available</div>';
-      return;
-    }
     const categoryLabels = {
       industry: 'Industry', research: 'Research', business: 'Business',
       operations: 'Operations', content: 'Content'
     };
-    container.innerHTML = modules.map(m => `
-      <label class="flex items-start gap-2 p-2 rounded hover:bg-gray-50 cursor-pointer border border-gray-100">
-        <input type="checkbox" name="cap_module" value="${m.name}" class="mt-0.5 rounded">
-        <div>
-          <span class="text-sm font-medium text-gray-700">${m.label}</span>
-          <span class="text-xs text-gray-400 ml-1">[${categoryLabels[m.category] || m.category}]</span>
-          <p class="text-xs text-gray-500 mt-0.5">${m.description}</p>
-        </div>
-      </label>
-    `).join('');
+    const html = !modules.length
+      ? '<div class="text-gray-400 text-xs py-2">No modules available</div>'
+      : modules.map(m => `
+        <label class="flex items-start gap-2 p-2 rounded hover:bg-gray-50 cursor-pointer border border-gray-100">
+          <input type="checkbox" name="cap_module" value="${m.name}" class="mt-0.5 rounded">
+          <div>
+            <span class="text-sm font-medium text-gray-700">${m.label}</span>
+            <span class="text-xs text-gray-400 ml-1">[${categoryLabels[m.category] || m.category}]</span>
+            <p class="text-xs text-gray-500 mt-0.5">${m.description}</p>
+          </div>
+        </label>
+      `).join('');
+    ids.forEach(id => { const el = document.getElementById(id); if (el) el.innerHTML = html; });
   } catch (e) {
-    container.innerHTML = '<div class="text-red-400 text-xs py-2">Failed to load modules</div>';
+    ids.forEach(id => { const el = document.getElementById(id); if (el) el.innerHTML = '<div class="text-red-400 text-xs py-2">Failed to load modules</div>'; });
   }
 }
 
