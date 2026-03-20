@@ -810,12 +810,19 @@ def _build_from_tenant_registry():
 
     # Group wecom_kf tenants by (corpid, secret) → co-host under first tenant
     kf_groups: dict[tuple[str, str], list[str]] = {}
+    kf_registered: dict[tuple[str, str], str] = {}  # credentials → already-registered tid
     standalone: list[str] = []
 
     for tid, meta in all_meta.items():
+        is_kf = (meta["platform"] == "wecom_kf"
+                 and meta["wecom_corpid"] and meta["wecom_kf_secret"])
         if _registry.get(tid):
+            # Track credentials of already-registered KF instances
+            if is_kf:
+                key = (meta["wecom_corpid"], meta["wecom_kf_secret"])
+                kf_registered.setdefault(key, tid)
             continue
-        if meta["platform"] == "wecom_kf" and meta["wecom_corpid"] and meta["wecom_kf_secret"]:
+        if is_kf:
             key = (meta["wecom_corpid"], meta["wecom_kf_secret"])
             kf_groups.setdefault(key, []).append(tid)
         else:
@@ -830,8 +837,13 @@ def _build_from_tenant_registry():
         ))
         logger.info("Registered instance from tenant registry: %s", tid)
 
-    # Register primary of each KF group
-    for tids in kf_groups.values():
+    # Register primary of each KF group — skip if already covered by a registered instance
+    for key, tids in kf_groups.items():
+        if key in kf_registered:
+            # These tenants will appear as co-tenants via _get_co_tenants_from_registry
+            logger.info("KF tenants %s share credentials with registered instance %s, skipping",
+                        tids, kf_registered[key])
+            continue
         primary_tid = tids[0]
         meta = all_meta[primary_tid]
         _registry.register(InstanceInfo(
@@ -919,7 +931,100 @@ def list_instances() -> list[dict]:
             entry["co_tenants"] = _get_co_tenants_from_registry(tid, info.platform)
 
         result.append(entry)
+
+    _dedup_kf_instances(result)
     return result
+
+
+def _dedup_kf_instances(instances: list[dict]):
+    """Merge wecom_kf instances that share the same (corpid, kf_secret).
+
+    Keeps the earliest-created as primary, moves others into co_tenants.
+    Defensive post-processing — handles cases where _build_from_tenant_registry
+    couldn't prevent duplicate registration (e.g. registry.json had them).
+    """
+    if not instances:
+        return
+
+    def _get_kf_creds(tid: str):
+        """Look up (corpid, kf_secret) from tenant_registry or Redis."""
+        try:
+            from app.tenant.registry import tenant_registry
+            t = tenant_registry.get(tid)
+            if t:
+                corpid = getattr(t, 'wecom_corpid', '')
+                secret = getattr(t, 'wecom_kf_secret', '')
+                if corpid and secret:
+                    return (corpid, secret)
+        except Exception:
+            pass
+        try:
+            from app.services import redis_client as redis_mod
+            if redis_mod.available():
+                data = redis_mod.execute("GET", f"tenant_cfg:{tid}")
+                if data:
+                    cfg = json.loads(data)
+                    corpid = cfg.get("wecom_corpid", "")
+                    secret = cfg.get("wecom_kf_secret", "")
+                    if corpid and secret:
+                        return (corpid, secret)
+        except Exception:
+            pass
+        return None
+
+    # Collect credentials for each KF instance
+    kf_creds: dict[int, tuple[str, str]] = {}
+    for i, inst in enumerate(instances):
+        if inst.get("platform") != "wecom_kf":
+            continue
+        cred = _get_kf_creds(inst["tenant_id"])
+        if cred:
+            kf_creds[i] = cred
+
+    # Group by credentials
+    groups: dict[tuple[str, str], list[int]] = {}
+    for idx, cred in kf_creds.items():
+        groups.setdefault(cred, []).append(idx)
+
+    # Merge groups with 2+ instances
+    remove_indices: set[int] = set()
+    for _cred, indices in groups.items():
+        if len(indices) < 2:
+            continue
+        # Keep earliest-created as primary
+        indices.sort(key=lambda i: instances[i].get("created_at", 0) or 0)
+        primary = instances[indices[0]]
+        existing_ids = {primary["tenant_id"]}
+        existing_ids.update(ct["tenant_id"] for ct in primary["co_tenants"])
+
+        for merge_idx in indices[1:]:
+            source = instances[merge_idx]
+            # Add source instance itself as co-tenant
+            if source["tenant_id"] not in existing_ids:
+                t_info = {"tenant_id": source["tenant_id"],
+                          "name": source.get("name", ""),
+                          "wecom_kf_open_kfid": ""}
+                # Try to get kfid
+                try:
+                    from app.tenant.registry import tenant_registry
+                    t = tenant_registry.get(source["tenant_id"])
+                    if t:
+                        t_info["wecom_kf_open_kfid"] = getattr(t, 'wecom_kf_open_kfid', '')
+                except Exception:
+                    pass
+                primary["co_tenants"].append(t_info)
+                existing_ids.add(source["tenant_id"])
+            # Move source's co-tenants to primary
+            for ct in source.get("co_tenants", []):
+                if ct["tenant_id"] not in existing_ids:
+                    primary["co_tenants"].append(ct)
+                    existing_ids.add(ct["tenant_id"])
+            remove_indices.add(merge_idx)
+
+    if remove_indices:
+        logger.info("Merged %d duplicate KF instances by shared credentials", len(remove_indices))
+        for idx in sorted(remove_indices, reverse=True):
+            instances.pop(idx)
 
 
 def list_co_tenants(instance_id: str) -> list[dict]:
