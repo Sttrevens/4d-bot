@@ -338,6 +338,15 @@
               </label>
             </div>
 
+            <!-- Capability Modules -->
+            <h3 class="font-semibold text-gray-700 mb-3 border-b pb-2">Capability Modules</h3>
+            <div id="module-selector" class="mb-6">
+              <p class="text-xs text-gray-400 mb-2">选择预装的能力模组（注入领域知识到 system prompt）</p>
+              <div id="module-checkboxes" class="grid grid-cols-2 gap-2">
+                <div class="text-gray-400 text-xs py-2">Loading modules...</div>
+              </div>
+            </div>
+
             <!-- Trial & Quota -->
             <h3 class="font-semibold text-gray-700 mb-3 border-b pb-2">Trial & Quota</h3>
             <div class="grid grid-cols-2 gap-4 mb-6">
@@ -1208,7 +1217,7 @@ async function loadOverview() {
     // Populate user tenant selector
     const sel = document.getElementById('user-tenant-select');
     sel.innerHTML = tenantsData.map(t =>
-      `<option value="${escapeHtml(t.tenant_id)}">${escapeHtml(t.name || t.tenant_id)}</option>`
+      `<option value="${t.tenant_id}">${t.name || t.tenant_id}</option>`
     ).join('');
 
     // Render cards
@@ -1227,21 +1236,21 @@ async function loadOverview() {
         wecom: '<span class="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded">WeCom</span>',
         wecom_kf: '<span class="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded">WeCom KF</span>',
         qq: '<span class="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded">QQ</span>',
-      }[t.platform] || `<span class="text-xs bg-gray-100 text-gray-700 px-2 py-0.5 rounded">${escapeHtml(t.platform)}</span>`;
+      }[t.platform] || `<span class="text-xs bg-gray-100 text-gray-700 px-2 py-0.5 rounded">${t.platform}</span>`;
 
       const hostBadge = t.host_instance
-        ? `<span class="text-[10px] bg-purple-50 text-purple-500 px-1.5 py-0.5 rounded mt-1 inline-block">on ${escapeHtml(t.host_instance)}</span>`
+        ? `<span class="text-[10px] bg-purple-50 text-purple-500 px-1.5 py-0.5 rounded mt-1 inline-block">on ${t.host_instance}</span>`
         : '';
 
       return `
         <div class="bg-white rounded-xl shadow-sm p-5 hover:shadow-md transition">
           <div class="flex justify-between items-start mb-3">
             <div>
-              <h3 class="font-semibold text-gray-800">${escapeHtml(t.name || t.tenant_id)}</h3>
-              <p class="text-xs text-gray-400 mt-0.5">${escapeHtml(t.tenant_id)} ${hostBadge}</p>
+              <h3 class="font-semibold text-gray-800">${t.name || t.tenant_id}</h3>
+              <p class="text-xs text-gray-400 mt-0.5">${t.tenant_id} ${hostBadge}</p>
             </div>
             <div class="flex items-center gap-2">
-              <button onclick="openEditModal('${escapeHtml(t.tenant_id)}')" class="text-xs text-blue-500 hover:text-blue-700 hover:underline">Edit</button>
+              <button onclick="openEditModal('${t.tenant_id}')" class="text-xs text-blue-500 hover:text-blue-700 hover:underline">Edit</button>
               ${platformBadge}
             </div>
           </div>
@@ -1283,7 +1292,7 @@ async function loadOverview() {
             </div>
             ${t.wecom_kf_open_kfid ? `<div class="col-span-2">
               <p class="text-gray-400 text-xs">KF ID</p>
-              <p class="font-mono text-xs text-gray-500 select-all truncate" title="${escapeHtml(t.wecom_kf_open_kfid)}">${escapeHtml(t.wecom_kf_open_kfid)}</p>
+              <p class="font-mono text-xs text-gray-500 select-all truncate" title="${t.wecom_kf_open_kfid}">${t.wecom_kf_open_kfid}</p>
             </div>` : ''}
           </div>
         </div>`;
@@ -1333,7 +1342,7 @@ function renderUsers() {
     const shortId = uid.length > 20 ? uid.slice(0, 10) + '...' + uid.slice(-6) : uid;
     const displayName = escapeHtml(u.display_name || '');
     const status = u.status || 'trial';
-    let statusHtml = `<span class="status-${escapeHtml(status)} text-xs px-2 py-0.5 rounded-full font-medium">${escapeHtml(status)}</span>`;
+    let statusHtml = `<span class="status-${status} text-xs px-2 py-0.5 rounded-full font-medium">${status}</span>`;
     if (status === 'trial' && u.first_seen) {
       const expiresAt = new Date(new Date(u.first_seen).getTime() + usersTrialDurationHours * 3600000);
       const remainMs = expiresAt - new Date();
@@ -1365,21 +1374,20 @@ function renderUsers() {
 
     // Action buttons based on status
     let actions = '';
-    const eUid = escapeHtml(uid);
     if (status === 'trial' || status === 'expired') {
-      actions += `<button onclick="approveUser('${eUid}')" class="text-xs bg-green-50 text-green-600 px-2 py-1 rounded hover:bg-green-100">Approve</button> `;
-      actions += `<button onclick="userAction('block','${eUid}')" class="text-xs bg-red-50 text-red-600 px-2 py-1 rounded hover:bg-red-100">Block</button>`;
+      actions += `<button onclick="approveUser('${uid}')" class="text-xs bg-green-50 text-green-600 px-2 py-1 rounded hover:bg-green-100">Approve</button> `;
+      actions += `<button onclick="userAction('block','${uid}')" class="text-xs bg-red-50 text-red-600 px-2 py-1 rounded hover:bg-red-100">Block</button>`;
     } else if (status === 'approved') {
-      actions += `<button onclick="approveUser('${eUid}')" class="text-xs bg-green-50 text-green-600 px-2 py-1 rounded hover:bg-green-100">Renew</button> `;
-      actions += `<button onclick="userAction('block','${eUid}')" class="text-xs bg-red-50 text-red-600 px-2 py-1 rounded hover:bg-red-100">Block</button>`;
+      actions += `<button onclick="approveUser('${uid}')" class="text-xs bg-green-50 text-green-600 px-2 py-1 rounded hover:bg-green-100">Renew</button> `;
+      actions += `<button onclick="userAction('block','${uid}')" class="text-xs bg-red-50 text-red-600 px-2 py-1 rounded hover:bg-red-100">Block</button>`;
     } else if (status === 'blocked') {
-      actions += `<button onclick="approveUser('${eUid}')" class="text-xs bg-green-50 text-green-600 px-2 py-1 rounded hover:bg-green-100">Approve</button>`;
+      actions += `<button onclick="approveUser('${uid}')" class="text-xs bg-green-50 text-green-600 px-2 py-1 rounded hover:bg-green-100">Approve</button>`;
     }
-    actions += ` <button onclick="userAction('reset','${eUid}')" class="text-xs bg-gray-50 text-gray-600 px-2 py-1 rounded hover:bg-gray-100">Reset</button>`;
+    actions += ` <button onclick="userAction('reset','${uid}')" class="text-xs bg-gray-50 text-gray-600 px-2 py-1 rounded hover:bg-gray-100">Reset</button>`;
 
     return `<tr class="border-b hover:bg-gray-50">
       <td class="py-2 px-2 font-medium text-gray-800">${displayName || '<span class="text-gray-300 italic">unknown</span>'}</td>
-      <td class="py-2 px-2 font-mono text-xs text-gray-400" title="${eUid}">${escapeHtml(shortId)}</td>
+      <td class="py-2 px-2 font-mono text-xs text-gray-400" title="${uid}">${shortId}</td>
       <td class="py-2 px-2">${statusHtml}</td>
       <td class="py-2 px-2 text-gray-500 text-xs">${firstSeen}</td>
       <td class="py-2 px-2 text-gray-500 text-xs">${lastActive}</td>
@@ -1387,7 +1395,7 @@ function renderUsers() {
       <td class="py-2 px-2">
         <input type="text" value="${notes}" placeholder="Add note..."
           class="w-full border-0 border-b border-transparent hover:border-gray-300 focus:border-blue-500 focus:outline-none text-xs py-1 bg-transparent"
-          onblur="saveNotes('${eUid}', this.value)">
+          onblur="saveNotes('${uid}', this.value)">
       </td>
       <td class="py-2 px-2 text-right whitespace-nowrap">${actions}</td>
     </tr>`;
@@ -1578,21 +1586,20 @@ function renderInstances() {
       wecom: '<span class="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded">WeCom</span>',
       wecom_kf: '<span class="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded">WeCom KF</span>',
       qq: '<span class="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded">QQ</span>',
-    }[inst.platform] || `<span class="text-xs bg-gray-100 text-gray-700 px-2 py-0.5 rounded">${escapeHtml(inst.platform)}</span>`;
+    }[inst.platform] || `<span class="text-xs bg-gray-100 text-gray-700 px-2 py-0.5 rounded">${inst.platform}</span>`;
 
-    const eInstId = escapeHtml(inst.tenant_id);
     let actions = '';
     if (inst.status === 'running') {
-      actions += `<button onclick="instanceAction('restart','${eInstId}')" class="text-xs bg-blue-50 text-blue-600 px-2 py-1 rounded hover:bg-blue-100">Restart</button> `;
-      actions += `<button onclick="instanceAction('stop','${eInstId}')" class="text-xs bg-orange-50 text-orange-600 px-2 py-1 rounded hover:bg-orange-100">Stop</button> `;
+      actions += `<button onclick="instanceAction('restart','${inst.tenant_id}')" class="text-xs bg-blue-50 text-blue-600 px-2 py-1 rounded hover:bg-blue-100">Restart</button> `;
+      actions += `<button onclick="instanceAction('stop','${inst.tenant_id}')" class="text-xs bg-orange-50 text-orange-600 px-2 py-1 rounded hover:bg-orange-100">Stop</button> `;
     } else {
-      actions += `<button onclick="instanceAction('restart','${eInstId}')" class="text-xs bg-blue-50 text-blue-600 px-2 py-1 rounded hover:bg-blue-100">Start</button> `;
+      actions += `<button onclick="instanceAction('restart','${inst.tenant_id}')" class="text-xs bg-blue-50 text-blue-600 px-2 py-1 rounded hover:bg-blue-100">Start</button> `;
     }
-    actions += `<button onclick="viewInstanceLogs('${eInstId}')" class="text-xs bg-gray-50 text-gray-600 px-2 py-1 rounded hover:bg-gray-100">Logs</button> `;
+    actions += `<button onclick="viewInstanceLogs('${inst.tenant_id}')" class="text-xs bg-gray-50 text-gray-600 px-2 py-1 rounded hover:bg-gray-100">Logs</button> `;
     if (inst.platform === 'wecom_kf') {
-      actions += `<button onclick="showKfPanel('${eInstId}')" class="text-xs bg-purple-50 text-purple-600 px-2 py-1 rounded hover:bg-purple-100">KF Bots</button> `;
+      actions += `<button onclick="showKfPanel('${inst.tenant_id}')" class="text-xs bg-purple-50 text-purple-600 px-2 py-1 rounded hover:bg-purple-100">KF Bots</button> `;
     }
-    actions += `<button onclick="destroyInstance('${eInstId}')" class="text-xs bg-red-50 text-red-600 px-2 py-1 rounded hover:bg-red-100">Destroy</button>`;
+    actions += `<button onclick="destroyInstance('${inst.tenant_id}')" class="text-xs bg-red-50 text-red-600 px-2 py-1 rounded hover:bg-red-100">Destroy</button>`;
 
     // Co-tenants sub-rows
     const coTenants = (inst.co_tenants || []);
@@ -1605,22 +1612,22 @@ function renderInstances() {
     if (coCount > 0) {
       coRows = coTenants.map(ct => `<tr class="bg-purple-50/40 border-b">
         <td class="py-1.5 px-3 pl-8 text-gray-600 text-sm">&boxur; ${escapeHtml(ct.name || ct.tenant_id)}</td>
-        <td class="py-1.5 px-3 font-mono text-xs text-gray-400">${escapeHtml(ct.tenant_id)}</td>
+        <td class="py-1.5 px-3 font-mono text-xs text-gray-400">${ct.tenant_id}</td>
         <td class="py-1.5 px-3"><span class="text-[10px] text-gray-400">co-hosted</span></td>
-        <td class="py-1.5 px-3 font-mono text-[10px] text-gray-400">${escapeHtml(ct.wecom_kf_open_kfid || '-')}</td>
+        <td class="py-1.5 px-3 font-mono text-[10px] text-gray-400">${ct.wecom_kf_open_kfid || '-'}</td>
         <td class="py-1.5 px-3"></td>
         <td class="py-1.5 px-3 text-right">
-          <button onclick="removeCoTenant('${eInstId}','${escapeHtml(ct.tenant_id)}')" class="text-xs bg-red-50 text-red-500 px-2 py-0.5 rounded hover:bg-red-100">Remove</button>
+          <button onclick="removeCoTenant('${inst.tenant_id}','${ct.tenant_id}')" class="text-xs bg-red-50 text-red-500 px-2 py-0.5 rounded hover:bg-red-100">Remove</button>
         </td>
       </tr>`).join('');
     }
 
     return `<tr class="border-b hover:bg-gray-50">
       <td class="py-2 px-3 font-medium text-gray-800">${escapeHtml(inst.name || '')}${coLabel}</td>
-      <td class="py-2 px-3 font-mono text-xs text-gray-500">${eInstId}</td>
+      <td class="py-2 px-3 font-mono text-xs text-gray-500">${inst.tenant_id}</td>
       <td class="py-2 px-3">${platformBadge}</td>
-      <td class="py-2 px-3 font-mono text-xs">${escapeHtml(String(inst.port || ''))}</td>
-      <td class="py-2 px-3"><span class="${sc} text-xs px-2 py-0.5 rounded-full font-medium">${escapeHtml(inst.status)}</span></td>
+      <td class="py-2 px-3 font-mono text-xs">${inst.port}</td>
+      <td class="py-2 px-3"><span class="${sc} text-xs px-2 py-0.5 rounded-full font-medium">${inst.status}</span></td>
       <td class="py-2 px-3 text-right whitespace-nowrap">${actions}</td>
     </tr>${coRows}`;
   }).join('');
@@ -1692,13 +1699,13 @@ async function showKfPanel(instanceId) {
     tbody.innerHTML = accounts.map(a => {
       const bound = a.bound_tenant;
       const statusHtml = bound
-        ? `<span class="text-xs bg-green-50 text-green-600 px-2 py-0.5 rounded">Bound: ${escapeHtml(bound)}</span>`
-        : `<button onclick="startAddCoTenant('${escapeHtml(a.open_kfid)}', '${escapeHtml(a.name)}')" class="text-xs bg-purple-50 text-purple-600 px-2 py-1 rounded hover:bg-purple-100">+ Add as Bot</button>`;
+        ? `<span class="text-xs bg-green-50 text-green-600 px-2 py-0.5 rounded">Bound: ${bound}</span>`
+        : `<button onclick="startAddCoTenant('${a.open_kfid}', '${escapeHtml(a.name)}')" class="text-xs bg-purple-50 text-purple-600 px-2 py-1 rounded hover:bg-purple-100">+ Add as Bot</button>`;
       return `<tr class="border-b hover:bg-gray-50">
         <td class="py-2 px-3 font-medium text-gray-800">${escapeHtml(a.name)}</td>
-        <td class="py-2 px-3 font-mono text-xs text-gray-500 select-all">${escapeHtml(a.open_kfid)}</td>
+        <td class="py-2 px-3 font-mono text-xs text-gray-500 select-all">${a.open_kfid}</td>
         <td class="py-2 px-3">
-          ${a.avatar ? `<img src="${escapeHtml(a.avatar)}" class="w-6 h-6 rounded-full inline">` : '<span class="text-gray-300">-</span>'}
+          ${a.avatar ? `<img src="${a.avatar}" class="w-6 h-6 rounded-full inline">` : '<span class="text-gray-300">-</span>'}
         </td>
         <td class="py-2 px-3 text-right">${statusHtml}</td>
       </tr>`;
@@ -1790,6 +1797,35 @@ function showProvisionForm() {
   document.getElementById('instances-list-view').classList.add('hidden');
   document.getElementById('provision-form-view').classList.remove('hidden');
   document.getElementById('provision-status').textContent = '';
+  loadModuleRegistry();
+}
+
+async function loadModuleRegistry() {
+  const container = document.getElementById('module-checkboxes');
+  try {
+    const data = await api('/module-registry');
+    const modules = data.modules || [];
+    if (!modules.length) {
+      container.innerHTML = '<div class="text-gray-400 text-xs py-2">No modules available</div>';
+      return;
+    }
+    const categoryLabels = {
+      industry: 'Industry', research: 'Research', business: 'Business',
+      operations: 'Operations', content: 'Content'
+    };
+    container.innerHTML = modules.map(m => `
+      <label class="flex items-start gap-2 p-2 rounded hover:bg-gray-50 cursor-pointer border border-gray-100">
+        <input type="checkbox" name="cap_module" value="${m.name}" class="mt-0.5 rounded">
+        <div>
+          <span class="text-sm font-medium text-gray-700">${m.label}</span>
+          <span class="text-xs text-gray-400 ml-1">[${categoryLabels[m.category] || m.category}]</span>
+          <p class="text-xs text-gray-500 mt-0.5">${m.description}</p>
+        </div>
+      </label>
+    `).join('');
+  } catch (e) {
+    container.innerHTML = '<div class="text-red-400 text-xs py-2">Failed to load modules</div>';
+  }
 }
 
 function hideProvisionForm() {
@@ -1875,6 +1911,11 @@ async function submitProvision(e) {
   const an = fd.get('admin_names');
   if (an) body.admin_names = an.split(',').map(s => s.trim()).filter(Boolean);
 
+  // Capability modules
+  const selectedModules = [...form.querySelectorAll('input[name="cap_module"]:checked')]
+    .map(cb => cb.value);
+  if (selectedModules.length) body.capability_modules = selectedModules;
+
   try {
     const res = await api('/instances', {
       method: 'POST',
@@ -1918,7 +1959,7 @@ async function initLogsTab() {
       const res = await api('/instances');
       const instances = res.instances || [];
       sel.innerHTML = instances.map(i =>
-        `<option value="${escapeHtml(i.tenant_id)}">${escapeHtml(i.name || i.tenant_id)} (${escapeHtml(i.tenant_id)})</option>`
+        `<option value="${i.tenant_id}">${escapeHtml(i.name || i.tenant_id)} (${i.tenant_id})</option>`
       ).join('');
       // Also add self (current container) option at the top
       if (instances.length) {
@@ -2100,7 +2141,7 @@ async function loadIdentities() {
   // Populate tenant selector if empty
   if (sel.options.length === 0 && tenantsData.length > 0) {
     sel.innerHTML = tenantsData.map(t =>
-      `<option value="${escapeHtml(t.tenant_id)}">${escapeHtml(t.name || t.tenant_id)}</option>`
+      `<option value="${t.tenant_id}">${t.name || t.tenant_id}</option>`
     ).join('');
   }
   const tid = sel.value;
@@ -2128,17 +2169,17 @@ async function loadIdentities() {
           p === 'feishu' ? 'bg-blue-100 text-blue-700' :
           p === 'wecom' ? 'bg-green-100 text-green-700' :
           'bg-purple-100 text-purple-700'
-        }">${escapeHtml(p)}: ${escapeHtml(uid.substring(0, 12))}...</span>`
+        }">${p}: ${uid.substring(0, 12)}...</span>`
       ).join(' ');
       return `<tr class="border-b hover:bg-gray-50">
-        <td class="py-2 pr-4 font-medium">${escapeHtml(id.name || '?')}</td>
-        <td class="py-2 pr-4 text-xs text-gray-500 font-mono">${escapeHtml((id.identity_id || '').substring(0, 12))}...</td>
+        <td class="py-2 pr-4 font-medium">${id.name || '?'}</td>
+        <td class="py-2 pr-4 text-xs text-gray-500 font-mono">${(id.identity_id || '').substring(0, 12)}...</td>
         <td class="py-2 pr-4">${platformBadges || '<span class="text-gray-400">none</span>'}</td>
-        <td class="py-2 pr-4 text-xs text-gray-500">${escapeHtml((id.created_at || '').substring(0, 16))}</td>
+        <td class="py-2 pr-4 text-xs text-gray-500">${(id.created_at || '').substring(0, 16)}</td>
         <td class="py-2">
           ${Object.entries(linked).map(([p, uid]) =>
-            `<button onclick="unlinkIdentity('${escapeHtml(tid)}','${escapeHtml(id.identity_id)}','${escapeHtml(p)}')"
-              class="text-xs text-red-500 hover:text-red-700 mr-1">unlink ${escapeHtml(p)}</button>`
+            `<button onclick="unlinkIdentity('${tid}','${id.identity_id}','${p}')"
+              class="text-xs text-red-500 hover:text-red-700 mr-1">unlink ${p}</button>`
           ).join('')}
         </td>
       </tr>`;
@@ -2168,17 +2209,17 @@ async function loadIdentities() {
         wecom_kf: 'bg-purple-100 text-purple-700', qq: 'bg-orange-100 text-orange-700',
       };
       return `<tr class="border-b hover:bg-gray-50">
-        <td class="py-2 pr-4 text-xs font-mono">${escapeHtml(ch.channel_id || 'primary')}</td>
+        <td class="py-2 pr-4 text-xs font-mono">${ch.channel_id || 'primary'}</td>
         <td class="py-2 pr-4">
           <span class="px-2 py-0.5 rounded text-xs font-medium ${
             platformColors[ch.platform] || 'bg-gray-100 text-gray-700'
-          }">${escapeHtml(ch.platform)}</span>
+          }">${ch.platform}</span>
         </td>
         <td class="py-2 pr-4">${statusBadge}</td>
         <td class="py-2 pr-4 text-xs text-gray-500">${creds.join(', ') || 'none'}</td>
         <td class="py-2 text-xs">
-          <button onclick="editChannel('${escapeHtml(ch.channel_id)}')" class="text-blue-600 hover:text-blue-800 mr-2">edit</button>
-          <button onclick="deleteChannel('${escapeHtml(ch.channel_id)}')" class="text-red-500 hover:text-red-700">delete</button>
+          <button onclick="editChannel('${ch.channel_id}')" class="text-blue-600 hover:text-blue-800 mr-2">edit</button>
+          <button onclick="deleteChannel('${ch.channel_id}')" class="text-red-500 hover:text-red-700">delete</button>
         </td>
       </tr>`;
     }).join('');
@@ -2218,7 +2259,7 @@ async function showLinkIdentityModal() {
       const status = u.status || '';
       const statusTag = status === 'approved' ? ' [approved]' : status === 'blocked' ? ' [blocked]' : '';
       const pidShort = uid.length > 16 ? uid.substring(0, 14) + '..' : uid;
-      userSelect.innerHTML += `<option value="${escapeHtml(uid)}" data-platform="${escapeHtml(tPlatform)}" data-name="${escapeHtml(name)}">${escapeHtml(name)} (${escapeHtml(tPlatform)}: ${escapeHtml(pidShort)})${statusTag}</option>`;
+      userSelect.innerHTML += `<option value="${uid}" data-platform="${tPlatform}" data-name="${name}">${name} (${tPlatform}: ${pidShort})${statusTag}</option>`;
     });
 
     // Populate identity dropdown
@@ -2226,7 +2267,7 @@ async function showLinkIdentityModal() {
     _identitiesCache.forEach(id => {
       const linked = id.linked_platforms || {};
       const platforms = Object.keys(linked).join(', ') || 'none';
-      targetSelect.innerHTML += `<option value="${escapeHtml(id.identity_id)}">${escapeHtml(id.name || '?')} (${escapeHtml(platforms)})</option>`;
+      targetSelect.innerHTML += `<option value="${id.identity_id}">${id.name || '?'} (${platforms})</option>`;
     });
   } catch (e) {
     userSelect.innerHTML = '<option value="">Failed to load</option>';
@@ -2489,9 +2530,9 @@ function renderIdentities() {
         <option value="wecom_kf" ${id.platform==='wecom_kf'?'selected':''}>WeChat KF</option>
         <option value="qq" ${id.platform==='qq'?'selected':''}>QQ</option>
       </select>
-      <input class="sa-uid border rounded px-2 py-1 text-sm flex-1" data-i="${i}" value="${escapeHtml(id.user_id||'')}" placeholder="user_id">
-      <input class="sa-tid border rounded px-2 py-1 text-sm w-32" data-i="${i}" value="${escapeHtml(id.tenant_id||'')}" placeholder="tenant_id">
-      <input class="sa-label border rounded px-2 py-1 text-sm w-24" data-i="${i}" value="${escapeHtml(id.label||'')}" placeholder="label">
+      <input class="sa-uid border rounded px-2 py-1 text-sm flex-1" data-i="${i}" value="${id.user_id||''}" placeholder="user_id">
+      <input class="sa-tid border rounded px-2 py-1 text-sm w-32" data-i="${i}" value="${id.tenant_id||''}" placeholder="tenant_id">
+      <input class="sa-label border rounded px-2 py-1 text-sm w-24" data-i="${i}" value="${id.label||''}" placeholder="label">
       <button onclick="removeIdentity(${i})" class="text-red-500 hover:text-red-700 text-sm">✕</button>
     </div>
   `).join('');
@@ -2553,15 +2594,15 @@ async function loadProvisionRequests() {
     }
     const statusColors = { pending: 'text-yellow-600 bg-yellow-50', approved: 'text-green-600 bg-green-50', rejected: 'text-red-600 bg-red-50' };
     tbody.innerHTML = reqs.map(r => `<tr class="border-b">
-      <td class="py-2 font-mono text-xs">${escapeHtml(r.request_id)}</td>
-      <td class="py-2">${escapeHtml(r.requester_name || r.requester_id?.slice(0,12) || '-')}</td>
-      <td class="py-2">${escapeHtml(r.name || '-')}</td>
-      <td class="py-2">${escapeHtml(r.platform || '-')}</td>
-      <td class="py-2"><span class="px-2 py-0.5 rounded-full text-xs ${statusColors[r.status]||''}">${escapeHtml(r.status)}</span></td>
+      <td class="py-2 font-mono text-xs">${r.request_id}</td>
+      <td class="py-2">${r.requester_name || r.requester_id?.slice(0,12) || '-'}</td>
+      <td class="py-2">${r.name || '-'}</td>
+      <td class="py-2">${r.platform || '-'}</td>
+      <td class="py-2"><span class="px-2 py-0.5 rounded-full text-xs ${statusColors[r.status]||''}">${r.status}</span></td>
       <td class="py-2">${r.status === 'pending' ? `
-        <button onclick="approveReq('${escapeHtml(r.request_id)}')" class="text-green-600 hover:underline text-xs mr-2">Approve</button>
-        <button onclick="rejectReq('${escapeHtml(r.request_id)}')" class="text-red-600 hover:underline text-xs">Reject</button>
-      ` : (r.reviewed_at ? escapeHtml(r.reviewed_at.slice(0,16)) : '-')}</td>
+        <button onclick="approveReq('${r.request_id}')" class="text-green-600 hover:underline text-xs mr-2">Approve</button>
+        <button onclick="rejectReq('${r.request_id}')" class="text-red-600 hover:underline text-xs">Reject</button>
+      ` : (r.reviewed_at ? r.reviewed_at.slice(0,16) : '-')}</td>
     </tr>`).join('');
   } catch (e) {
     tbody.innerHTML = `<tr><td colspan="6" class="text-center text-red-400 py-8">${escapeHtml(e.message)}</td></tr>`;

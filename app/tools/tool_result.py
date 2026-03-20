@@ -17,8 +17,11 @@ class ToolResult:
     ok: bool
     content: str
     code: str = ""  # 错误码: not_found, permission, invalid_param, api_error, blocked, internal
+    retry_hint: str = ""  # 给 LLM 的重试建议：参数应为何格式、推荐用哪个工具
 
     def __str__(self) -> str:
+        if self.retry_hint and not self.ok:
+            return f"{self.content}\n\n💡 建议: {self.retry_hint}"
         return self.content
 
     @staticmethod
@@ -26,8 +29,8 @@ class ToolResult:
         return ToolResult(ok=True, content=content)
 
     @staticmethod
-    def error(content: str, code: str = "error") -> ToolResult:
-        return ToolResult(ok=False, content=content, code=code)
+    def error(content: str, code: str = "error", retry_hint: str = "") -> ToolResult:
+        return ToolResult(ok=False, content=content, code=code, retry_hint=retry_hint)
 
     @staticmethod
     def blocked(content: str) -> ToolResult:
@@ -39,8 +42,8 @@ class ToolResult:
         return ToolResult(ok=False, content=content, code="not_found")
 
     @staticmethod
-    def invalid_param(content: str) -> ToolResult:
-        return ToolResult(ok=False, content=content, code="invalid_param")
+    def invalid_param(content: str, retry_hint: str = "") -> ToolResult:
+        return ToolResult(ok=False, content=content, code="invalid_param", retry_hint=retry_hint)
 
     @staticmethod
     def api_error(content: str) -> ToolResult:

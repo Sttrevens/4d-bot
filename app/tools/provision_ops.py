@@ -50,16 +50,28 @@ def _provision_tenant(args: dict) -> ToolResult:
     credentials_json = args.get("credentials_json", "{}").strip()
 
     if not tenant_id:
-        return ToolResult.invalid_param("Missing tenant_id")
+        return ToolResult.invalid_param(
+            "Missing tenant_id",
+            retry_hint="tenant_id 格式: 公司名-用途，如 'acme-support'，只能用字母数字和-_",
+        )
     if not name:
-        return ToolResult.invalid_param("Missing name")
+        return ToolResult.invalid_param(
+            "Missing name",
+            retry_hint="name 是显示名称，如 '某某公司 AI 助手'",
+        )
     if not platform:
-        return ToolResult.invalid_param("Missing platform")
+        return ToolResult.invalid_param(
+            "Missing platform",
+            retry_hint="platform 必须是 feishu/wecom/wecom_kf/qq 之一",
+        )
 
     try:
         credentials = json.loads(credentials_json)
     except json.JSONDecodeError as e:
-        return ToolResult.invalid_param(f"Invalid credentials_json: {e}")
+        return ToolResult.invalid_param(
+            f"Invalid credentials_json: {e}",
+            retry_hint="credentials_json 必须是合法 JSON 字符串，注意双引号和转义",
+        )
 
     # 可选参数
     kwargs: dict = {}
@@ -283,7 +295,7 @@ TOOL_DEFINITIONS = [
                 },
                 "name": {
                     "type": "string",
-                    "description": "租户显示名称，如 '示例公司 AI 助手'",
+                    "description": "租户显示名称，如 '高梦科技 AI 助手'",
                 },
                 "platform": {
                     "type": "string",
@@ -322,8 +334,10 @@ TOOL_DEFINITIONS = [
                         "预装的能力模块列表（可选）。"
                         "模块名对应 app/knowledge/modules/{name}.md，"
                         "会在 system prompt 中注入领域专业知识。"
+                        "例: [\"anti_drone_safety\"] 让 bot 具备反无人机业务知识。"
                         "例: [\"social_media_research\"] 让 bot 具备社媒调研能力。"
-                        "可用模块通过 list_capability_modules 查看。"
+                        "创建 bot 前务必先调用 list_capability_modules 查看可用模块，"
+                        "主动向客户推荐适合其行业的模块组合。"
                     ),
                 },
             },

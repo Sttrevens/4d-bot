@@ -21,6 +21,18 @@ _MODULES_DIR = os.path.join(os.path.dirname(__file__), "..", "knowledge", "modul
 _MODULE_TTL = 365 * 86400  # 1 year
 
 
+def _load_registry() -> dict[str, dict]:
+    """加载 registry.json 元数据（label/category/recommended_tools）。"""
+    registry_path = os.path.join(_MODULES_DIR, "registry.json")
+    try:
+        with open(registry_path, "r", encoding="utf-8") as f:
+            import json
+            data = json.loads(f.read())
+            return {m["name"]: m for m in data.get("modules", [])}
+    except Exception:
+        return {}
+
+
 def list_capability_modules(args: dict) -> ToolResult:
     """列出所有可用的能力模块。"""
     from app.services.base_agent import list_available_modules
@@ -30,9 +42,17 @@ def list_capability_modules(args: dict) -> ToolResult:
             "当前没有可用的能力模块。\n"
             "你可以用 save_capability_module 创建新模块，为特定领域沉淀工作流和最佳实践。"
         )
+    registry = _load_registry()
     lines = ["可用能力模块：", ""]
     for m in modules:
-        lines.append(f"- **{m['name']}** — {m['description']}")
+        name = m["name"]
+        reg = registry.get(name, {})
+        label = reg.get("label", "")
+        category = reg.get("category", "")
+        desc = m["description"]
+        prefix = f"[{category}] " if category else ""
+        display_name = f"{label} ({name})" if label else name
+        lines.append(f"- {prefix}{display_name} — {desc}")
     lines.append("")
     lines.append("load_capability_module(name) 加载详细内容 | save_capability_module 创建/更新模块")
     return ToolResult.success("\n".join(lines))

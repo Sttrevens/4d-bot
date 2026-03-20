@@ -1,0 +1,61 @@
+{
+    "_comment": "能力模组注册表 — Dashboard 和 provision 流程读取此文件展示模组列表",
+    "modules": [
+        {
+            "name": "anti_drone_safety",
+            "label": "反无人机低空安全",
+            "description": "反无人机低空安全业务知识库，轻资产资源变现模式",
+            "category": "industry",
+            "recommended_tools": ["web_search", "export_file", "save_memory", "recall_memory", "browser_open", "browser_do", "browser_read"],
+            "platforms": ["wecom_kf", "wecom", "feishu"]
+        },
+        {
+            "name": "social_media_research",
+            "label": "社媒调研",
+            "description": "社交媒体调研专家，提供真实有来源可验证的情报",
+            "category": "research",
+            "recommended_tools": ["web_search", "search_social_media", "browser_open", "browser_do", "browser_read", "export_file", "save_memory", "recall_memory"],
+            "platforms": ["wecom_kf", "wecom", "feishu"]
+        },
+        {
+            "name": "sales_playbook",
+            "label": "销售与客户服务",
+            "description": "AI Bot 平台销售+售后代表，客户转化与服务",
+            "category": "business",
+            "recommended_tools": ["web_search", "save_memory", "recall_memory", "export_file", "send_mail"],
+            "platforms": ["wecom_kf", "wecom", "feishu"]
+        },
+        {
+            "name": "onboarding_workflow",
+            "label": "客户开通工作流",
+            "description": "结构化的客户 Bot 开通流程指引",
+            "category": "operations",
+            "recommended_tools": ["provision_tenant", "list_instances", "guide_human", "save_memory"],
+            "platforms": ["wecom_kf", "wecom", "feishu"]
+        },
+        {
+            "name": "platform_setup_guide",
+            "label": "平台配置指南",
+            "description": "飞书/企微/QQ 平台凭证获取和 Webhook 配置指南",
+            "category": "operations",
+            "recommended_tools": ["guide_human"],
+            "platforms": ["wecom_kf", "wecom", "feishu"]
+        },
+        {
+            "name": "bot_templates",
+            "label": "Bot 行业模板",
+            "description": "各行业 bot 的 system_prompt、工具集和配额配置参考模板",
+            "category": "operations",
+            "recommended_tools": ["provision_tenant"],
+            "platforms": ["wecom_kf", "wecom", "feishu"]
+        },
+        {
+            "name": "html_slides",
+            "label": "HTML 演示文稿",
+            "description": "生成零依赖、动画丰富的 HTML 演示文稿",
+            "category": "content",
+            "recommended_tools": ["export_file"],
+            "platforms": ["wecom_kf", "wecom", "feishu"]
+        }
+    ]
+}

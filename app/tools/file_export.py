@@ -1,6 +1,6 @@
 """文件导出工具 —— 生成文件并通过企微/飞书发送给用户
 
-支持格式: CSV, TXT, Markdown, JSON, PDF, HTML
+支持格式: CSV, TXT, Markdown, JSON, PDF, HTML, XLSX
 适用平台: wecom, wecom_kf（飞书用 doc_ops 创建云文档，不需要文件导出）
 
 工作流程:
@@ -150,6 +150,95 @@ def _generate_json(content: str) -> bytes:
         return json.dumps(parsed, ensure_ascii=False, indent=2).encode("utf-8")
     except json.JSONDecodeError:
         return content.encode("utf-8")
+
+
+def _generate_xlsx(content: str) -> bytes:
+    """从结构化文本生成 Excel (.xlsx) 文件
+
+    content 格式:
+    - JSON 数组（推荐）: [{"列A": "值1", "列B": "值2"}, ...]
+    - CSV 文本: 每行逗号分隔，第一行为表头
+    """
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+
+    wb = Workbook()
+    ws = wb.active
+
+    content = content.strip()
+    rows: list[list[str]] = []
+    headers: list[str] = []
+
+    # 尝试解析 JSON 数组
+    if content.startswith("["):
+        try:
+            data = json.loads(content)
+            if data and isinstance(data[0], dict):
+                headers = list(data[0].keys())
+                rows = [[str(row.get(h, "")) for h in headers] for row in data]
+        except (json.JSONDecodeError, TypeError, AttributeError, IndexError):
+            pass
+
+    # 回退: 按 CSV 解析
+    if not rows:
+        reader = csv.reader(io.StringIO(content))
+        all_rows = list(reader)
+        if all_rows:
+            headers = all_rows[0]
+            rows = all_rows[1:]
+
+    if not headers:
+        # 纯文本兜底: 每行一个单元格
+        for i, line in enumerate(content.split("\n"), 1):
+            ws.cell(row=i, column=1, value=line)
+        buf = io.BytesIO()
+        wb.save(buf)
+        return buf.getvalue()
+
+    # 表头样式
+    header_font = Font(bold=True, color="FFFFFF", size=11)
+    header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+    header_align = Alignment(horizontal="center", vertical="center")
+    thin_border = Border(
+        left=Side(style="thin", color="D9D9D9"),
+        right=Side(style="thin", color="D9D9D9"),
+        top=Side(style="thin", color="D9D9D9"),
+        bottom=Side(style="thin", color="D9D9D9"),
+    )
+
+    # 写表头
+    for col_idx, header in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col_idx, value=header)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = header_align
+        cell.border = thin_border
+
+    # 写数据行（偶数行浅灰底色）
+    even_fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
+    for row_idx, row_data in enumerate(rows, 2):
+        for col_idx, value in enumerate(row_data, 1):
+            cell = ws.cell(row=row_idx, column=col_idx, value=value)
+            cell.border = thin_border
+            if row_idx % 2 == 0:
+                cell.fill = even_fill
+
+    # 自动列宽（取表头和前 50 行数据的最大宽度）
+    for col_idx, header in enumerate(headers, 1):
+        max_len = len(str(header))
+        for row_data in rows[:50]:
+            if col_idx - 1 < len(row_data):
+                max_len = max(max_len, len(str(row_data[col_idx - 1])))
+        # CJK 字符宽度约 2x，简单估算
+        adjusted = min(max_len + 4, 60)
+        ws.column_dimensions[ws.cell(row=1, column=col_idx).column_letter].width = adjusted
+
+    # 冻结首行
+    ws.freeze_panes = "A2"
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
 
 
 # ── PDF 生成（weasyprint HTML→PDF 管线）──
@@ -444,7 +533,9 @@ TOOL_DEFINITIONS = [
         "name": "export_file",
         "description": (
             "生成文件并发送给用户。适用于用户要求产出报告、表格、数据导出、演示文稿等场景。"
-            "支持格式: csv, txt, md, json, pdf, html。"
+            "支持格式: csv, txt, md, json, pdf, html, xlsx。"
+            "XLSX（Excel）推荐用于结构化数据——报价单、设备清单、巡检表等，用户可直接在手机/电脑打开编辑。"
+            "传入 JSON 数组（推荐）或 CSV 文本，自动生成带表头样式、斑马纹、冻结首行的专业 Excel 表格。"
             "PDF 推荐用于正式报告——传入完整 HTML+CSS 内容，自动渲染为高质量 PDF"
             "（支持粗体/颜色/表格样式/超链接/base64图片/分页等，远比 Markdown 强大）。"
             "也支持传入 Markdown 文本（自动转为 HTML 再渲染 PDF）。"
@@ -465,6 +556,8 @@ TOOL_DEFINITIONS = [
                     "type": "string",
                     "description": (
                         "文件内容。"
+                        "XLSX: 推荐传 JSON 数组 [{\"列名\": \"值\"}, ...]，也可传 CSV 文本。"
+                        "自动生成带表头样式、斑马纹、冻结首行的专业 Excel 表格。"
                         "PDF: 推荐传完整 HTML（含 <style> 内联 CSS），可用 <strong> 加粗、"
                         "<a href> 超链接、<table> 带样式表格、<img src='data:...'> 内嵌图片、"
                         "CSS color/background 配色等。也可传 Markdown 文本（自动转 HTML）。"
@@ -493,10 +586,14 @@ def _export_file(filename: str, content: str) -> ToolResult:
         return ToolResult.error(
             "飞书平台请使用 create_feishu_doc 创建云文档，而不是文件导出。",
             code="invalid_param",
+            retry_hint="改用 create_feishu_doc 工具创建飞书云文档",
         )
 
     if platform not in ("wecom", "wecom_kf"):
-        return ToolResult.error(f"当前平台 {platform} 不支持文件发送", code="invalid_param")
+        return ToolResult.error(
+            f"当前平台 {platform} 不支持文件发送", code="invalid_param",
+            retry_hint="该平台不支持文件导出，请直接在回复中展示内容",
+        )
 
     # 架构级 URL 验证：在生成文件前，移除未经 web_search 验证的 URL
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "txt"
@@ -509,12 +606,18 @@ def _export_file(filename: str, content: str) -> ToolResult:
             )
 
     # 生成文件字节
-    if ext == "pdf":
+    if ext == "xlsx":
+        try:
+            file_bytes = _generate_xlsx(content)
+        except Exception:
+            logger.exception("XLSX generation failed, falling back to .csv")
+            filename = filename.rsplit(".", 1)[0] + ".csv"
+            file_bytes = _generate_csv(content)
+    elif ext == "pdf":
         try:
             file_bytes = _generate_pdf(content)
         except Exception:
             logger.exception("PDF generation failed, falling back to .html")
-            # PDF 失败时降级为 HTML（内容通常是 HTML，比 .md 更有用）
             filename = filename.rsplit(".", 1)[0] + ".html"
             file_bytes = content.encode("utf-8")
     elif ext == "csv":

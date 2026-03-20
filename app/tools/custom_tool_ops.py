@@ -67,6 +67,63 @@ _BUILTIN_TOOL_NAMES: frozenset[str] = frozenset({
 RISK_LEVELS = ("green", "yellow", "red")
 
 
+# ── input_schema 验证 ──
+
+_VALID_JSON_SCHEMA_TYPES = {"string", "number", "integer", "boolean", "array", "object", "null"}
+
+
+def _validate_input_schema(schema: Any) -> list[str]:
+    """验证自定义工具的 input_schema 是否为合法 JSON Schema 结构。
+
+    返回错误列表，空列表表示验证通过。
+    不使用外部 jsonschema 库 — 只做结构性检查，防止明显的格式错误。
+    """
+    errors: list[str] = []
+
+    if not isinstance(schema, dict):
+        errors.append(f"input_schema 必须是 dict，实际是 {type(schema).__name__}")
+        return errors
+
+    # type 必须是 "object"（function calling 顶层要求）
+    schema_type = schema.get("type")
+    if schema_type != "object":
+        errors.append(f'顶层 type 必须是 "object"，实际是 "{schema_type}"')
+
+    # properties 应该是 dict（如果存在）
+    props = schema.get("properties")
+    if props is not None:
+        if not isinstance(props, dict):
+            errors.append(f"properties 必须是 dict，实际是 {type(props).__name__}")
+        else:
+            for param_name, param_def in props.items():
+                if not isinstance(param_def, dict):
+                    errors.append(f'properties.{param_name} 必须是 dict')
+                    continue
+                param_type = param_def.get("type")
+                if param_type and param_type not in _VALID_JSON_SCHEMA_TYPES:
+                    errors.append(
+                        f'properties.{param_name}.type "{param_type}" 不合法，'
+                        f'应为 {_VALID_JSON_SCHEMA_TYPES} 之一'
+                    )
+                if "description" not in param_def:
+                    errors.append(
+                        f'properties.{param_name} 缺少 description 字段，'
+                        f'LLM 需要描述才能正确填写参数'
+                    )
+
+    # required 应该是 list[str]（如果存在）
+    required = schema.get("required")
+    if required is not None:
+        if not isinstance(required, list):
+            errors.append(f"required 必须是 list，实际是 {type(required).__name__}")
+        elif props and isinstance(props, dict):
+            for r in required:
+                if r not in props:
+                    errors.append(f'required 中的 "{r}" 不在 properties 中')
+
+    return errors
+
+
 # ── 工具 CRUD ──
 
 def create_custom_tool(args: dict) -> ToolResult:
@@ -91,6 +148,15 @@ def create_custom_tool(args: dict) -> ToolResult:
         return ToolResult.blocked(f"'{name}' 是内置工具名，不能覆盖")
     if risk_level not in RISK_LEVELS:
         return ToolResult.invalid_param(f"risk_level 必须是 {RISK_LEVELS} 之一")
+
+    # input_schema JSON Schema 结构验证
+    schema_errors = _validate_input_schema(input_schema)
+    if schema_errors:
+        return ToolResult.invalid_param(
+            "input_schema 格式不合法:\n" + "\n".join(f"- {e}" for e in schema_errors),
+            retry_hint="input_schema 必须是合法 JSON Schema，type 必须是 'object'，"
+                       "properties 是 {参数名: {type, description}} 的字典",
+        )
 
     # 静态安全检查
     violations = validate_code(code)
@@ -325,6 +391,7 @@ TOOL_DEFINITIONS = [
             "一个代码块可以定义多个工具（函数），此时 name 参数可以作为工具组名（如 feishu_ops）。"
             "handler 函数接收 dict 参数，返回 ToolResult。可以使用 httpx 发网络请求、bs4 解析 HTML。"
             "\n\nsandbox_caps 提供的图片处理能力（沙箱内可用）:\n"
+            "- list_user_images() → list[str]: 列出 /tmp/user_img_* 所有的图片文件名\n"
             "- read_user_image(path) → bytes: 安全读取 /tmp/user_img_* 图片文件\n"
             "- slice_image_grid(data, rows, cols, target_row=N) → list[bytes] | bytes: "
             "将图片按网格切片（适合 sprite sheet 等密集图逐行分析）\n"

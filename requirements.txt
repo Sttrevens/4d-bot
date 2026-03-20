@@ -12,3 +12,4 @@ yt-dlp>=2024.1
 playwright>=1.40,<1.58.1
 fpdf2>=2.8.6,<3
 weasyprint>=63,<69
+openpyxl>=3.1,<4
