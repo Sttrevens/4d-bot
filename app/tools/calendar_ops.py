@@ -960,11 +960,33 @@ def update_event(
                      list(data.keys()) if isinstance(data, dict) else "n/a",
                      list(data.get("data", {}).get("event", {}).keys()))
         updated = data.get("data", {}).get("event", {})
-        # 验证返回的 timezone 是否与请求一致
-        resp_start_tz = updated.get("start_time", {}).get("timezone", "")
-        resp_end_tz = updated.get("end_time", {}).get("timezone", "")
-        if resp_start_tz or resp_end_tz:
-            logger.info("update_event: response timezones: start=%s end=%s", resp_start_tz, resp_end_tz)
+        # 详细记录 response 的时间和时区（用于诊断 PATCH 是否真正生效）
+        resp_start = updated.get("start_time", {})
+        resp_end = updated.get("end_time", {})
+        logger.info("update_event: response start_time=%s end_time=%s", resp_start, resp_end)
+        logger.info("update_event: response recurrence=%s is_exception=%s",
+                     updated.get("recurrence", ""), updated.get("is_exception", ""))
+        # PATCH 后立即 GET 验证变更是否持久化
+        verify = feishu_get(
+            f"/calendar/v4/calendars/{encoded_cal_id}/events/{event_id}",
+            params={"user_id_type": "open_id"},
+            use_user_token=use_user,
+        )
+        if not isinstance(verify, str):
+            v_event = verify.get("data", {}).get("event", {})
+            v_start = v_event.get("start_time", {})
+            v_end = v_event.get("end_time", {})
+            logger.info("update_event: VERIFY GET start_time=%s end_time=%s", v_start, v_end)
+            # 检查 timestamp 是否真的变了
+            sent_start_ts = body.get("start_time", {}).get("timestamp", "")
+            got_start_ts = v_start.get("timestamp", "")
+            if sent_start_ts and got_start_ts and sent_start_ts != got_start_ts:
+                logger.warning("update_event: TIMESTAMP MISMATCH! sent=%s got=%s — PATCH did NOT persist!",
+                               sent_start_ts, got_start_ts)
+            elif sent_start_ts and got_start_ts:
+                logger.info("update_event: timestamp verified: sent=%s == got=%s ✓", sent_start_ts, got_start_ts)
+        else:
+            logger.warning("update_event: verify GET failed: %s", verify)
         name = updated.get("summary", summary or event_id)
         result_lines.append(f"日程已更新: {name}")
 
