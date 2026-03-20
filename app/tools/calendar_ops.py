@@ -432,7 +432,11 @@ def _parse_time(time_str: str) -> str:
     for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M"):
         try:
             dt = datetime.strptime(time_str, fmt).replace(tzinfo=tz)
-            return str(int(dt.timestamp()))
+            ts_val = str(int(dt.timestamp()))
+            logger.info("_parse_time: input='%s' tz=%s → ts=%s (= %s UTC)",
+                        time_str, tz, ts_val,
+                        datetime.fromtimestamp(int(ts_val), tz=ZoneInfo("UTC")).strftime("%Y-%m-%d %H:%M"))
+            return ts_val
         except ValueError:
             continue
     return ""
@@ -875,6 +879,11 @@ def update_event(
     end_timezone: str = "",
 ) -> ToolResult:
     """修改飞书日程（只更新传入的字段，有 auth 用用户身份，无 auth 用 bot 身份）"""
+    # Fix 7: 授权失效时直接报错，不要静默降级到 tenant_token（tenant_token 没日历写权限）
+    reauth_msg = _check_reauth_needed()
+    if reauth_msg:
+        return ToolResult.api_error(reauth_msg)
+
     # 在多个日历中查找 event
     encoded_cal_id, _, err = _find_event_calendar(event_id, calendar_id)
     if err:
@@ -936,14 +945,84 @@ def update_event(
     result_lines: list[str] = []
 
     if body:
+        use_user = _use_user()
+        logger.info("update_event: calendar=%s event=%s use_user=%s body=%s",
+                     encoded_cal_id[:30], event_id, use_user, body)
+        # ── PATCH 前 GET：记录原始时间戳，判断是否真的有变化 ──
+        pre_get = feishu_get(
+            f"/calendar/v4/calendars/{encoded_cal_id}/events/{event_id}",
+            params={"user_id_type": "open_id"},
+            use_user_token=use_user,
+        )
+        if not isinstance(pre_get, str):
+            pre_evt = pre_get.get("data", {}).get("event", {})
+            pre_start = pre_evt.get("start_time", {})
+            pre_end = pre_evt.get("end_time", {})
+            logger.info("update_event: PRE-PATCH start_time=%s end_time=%s", pre_start, pre_end)
+            logger.info("update_event: PRE-PATCH recurrence=%s is_exception=%s status=%s",
+                         pre_evt.get("recurrence", ""), pre_evt.get("is_exception", ""),
+                         pre_evt.get("status", ""))
+            # 检查是否 no-op（时间戳已经一致）
+            sent_start_ts = body.get("start_time", {}).get("timestamp", "")
+            if sent_start_ts and pre_start.get("timestamp") == sent_start_ts:
+                logger.warning("update_event: PRE-PATCH timestamp ALREADY == sent value %s — PATCH may be no-op!", sent_start_ts)
+        else:
+            logger.warning("update_event: PRE-PATCH GET failed: %s", pre_get)
+
         data = feishu_patch(
             f"/calendar/v4/calendars/{encoded_cal_id}/events/{event_id}",
             json=body,
-            use_user_token=_use_user(),
+            use_user_token=use_user,
         )
         if isinstance(data, str):
+            logger.warning("update_event: PATCH failed: %s", data)
             return ToolResult.api_error(data)
+        logger.info("update_event: PATCH response keys=%s event_keys=%s",
+                     list(data.keys()) if isinstance(data, dict) else "n/a",
+                     list(data.get("data", {}).get("event", {}).keys()))
         updated = data.get("data", {}).get("event", {})
+        resp_start = updated.get("start_time", {})
+        resp_end = updated.get("end_time", {})
+        logger.info("update_event: response start_time=%s end_time=%s", resp_start, resp_end)
+        logger.info("update_event: response recurrence=%s is_exception=%s",
+                     updated.get("recurrence", ""), updated.get("is_exception", ""))
+
+        # ── _0 后缀处理：如果有 _0 后缀，也尝试 PATCH 不带后缀的主事件 ──
+        if event_id.endswith("_0"):
+            base_event_id = event_id[:-2]
+            logger.info("update_event: event_id has _0 suffix, also trying base_id=%s", base_event_id)
+            data2 = feishu_patch(
+                f"/calendar/v4/calendars/{encoded_cal_id}/events/{base_event_id}",
+                json=body,
+                use_user_token=use_user,
+            )
+            if isinstance(data2, str):
+                logger.warning("update_event: PATCH base_id failed: %s", data2)
+            else:
+                updated2 = data2.get("data", {}).get("event", {})
+                logger.info("update_event: PATCH base_id response start_time=%s end_time=%s",
+                             updated2.get("start_time", {}), updated2.get("end_time", {}))
+
+        # ── PATCH 后 GET 验证 ──
+        verify = feishu_get(
+            f"/calendar/v4/calendars/{encoded_cal_id}/events/{event_id}",
+            params={"user_id_type": "open_id"},
+            use_user_token=use_user,
+        )
+        if not isinstance(verify, str):
+            v_event = verify.get("data", {}).get("event", {})
+            v_start = v_event.get("start_time", {})
+            v_end = v_event.get("end_time", {})
+            logger.info("update_event: VERIFY GET start_time=%s end_time=%s", v_start, v_end)
+            sent_start_ts = body.get("start_time", {}).get("timestamp", "")
+            got_start_ts = v_start.get("timestamp", "")
+            if sent_start_ts and got_start_ts and sent_start_ts != got_start_ts:
+                logger.warning("update_event: TIMESTAMP MISMATCH! sent=%s got=%s — PATCH did NOT persist!",
+                               sent_start_ts, got_start_ts)
+            elif sent_start_ts and got_start_ts:
+                logger.info("update_event: timestamp verified: sent=%s == got=%s ✓", sent_start_ts, got_start_ts)
+        else:
+            logger.warning("update_event: verify GET failed: %s", verify)
         name = updated.get("summary", summary or event_id)
         result_lines.append(f"日程已更新: {name}")
 
@@ -984,6 +1063,11 @@ def update_event(
 
 def delete_event(event_id: str, calendar_id: str = "") -> ToolResult:
     """删除日程（有 auth 用用户身份，无 auth 用 bot 身份；用户身份失败自动回退 bot 身份）"""
+    # Fix 7: 授权失效时直接报错，不要静默降级到 tenant_token（tenant_token 没日历写权限）
+    reauth_msg = _check_reauth_needed()
+    if reauth_msg:
+        return ToolResult.api_error(reauth_msg)
+
     encoded_cal_id, _, err = _find_event_calendar(event_id, calendar_id)
     if err:
         return ToolResult.api_error(err)
@@ -1018,6 +1102,11 @@ def delete_event(event_id: str, calendar_id: str = "") -> ToolResult:
 
 def get_event_detail(event_id: str, calendar_id: str = "") -> ToolResult:
     """获取日程详细信息，包括标题、时间、地点、描述、参与人列表"""
+    # Fix 7: 授权失效时直接报错，不要静默降级到 tenant_token（tenant_token 没日历写权限）
+    reauth_msg = _check_reauth_needed()
+    if reauth_msg:
+        return ToolResult.api_error(reauth_msg)
+
     use_user = _use_user()
 
     # 在多个日历中查找该 event（同时拿到详情数据，避免重复请求）
