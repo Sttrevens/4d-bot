@@ -941,14 +941,26 @@ def update_event(
     result_lines: list[str] = []
 
     if body:
+        use_user = _use_user()
+        logger.info("update_event: calendar=%s event=%s use_user=%s body=%s",
+                     encoded_cal_id[:30], event_id, use_user, body)
         data = feishu_patch(
             f"/calendar/v4/calendars/{encoded_cal_id}/events/{event_id}",
             json=body,
-            use_user_token=_use_user(),
+            use_user_token=use_user,
         )
         if isinstance(data, str):
+            logger.warning("update_event: PATCH failed: %s", data)
             return ToolResult.api_error(data)
+        logger.info("update_event: PATCH response keys=%s event_keys=%s",
+                     list(data.keys()) if isinstance(data, dict) else "n/a",
+                     list(data.get("data", {}).get("event", {}).keys()))
         updated = data.get("data", {}).get("event", {})
+        # 验证返回的 timezone 是否与请求一致
+        resp_start_tz = updated.get("start_time", {}).get("timezone", "")
+        resp_end_tz = updated.get("end_time", {}).get("timezone", "")
+        if resp_start_tz or resp_end_tz:
+            logger.info("update_event: response timezones: start=%s end=%s", resp_start_tz, resp_end_tz)
         name = updated.get("summary", summary or event_id)
         result_lines.append(f"日程已更新: {name}")
 
