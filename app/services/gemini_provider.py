@@ -1239,7 +1239,7 @@ async def handle_message(
                                     inbox_texts.append(t)
                             logger.info(
                                 "sub-agent done but inbox has %d messages, "
-                                "falling through to main loop: %s",
+                                "falling through to main loop with sub-agent context: %s",
                                 len(pending),
                                 "; ".join(t[:40] for t in inbox_texts),
                             )
@@ -1248,7 +1248,7 @@ async def handle_message(
                                 f"[前置任务已完成]\n{sub_result}\n\n"
                                 f"[用户新消息]\n" + "\n".join(inbox_texts)
                             )
-                            # 继续到主 loop 处理
+                            # 继续到主 loop 处理（不触发 insufficient result 警告）
                         else:
                             _trigger_memory(
                                 sender_id, sender_name, user_text, sub_result,
@@ -1261,12 +1261,13 @@ async def handle_message(
                             [],
                         )
                         return sub_result
-                # 子 agent 结果太短/为空 → fallback 到主 loop
-                logger.warning(
-                    "sub-agent [%s] returned insufficient result (%d chars), "
-                    "falling back to main loop",
-                    _sub_agent_type, len(sub_result) if sub_result else 0,
-                )
+                else:
+                    # 子 agent 结果太短/为空 → fallback 到主 loop
+                    logger.warning(
+                        "sub-agent [%s] returned insufficient result (%d chars), "
+                        "falling back to main loop",
+                        _sub_agent_type, len(sub_result) if sub_result else 0,
+                    )
             except Exception:
                 logger.warning(
                     "sub-agent [%s] failed, falling back to main loop",
