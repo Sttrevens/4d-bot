@@ -926,9 +926,15 @@ def list_instances() -> list[dict]:
                         })
             except Exception:
                 pass
-        else:
-            # Fallback: detect co-tenants from local tenant registry
-            entry["co_tenants"] = _get_co_tenants_from_registry(tid, info.platform)
+
+        # Also check tenant_registry for co-tenants added via Redis sync
+        # (may not be in the file if _cohost_tenant failed or bridge network)
+        registry_co = _get_co_tenants_from_registry(tid, info.platform)
+        existing_ct_ids = {ct["tenant_id"] for ct in entry["co_tenants"]}
+        for rct in registry_co:
+            if rct["tenant_id"] not in existing_ct_ids:
+                entry["co_tenants"].append(rct)
+                existing_ct_ids.add(rct["tenant_id"])
 
         result.append(entry)
 
