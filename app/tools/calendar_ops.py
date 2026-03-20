@@ -875,6 +875,11 @@ def update_event(
     end_timezone: str = "",
 ) -> ToolResult:
     """修改飞书日程（只更新传入的字段，有 auth 用用户身份，无 auth 用 bot 身份）"""
+    # Fix 7: 授权失效时直接报错，不要静默降级到 tenant_token（tenant_token 没日历写权限）
+    reauth_msg = _check_reauth_needed()
+    if reauth_msg:
+        return ToolResult.api_error(reauth_msg)
+
     # 在多个日历中查找 event
     encoded_cal_id, _, err = _find_event_calendar(event_id, calendar_id)
     if err:
@@ -984,6 +989,11 @@ def update_event(
 
 def delete_event(event_id: str, calendar_id: str = "") -> ToolResult:
     """删除日程（有 auth 用用户身份，无 auth 用 bot 身份；用户身份失败自动回退 bot 身份）"""
+    # Fix 7: 授权失效时直接报错，不要静默降级到 tenant_token（tenant_token 没日历写权限）
+    reauth_msg = _check_reauth_needed()
+    if reauth_msg:
+        return ToolResult.api_error(reauth_msg)
+
     encoded_cal_id, _, err = _find_event_calendar(event_id, calendar_id)
     if err:
         return ToolResult.api_error(err)
@@ -1018,6 +1028,11 @@ def delete_event(event_id: str, calendar_id: str = "") -> ToolResult:
 
 def get_event_detail(event_id: str, calendar_id: str = "") -> ToolResult:
     """获取日程详细信息，包括标题、时间、地点、描述、参与人列表"""
+    # Fix 7: 授权失效时直接报错，不要静默降级到 tenant_token（tenant_token 没日历写权限）
+    reauth_msg = _check_reauth_needed()
+    if reauth_msg:
+        return ToolResult.api_error(reauth_msg)
+
     use_user = _use_user()
 
     # 在多个日历中查找该 event（同时拿到详情数据，避免重复请求）
