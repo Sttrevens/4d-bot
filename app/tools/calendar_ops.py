@@ -432,7 +432,11 @@ def _parse_time(time_str: str) -> str:
     for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M"):
         try:
             dt = datetime.strptime(time_str, fmt).replace(tzinfo=tz)
-            return str(int(dt.timestamp()))
+            ts_val = str(int(dt.timestamp()))
+            logger.info("_parse_time: input='%s' tz=%s → ts=%s (= %s UTC)",
+                        time_str, tz, ts_val,
+                        datetime.fromtimestamp(int(ts_val), tz=ZoneInfo("UTC")).strftime("%Y-%m-%d %H:%M"))
+            return ts_val
         except ValueError:
             continue
     return ""
