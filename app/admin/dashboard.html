@@ -770,6 +770,38 @@
               </div>
             </div>
           </div>
+          <!-- Coworker Mode -->
+          <div>
+            <p class="text-xs font-medium text-gray-500 mb-2">Coworker Mode (Proactive Group Scanning)</p>
+            <div class="grid grid-cols-2 gap-3 mb-2">
+              <label class="flex items-center gap-2 text-sm text-gray-600 col-span-2">
+                <input id="edit-coworker-enabled" type="checkbox" class="rounded">
+                Enable Coworker Mode (bot proactively joins group discussions)
+              </label>
+            </div>
+            <div class="grid grid-cols-3 gap-3 mb-2">
+              <div>
+                <label class="block text-[10px] text-gray-400 mb-1">Scan Interval (hours)</label>
+                <input id="edit-coworker-interval" type="number" class="w-full border rounded-lg px-3 py-2 text-sm">
+              </div>
+              <div>
+                <label class="block text-[10px] text-gray-400 mb-1">Messages to Fetch</label>
+                <input id="edit-coworker-msg-count" type="number" class="w-full border rounded-lg px-3 py-2 text-sm">
+              </div>
+              <div>
+                <label class="block text-[10px] text-gray-400 mb-1">Quiet Hours (start-end)</label>
+                <div class="flex gap-1 items-center">
+                  <input id="edit-coworker-quiet-start" type="number" min="0" max="23" class="w-12 border rounded-lg px-2 py-2 text-sm text-center">
+                  <span class="text-gray-400">-</span>
+                  <input id="edit-coworker-quiet-end" type="number" min="0" max="23" class="w-12 border rounded-lg px-2 py-2 text-sm text-center">
+                </div>
+              </div>
+            </div>
+            <div>
+              <label class="block text-[10px] text-gray-400 mb-1">Target Groups (chat_ids, comma-separated, empty=all)</label>
+              <input id="edit-coworker-groups" type="text" class="w-full border rounded-lg px-3 py-2 text-sm" placeholder="oc_xxx, oc_yyy (empty = scan all groups)">
+            </div>
+          </div>
           <!-- Admin Names -->
           <div>
             <label class="block text-xs font-medium text-gray-500 mb-1">Admin Names (comma-separated)</label>
@@ -2704,6 +2736,13 @@ async function openEditModal(tid) {
     document.getElementById('edit-mem-rounds').value = config.memory_chat_rounds ?? 5;
     document.getElementById('edit-mem-ttl').value = config.memory_chat_ttl ?? 3600;
     document.getElementById('edit-admin-names').value = (config.admin_names || []).join(', ');
+    // Coworker mode
+    document.getElementById('edit-coworker-enabled').checked = !!config.coworker_mode_enabled;
+    document.getElementById('edit-coworker-interval').value = config.coworker_scan_interval_hours ?? 6;
+    document.getElementById('edit-coworker-msg-count').value = config.coworker_msg_count ?? 30;
+    document.getElementById('edit-coworker-quiet-start').value = config.coworker_quiet_hours_start ?? 22;
+    document.getElementById('edit-coworker-quiet-end').value = config.coworker_quiet_hours_end ?? 8;
+    document.getElementById('edit-coworker-groups').value = (config.coworker_scan_groups || []).join(', ');
   } catch (e) {
     document.getElementById('edit-status').textContent = 'Load failed: ' + e.message;
     document.getElementById('edit-status').className = 'text-sm ml-auto text-red-600';
@@ -2715,7 +2754,9 @@ function closeEditModal() {
   editingTenantId = '';
   // Reset disabled state for all fields
   for (const id of ['edit-prompt','edit-custom-persona','edit-mem-diary','edit-mem-context',
-                     'edit-mem-journal','edit-mem-rounds','edit-mem-ttl','edit-admin-names']) {
+                     'edit-mem-journal','edit-mem-rounds','edit-mem-ttl','edit-admin-names',
+                     'edit-coworker-enabled','edit-coworker-interval','edit-coworker-msg-count',
+                     'edit-coworker-quiet-start','edit-coworker-quiet-end','edit-coworker-groups']) {
     const el = document.getElementById(id);
     if (el) { el.disabled = false; el.placeholder = ''; }
   }
@@ -2753,6 +2794,14 @@ async function submitEditTenant(e) {
     const an = document.getElementById('edit-admin-names').value.trim();
     if (an) body.admin_names = an.split(',').map(s => s.trim()).filter(Boolean);
     else body.admin_names = [];
+    // Coworker mode
+    body.coworker_mode_enabled = document.getElementById('edit-coworker-enabled').checked;
+    body.coworker_scan_interval_hours = parseInt(document.getElementById('edit-coworker-interval').value) || 6;
+    body.coworker_msg_count = parseInt(document.getElementById('edit-coworker-msg-count').value) || 30;
+    body.coworker_quiet_hours_start = parseInt(document.getElementById('edit-coworker-quiet-start').value) || 22;
+    body.coworker_quiet_hours_end = parseInt(document.getElementById('edit-coworker-quiet-end').value) || 8;
+    const cg = document.getElementById('edit-coworker-groups').value.trim();
+    body.coworker_scan_groups = cg ? cg.split(',').map(s => s.trim()).filter(Boolean) : [];
   }
 
   try {
