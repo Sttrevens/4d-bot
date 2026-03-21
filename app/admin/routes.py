@@ -261,6 +261,9 @@ _EDITABLE_FIELDS = (
     "memory_journal_max", "memory_chat_rounds", "memory_chat_ttl",
     "admin_names", "tools_enabled", "capability_modules",
     "self_iteration_enabled", "instance_management_enabled",
+    "coworker_mode_enabled", "coworker_scan_interval_hours",
+    "coworker_scan_groups", "coworker_msg_count",
+    "coworker_quiet_hours_start", "coworker_quiet_hours_end",
 )
 
 

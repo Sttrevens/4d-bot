@@ -209,6 +209,15 @@ class TenantConfig:
     # 0 = 无限制（适用于管理员租户）
     deploy_free_quota: int = 1          # 每用户免费部署次数（默认 1 次）
 
+    # ── Coworker 模式（主动巡群）──
+    # 开启后 bot 定期扫描所在群聊的新消息，LLM 自主决定是否参与讨论
+    coworker_mode_enabled: bool = False          # 是否启用 coworker 模式
+    coworker_scan_interval_hours: int = 6        # 扫描间隔（小时），默认 6 小时
+    coworker_scan_groups: list[str] = field(default_factory=list)  # 限定扫描的群 chat_id 列表，空=扫描所有群
+    coworker_msg_count: int = 30                 # 每次扫描拉取的最近消息数
+    coworker_quiet_hours_start: int = 22         # 安静时段开始（不主动发言）
+    coworker_quiet_hours_end: int = 8            # 安静时段结束
+
     # ── Agent 路由绑定（借鉴 OpenClaw binding 系统）──
     # 同一个 bot 可以有多个人格，按 channel/chat/user 路由
     # 空列表 = 不启用（用 tenant 级别的统一配置）
