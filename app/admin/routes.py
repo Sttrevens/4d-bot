@@ -264,6 +264,7 @@ _EDITABLE_FIELDS = (
     "coworker_mode_enabled", "coworker_scan_interval_hours",
     "coworker_scan_groups", "coworker_msg_count",
     "coworker_quiet_hours_start", "coworker_quiet_hours_end",
+    "allowed_users", "owner", "access_deny_msg",
 )
 
 
@@ -403,6 +404,46 @@ def _update_local_tenants_json(tenant_id: str, updates: dict):
             return
         except Exception as e:
             logger.warning("_update_local_tenants_json failed for %s: %s", tenant_id, e)
+
+
+# ── 白名单管理 ──
+
+@router.get("/api/tenants/{tenant_id}/allowed-users")
+async def api_get_allowed_users(tenant_id: str, _token: str = Depends(_verify_token)):
+    """获取租户白名单"""
+    t = tenant_registry.get(tenant_id)
+    if not t:
+        raise HTTPException(404, f"Tenant {tenant_id} not found")
+    return {
+        "tenant_id": tenant_id,
+        "allowed_users": t.allowed_users or [],
+        "owner": t.owner or "",
+        "access_deny_msg": t.access_deny_msg,
+    }
+
+
+@router.get("/api/tenants/{tenant_id}/chat-users")
+async def api_get_chat_users(tenant_id: str, _token: str = Depends(_verify_token)):
+    """获取跟该 bot 聊过天的用户列表（从 user_registry 读取）。
+    用于白名单下拉选择。"""
+    from app.services import user_registry
+    from app.tenant.context import set_current_tenant
+    t = tenant_registry.get(tenant_id)
+    if not t:
+        raise HTTPException(404, f"Tenant {tenant_id} not found")
+    # 临时设置 tenant context 读取对应的 registry
+    set_current_tenant(t)
+    all_known = user_registry.all_users()
+    # 已在白名单中的标记
+    allowed_ids = {u.get("external_userid", "") for u in (t.allowed_users or []) if isinstance(u, dict)}
+    users = []
+    for uid, name in all_known.items():
+        users.append({
+            "external_userid": uid,
+            "nickname": name,
+            "in_whitelist": uid in allowed_ids,
+        })
+    return {"tenant_id": tenant_id, "users": users}
 
 
 # ── 用量统计 ──

@@ -333,6 +333,170 @@ def _customer_instance_status(args: dict) -> ToolResult:
     return ToolResult.success(json.dumps(result, indent=2, ensure_ascii=False))
 
 
+# ── 白名单管理（超管专属）──────────────────────────────────────────
+
+
+def _manage_allowed_users(args: dict) -> ToolResult:
+    """管理 bot 白名单（超管专属）。
+
+    支持 add / remove / list 三种操作。
+    add 时通过昵称从 user_registry 中匹配 external_userid。
+    """
+    denied = _require_super_admin()
+    if denied:
+        return denied
+
+    from app.tenant.registry import tenant_registry
+    from app.tenant.context import get_current_tenant, set_current_tenant
+    from app.services import user_registry
+
+    action = args.get("action", "list").strip().lower()
+    tenant_id = args.get("tenant_id", "").strip()
+
+    # 如果没指定 tenant_id，默认当前租户
+    if not tenant_id:
+        tenant_id = get_current_tenant().tenant_id
+
+    target = tenant_registry.get(tenant_id)
+    if not target:
+        return ToolResult.error(f"租户 {tenant_id} 不存在")
+
+    if action == "list":
+        users = target.allowed_users or []
+        if not users:
+            return ToolResult.success(f"租户 {tenant_id} 的白名单为空（所有人可用）。")
+        lines = [f"租户 {tenant_id} 白名单（{len(users)} 人）："]
+        for u in users:
+            nick = u.get("nickname", "未知")
+            euid = u.get("external_userid", "")
+            owner_mark = " [owner]" if euid == target.owner else ""
+            lines.append(f"  - {nick} ({euid[:12]}...){owner_mark}")
+        return ToolResult.success("\n".join(lines))
+
+    if action == "add":
+        nicknames = args.get("nicknames", [])
+        if isinstance(nicknames, str):
+            nicknames = [n.strip() for n in nicknames.split(",") if n.strip()]
+        if not nicknames:
+            return ToolResult.invalid_param("add 操作需要 nicknames 参数（昵称列表）")
+
+        # 切换到目标租户的上下文来查找用户
+        current = get_current_tenant()
+        set_current_tenant(target)
+        results = []
+        added = 0
+        current_allowed = list(target.allowed_users or [])
+        current_ids = {u.get("external_userid", "") for u in current_allowed if isinstance(u, dict)}
+
+        for nick in nicknames:
+            uid = user_registry.find_by_name(nick)
+            if not uid:
+                # 尝试在所有已知用户中模糊匹配
+                all_known = user_registry.all_users()
+                candidates = [(k, v) for k, v in all_known.items() if nick in v or v in nick]
+                if len(candidates) == 1:
+                    uid = candidates[0][0]
+                elif len(candidates) > 1:
+                    options = ", ".join(f"{v}({k[:8]}...)" for k, v in candidates[:5])
+                    results.append(f"「{nick}」匹配到多个用户: {options}，请更精确")
+                    continue
+                else:
+                    results.append(f"「{nick}」未找到（该用户可能还没跟 bot 聊过天）")
+                    continue
+
+            if uid in current_ids:
+                actual_name = user_registry.get_name(uid) or nick
+                results.append(f"「{actual_name}」已在白名单中")
+                continue
+
+            actual_name = user_registry.get_name(uid) or nick
+            current_allowed.append({"external_userid": uid, "nickname": actual_name})
+            current_ids.add(uid)
+            added += 1
+            results.append(f"已添加「{actual_name}」")
+
+        set_current_tenant(current)
+
+        if added > 0:
+            target.allowed_users = current_allowed
+            _persist_allowed_users(tenant_id, current_allowed, target.owner)
+
+        return ToolResult.success("\n".join(results))
+
+    if action == "remove":
+        nicknames = args.get("nicknames", [])
+        if isinstance(nicknames, str):
+            nicknames = [n.strip() for n in nicknames.split(",") if n.strip()]
+        if not nicknames:
+            return ToolResult.invalid_param("remove 操作需要 nicknames 参数")
+
+        current = get_current_tenant()
+        set_current_tenant(target)
+        current_allowed = list(target.allowed_users or [])
+        results = []
+        removed = 0
+
+        for nick in nicknames:
+            found = False
+            for i, u in enumerate(current_allowed):
+                if isinstance(u, dict) and (
+                    u.get("nickname", "") == nick
+                    or nick in u.get("nickname", "")
+                    or u.get("nickname", "") in nick
+                ):
+                    results.append(f"已移除「{u.get('nickname', '')}」")
+                    current_allowed.pop(i)
+                    removed += 1
+                    found = True
+                    break
+            if not found:
+                results.append(f"「{nick}」不在白名单中")
+
+        set_current_tenant(current)
+
+        if removed > 0:
+            target.allowed_users = current_allowed
+            _persist_allowed_users(tenant_id, current_allowed, target.owner)
+
+        return ToolResult.success("\n".join(results))
+
+    return ToolResult.invalid_param(f"不支持的操作: {action}，可用: add / remove / list")
+
+
+def _persist_allowed_users(tenant_id: str, allowed_users: list, owner: str) -> None:
+    """将 allowed_users 持久化到 Redis tenant_cfg + tenants.json"""
+    try:
+        from app.services.tenant_sync import publish_tenant_update
+        publish_tenant_update("update", {
+            "tenant_id": tenant_id,
+            "allowed_users": allowed_users,
+            "owner": owner,
+        })
+    except Exception:
+        logger.warning("persist allowed_users to Redis failed for %s", tenant_id)
+
+    # 也更新本地 tenants.json
+    try:
+        from pathlib import Path
+        for candidate in ("/app/tenants.json", "tenants.json"):
+            path = Path(candidate)
+            if not path.exists():
+                continue
+            import json as json_mod
+            data = json_mod.loads(path.read_text())
+            tenants = data.get("tenants", [])
+            for t in tenants:
+                if t.get("tenant_id") == tenant_id:
+                    t["allowed_users"] = allowed_users
+                    t["owner"] = owner
+                    break
+            data["tenants"] = tenants
+            path.write_text(json_mod.dumps(data, indent=2, ensure_ascii=False) + "\n")
+            break
+    except Exception:
+        logger.warning("persist allowed_users to tenants.json failed for %s", tenant_id)
+
+
 # ── Co-tenant Management ──────────────────────────────────────────
 
 
@@ -735,6 +899,38 @@ TOOL_DEFINITIONS = [
             "required": ["external_userid"],
         },
     },
+    # ── 白名单管理 ──
+    {
+        "name": "manage_allowed_users",
+        "description": (
+            "管理 bot 白名单（仅管理员可用）。"
+            "控制哪些微信用户可以使用指定 bot。白名单为空则不限制。"
+            "通过昵称添加/移除用户，系统自动匹配 external_userid。"
+            "例：「把张三加到 xxx bot 的白名单」→ action=add, nicknames=['张三'], tenant_id='xxx'"
+            "例：「看看 xxx bot 谁能用」→ action=list, tenant_id='xxx'"
+            "例：「把李四从 xxx bot 移除」→ action=remove, nicknames=['李四'], tenant_id='xxx'"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["add", "remove", "list"],
+                    "description": "操作类型：add=添加用户, remove=移除用户, list=查看白名单",
+                },
+                "tenant_id": {
+                    "type": "string",
+                    "description": "目标 bot 的 tenant_id（不填则为当前 bot）",
+                },
+                "nicknames": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "要添加/移除的用户昵称列表（add/remove 时必填）",
+                },
+            },
+            "required": ["action"],
+        },
+    },
     # ── Co-tenant 管理（与 dashboard 对齐）──
     {
         "name": "add_co_tenant",
@@ -834,6 +1030,7 @@ TOOL_MAP = {
     "list_customers": _list_customers,
     "customer_instance_status": _customer_instance_status,
     "update_customer_notes": _update_customer_notes,
+    "manage_allowed_users": _manage_allowed_users,
     "add_co_tenant": _add_co_tenant,
     "confirm_add_co_tenant": _confirm_add_co_tenant,
     "remove_co_tenant": _remove_co_tenant,

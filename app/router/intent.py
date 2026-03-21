@@ -111,6 +111,14 @@ async def route_message(
     _apply_agent_profile(tenant, channel_platform, chat_id, chat_type, sender_id)
     _resolve_identity(tenant, channel_platform, sender_id, sender_name)
 
+    # ── 前置检查：白名单访问控制 ──
+    if tenant.allowed_users:
+        allowed_ids = {u.get("external_userid", "") for u in tenant.allowed_users if isinstance(u, dict)}
+        if sender_id not in allowed_ids:
+            logger.warning("access denied: tenant=%s sender=%s not in allowed_users",
+                           tenant.tenant_id, sender_id[:12])
+            return tenant.access_deny_msg
+
     # ── 前置检查：配额 ──
     quota_ok, quota_reason = check_quota(tenant.tenant_id)
     if not quota_ok:

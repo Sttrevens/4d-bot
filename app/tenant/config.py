@@ -218,6 +218,16 @@ class TenantConfig:
     coworker_quiet_hours_start: int = 22         # 安静时段开始（不主动发言）
     coworker_quiet_hours_end: int = 8            # 安静时段结束
 
+    # ── 访问控制（白名单）──
+    # 付费客户专属 bot：只有白名单中的用户才能使用
+    # 空列表 = 不限制（试用 bot / 开放 bot）
+    # 列表格式：[{"external_userid": "wm_xxx", "nickname": "张三"}, ...]
+    allowed_users: list[dict] = field(default_factory=list)
+    # bot 所有者（付费客户的 external_userid），用于后台管理/续费联系
+    owner: str = ""
+    # 白名单拦截时的提示语
+    access_deny_msg: str = "抱歉，您没有权限使用此助手。如需开通，请联系管理员。"
+
     # ── Agent 路由绑定（借鉴 OpenClaw binding 系统）──
     # 同一个 bot 可以有多个人格，按 channel/chat/user 路由
     # 空列表 = 不启用（用 tenant 级别的统一配置）
