@@ -814,7 +814,7 @@ async def _coworker_loop() -> None:
         await asyncio.sleep(_COWORKER_CHECK_INTERVAL)
 
 
-
+def start_scheduler() -> None:
     """启动后台调度器（在 app startup 中调用）。"""
     try:
         loop = asyncio.get_running_loop()
