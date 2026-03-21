@@ -47,6 +47,10 @@ def _get_redis_key() -> str:
     return f"p2p_chats:{get_current_tenant().tenant_id}"
 
 
+def _get_names_redis_key() -> str:
+    return f"user_names:{get_current_tenant().tenant_id}"
+
+
 # ── Redis 辅助（延迟 import 避免循环引用） ──
 
 def _redis_hset(field: str, value: str) -> None:
@@ -66,6 +70,67 @@ def _redis_hget(field: str) -> str:
     except Exception:
         logger.debug("redis HGET p2p_chats failed", exc_info=True)
     return ""
+
+
+def _names_redis_hset(open_id: str, name: str) -> None:
+    try:
+        from app.services.redis_client import execute, available
+        if available():
+            execute("HSET", _get_names_redis_key(), open_id, name)
+    except Exception:
+        logger.debug("redis HSET user_names failed", exc_info=True)
+
+
+def _names_redis_hget(open_id: str) -> str:
+    try:
+        from app.services.redis_client import execute, available
+        if available():
+            return execute("HGET", _get_names_redis_key(), open_id) or ""
+    except Exception:
+        logger.debug("redis HGET user_names failed", exc_info=True)
+    return ""
+
+
+def load_user_names_from_redis() -> int:
+    """启动时从 Redis 恢复用户名映射。返回加载数量。"""
+    from app.tenant.context import _current_tenant
+    if _current_tenant.get() is None:
+        from app.tenant.registry import tenant_registry
+        from app.tenant.context import set_current_tenant
+        total = 0
+        for tid, tenant in tenant_registry.all_tenants().items():
+            set_current_tenant(tenant)
+            total += load_user_names_from_redis()
+        _current_tenant.set(None)
+        return total
+
+    try:
+        from app.services.redis_client import execute, available
+        if not available():
+            return 0
+        key = _get_names_redis_key()
+        data = execute("HGETALL", key)
+        if not data:
+            return 0
+
+        registry = _get_registry()
+        if isinstance(data, list):
+            for i in range(0, len(data) - 1, 2):
+                if data[i] not in registry:
+                    registry[data[i]] = data[i + 1]
+            loaded = len(data) // 2
+        elif isinstance(data, dict):
+            for k, v in data.items():
+                if k not in registry:
+                    registry[k] = v
+            loaded = len(data)
+        else:
+            return 0
+        logger.info("loaded %d user_name mappings from Redis for key %s", loaded, key)
+        return loaded
+    except Exception:
+        logger.warning("load_user_names_from_redis failed", exc_info=True)
+        return 0
 
 
 def load_p2p_chats_from_redis() -> int:
@@ -111,9 +176,10 @@ def load_p2p_chats_from_redis() -> int:
 
 
 def register(open_id: str, name: str) -> None:
-    """记录一个用户"""
+    """记录一个用户，同时持久化到 Redis"""
     if open_id and name:
         _get_registry()[open_id] = name
+        _names_redis_hset(open_id, name)
 
 
 def register_p2p_chat(open_id: str, chat_id: str) -> None:
@@ -139,8 +205,15 @@ def get_p2p_chat_id(open_id: str) -> str:
 
 
 def get_name(open_id: str) -> str:
-    """通过 open_id 查名字"""
-    return _get_registry().get(open_id, "")
+    """通过 open_id 查名字。内存优先，miss 时回退 Redis。"""
+    registry = _get_registry()
+    cached = registry.get(open_id, "")
+    if cached:
+        return cached
+    from_redis = _names_redis_hget(open_id)
+    if from_redis:
+        registry[open_id] = from_redis
+    return from_redis
 
 
 def find_by_name(name: str) -> Optional[str]:

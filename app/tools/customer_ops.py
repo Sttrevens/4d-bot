@@ -377,8 +377,15 @@ def _manage_allowed_users(args: dict) -> ToolResult:
         nicknames = args.get("nicknames", [])
         if isinstance(nicknames, str):
             nicknames = [n.strip() for n in nicknames.split(",") if n.strip()]
-        if not nicknames:
-            return ToolResult.invalid_param("add 操作需要 nicknames 参数（昵称列表）")
+        # 也支持直接传 external_userid（不需要昵称匹配）
+        external_userids = args.get("external_userids", [])
+        if isinstance(external_userids, str):
+            external_userids = [e.strip() for e in external_userids.split(",") if e.strip()]
+
+        if not nicknames and not external_userids:
+            return ToolResult.invalid_param(
+                "add 操作需要 nicknames（昵称列表）或 external_userids（用户ID列表）其中一个"
+            )
 
         # 切换到目标租户的上下文来查找用户
         current = get_current_tenant()
@@ -388,6 +395,30 @@ def _manage_allowed_users(args: dict) -> ToolResult:
         current_allowed = list(target.allowed_users or [])
         current_ids = {u.get("external_userid", "") for u in current_allowed if isinstance(u, dict)}
 
+        # 通过 external_userid 直接添加
+        for euid in external_userids:
+            if euid in current_ids:
+                results.append(f"{euid[:12]}... 已在白名单中")
+                continue
+            # 尝试从 user_registry 获取昵称
+            nick = user_registry.get_name(euid)
+            if not nick:
+                # 尝试从微信客服 API 获取昵称
+                try:
+                    import asyncio
+                    from app.services.wecom_kf import wecom_kf_client
+                    nick = asyncio.get_event_loop().run_until_complete(
+                        wecom_kf_client.get_customer_name(euid)
+                    )
+                except Exception:
+                    pass
+            nick = nick or euid[:12] + "..."
+            current_allowed.append({"external_userid": euid, "nickname": nick})
+            current_ids.add(euid)
+            added += 1
+            results.append(f"已添加「{nick}」({euid[:12]}...)")
+
+        # 通过昵称匹配添加
         for nick in nicknames:
             uid = user_registry.find_by_name(nick)
             if not uid:
@@ -401,7 +432,7 @@ def _manage_allowed_users(args: dict) -> ToolResult:
                     results.append(f"「{nick}」匹配到多个用户: {options}，请更精确")
                     continue
                 else:
-                    results.append(f"「{nick}」未找到（该用户可能还没跟 bot 聊过天）")
+                    results.append(f"「{nick}」未找到（该用户可能还没跟 bot 聊过天，可以用 external_userids 直接传 ID 添加）")
                     continue
 
             if uid in current_ids:
@@ -905,8 +936,9 @@ TOOL_DEFINITIONS = [
         "description": (
             "管理 bot 白名单（仅管理员可用）。"
             "控制哪些微信用户可以使用指定 bot。白名单为空则不限制。"
-            "通过昵称添加/移除用户，系统自动匹配 external_userid。"
+            "通过昵称或 external_userid 添加/移除用户。"
             "例：「把张三加到 xxx bot 的白名单」→ action=add, nicknames=['张三'], tenant_id='xxx'"
+            "例：直接用 ID 添加 → action=add, external_userids=['wmXXXX'], tenant_id='xxx'"
             "例：「看看 xxx bot 谁能用」→ action=list, tenant_id='xxx'"
             "例：「把李四从 xxx bot 移除」→ action=remove, nicknames=['李四'], tenant_id='xxx'"
         ),
@@ -925,7 +957,12 @@ TOOL_DEFINITIONS = [
                 "nicknames": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "要添加/移除的用户昵称列表（add/remove 时必填）",
+                    "description": "要添加/移除的用户昵称列表（通过昵称匹配 external_userid）",
+                },
+                "external_userids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "要添加的用户 external_userid 列表（直接用 ID，无需昵称匹配。适用于用户没跟 bot 聊过天的情况）",
                 },
             },
             "required": ["action"],

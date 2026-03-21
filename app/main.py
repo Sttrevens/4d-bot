@@ -160,12 +160,17 @@ async def _startup_sync():
     start_background_refresh()
 
     # 从 Redis 恢复 P2P chat_id 映射（重启后立即可用）
-    from app.services.user_registry import sync_org_contacts, sync_from_bot_groups, load_p2p_chats_from_redis
+    from app.services.user_registry import sync_org_contacts, sync_from_bot_groups, load_p2p_chats_from_redis, load_user_names_from_redis
     try:
         p2p_count = load_p2p_chats_from_redis()
         logger.info("startup: restored %d p2p chat mappings from Redis", p2p_count)
     except Exception:
         logger.warning("startup: p2p chat restore failed", exc_info=True)
+    try:
+        names_count = load_user_names_from_redis()
+        logger.info("startup: restored %d user name mappings from Redis", names_count)
+    except Exception:
+        logger.warning("startup: user name restore failed", exc_info=True)
 
     # 遍历所有飞书租户，各自用自己的凭证同步用户（open_id 是 per-app 的）
     try:

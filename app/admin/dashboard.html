@@ -824,7 +824,22 @@
             <div class="mb-2">
               <div class="flex justify-between items-center mb-1">
                 <label class="text-[10px] text-gray-400">Allowed Users</label>
-                <button type="button" onclick="showAddUserDropdown()" class="text-xs text-blue-500 hover:text-blue-700">+ Add from chat history</button>
+                <div class="flex gap-2">
+                  <button type="button" onclick="showManualAddUser()" class="text-xs text-green-600 hover:text-green-800">+ Manual</button>
+                  <button type="button" onclick="showAddUserDropdown()" class="text-xs text-blue-500 hover:text-blue-700">+ From chat history</button>
+                </div>
+              </div>
+              <!-- Manual add user (hidden by default) -->
+              <div id="manual-add-user" class="hidden mb-2 border rounded-lg p-2 bg-green-50">
+                <p class="text-[10px] text-gray-400 mb-1">Paste external_userid (from WeChat KF API or logs) + optional nickname:</p>
+                <div class="flex gap-2 mb-1">
+                  <input id="manual-euid" type="text" class="flex-1 border rounded-lg px-2 py-1 text-sm" placeholder="wmXXXXXXXXXXXX (external_userid)">
+                  <input id="manual-nickname" type="text" class="w-32 border rounded-lg px-2 py-1 text-sm" placeholder="Nickname">
+                </div>
+                <div class="flex gap-2">
+                  <button type="button" onclick="addManualUser()" class="text-xs bg-green-500 text-white px-3 py-1 rounded hover:bg-green-600">Add</button>
+                  <button type="button" onclick="hideManualAddUser()" class="text-xs text-gray-500 px-3 py-1 rounded hover:bg-gray-200">Cancel</button>
+                </div>
               </div>
               <!-- Add user dropdown (hidden by default) -->
               <div id="add-user-dropdown" class="hidden mb-2 border rounded-lg p-2 bg-gray-50">
@@ -2839,6 +2854,28 @@ async function showAddUserDropdown() {
   } catch (e) {
     select.innerHTML = `<option value="">Error: ${e.message}</option>`;
   }
+}
+
+function showManualAddUser() {
+  document.getElementById('manual-add-user').classList.remove('hidden');
+  document.getElementById('add-user-dropdown').classList.add('hidden');
+  document.getElementById('manual-euid').value = '';
+  document.getElementById('manual-nickname').value = '';
+  document.getElementById('manual-euid').focus();
+}
+
+function hideManualAddUser() {
+  document.getElementById('manual-add-user').classList.add('hidden');
+}
+
+function addManualUser() {
+  const euid = document.getElementById('manual-euid').value.trim();
+  const nickname = document.getElementById('manual-nickname').value.trim() || euid.substring(0, 12) + '...';
+  if (!euid) { alert('Please enter an external_userid'); return; }
+  if (editAllowedUsers.some(u => u.external_userid === euid)) { alert('User already in whitelist'); return; }
+  editAllowedUsers.push({ external_userid: euid, nickname: nickname });
+  renderAllowedUsersList();
+  hideManualAddUser();
 }
 
 function hideAddUserDropdown() {
