@@ -3,23 +3,44 @@
 安全模型：
 - 超管专属工具（硬拦截）：bind_customer, list_customers, update_customer_notes,
   list_provision_requests, approve_provision_request, reject_provision_request,
-  add_co_tenant, remove_co_tenant, list_co_tenants
+  add_co_tenant, confirm_add_co_tenant, remove_co_tenant, list_co_tenants
 - 任何人可用：request_provision（创建待审批请求）, lookup_customer, customer_instance_status
 - 敏感工具（provision_ops.py 里的 provision_tenant 等）也需在 agent 层拦截
 
 拦截机制：工具 handler 通过 get_current_sender() 读取 contextvar，
 判断 is_super_admin，非超管调用超管工具直接返回权限错误。
 这是硬拦截，不依赖 LLM 遵守 system prompt。
+
+安全增强（两步确认）：
+add_co_tenant 不再直接执行，而是返回预览信息 + 确认 token。
+必须用户确认后调用 confirm_add_co_tenant(token) 才真正创建租户。
+防止 LLM 误判意图直接创建新 bot。
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import secrets
+import time
 
 from app.tools.tool_result import ToolResult
 
 logger = logging.getLogger(__name__)
+
+# ── 两步确认：add_co_tenant 的 pending 请求 ──
+# {token: {"config": dict, "created_at": float, "sender_id": str}}
+_pending_co_tenant: dict[str, dict] = {}
+_PENDING_TTL = 300  # 5 分钟过期
+
+
+def _cleanup_expired_pending():
+    """清理过期的 pending 确认。"""
+    now = time.time()
+    expired = [k for k, v in _pending_co_tenant.items()
+               if now - v["created_at"] > _PENDING_TTL]
+    for k in expired:
+        del _pending_co_tenant[k]
 
 
 def _require_super_admin() -> ToolResult | None:
@@ -316,13 +337,18 @@ def _customer_instance_status(args: dict) -> ToolResult:
 
 
 def _add_co_tenant(args: dict) -> ToolResult:
-    """添加 co-tenant（超管专用，自动继承 primary 凭证）"""
+    """添加 co-tenant 第一步：预览并生成确认 token（不执行）。
+
+    必须让用户看到预览信息并明确确认后，才调用 confirm_add_co_tenant 执行。
+    """
     check = _require_super_admin()
     if check:
         return check
 
-    from app.tenant.context import get_current_tenant
+    from app.tenant.context import get_current_sender, get_current_tenant
     from app.tenant.registry import tenant_registry
+
+    _cleanup_expired_pending()
 
     tenant = get_current_tenant()
     if tenant.platform != "wecom_kf":
@@ -380,6 +406,68 @@ def _add_co_tenant(args: dict) -> ToolResult:
     if args.get("tools_enabled"):
         new_config["tools_enabled"] = args["tools_enabled"]
 
+    # 生成确认 token（不执行）
+    token = f"cotenant_{secrets.token_hex(8)}"
+    sender = get_current_sender()
+    _pending_co_tenant[token] = {
+        "config": new_config,
+        "created_at": time.time(),
+        "sender_id": sender.sender_id,
+    }
+
+    prompt_preview = new_config.get("llm_system_prompt", "(继承 primary)")
+    if len(prompt_preview) > 80:
+        prompt_preview = prompt_preview[:80] + "..."
+
+    return ToolResult.success(
+        f"⚠️ 即将创建新 co-tenant，请向用户确认以下信息：\n"
+        f"• 租户 ID: {tenant_id}\n"
+        f"• 名称: {name}\n"
+        f"• open_kfid: {open_kfid}\n"
+        f"• 继承凭证自: {tenant.tenant_id}\n"
+        f"• 系统提示词: {prompt_preview}\n"
+        f"\n确认 token: {token}\n"
+        f"\n⚠️ 重要：你必须先把以上信息展示给用户，等用户明确说「确认」「好的」「创建」等确认词后，"
+        f"才能调用 confirm_add_co_tenant(token='{token}') 执行创建。\n"
+        f"如果用户没有明确要求创建新 bot，不要调用确认工具。"
+    )
+
+
+def _confirm_add_co_tenant(args: dict) -> ToolResult:
+    """确认并执行 add_co_tenant（第二步）。需要 add_co_tenant 返回的确认 token。"""
+    check = _require_super_admin()
+    if check:
+        return check
+
+    from app.tenant.context import get_current_sender
+    from app.tenant.registry import tenant_registry
+
+    _cleanup_expired_pending()
+
+    token = args.get("token", "").strip()
+    if not token:
+        return ToolResult.invalid_param("需要 add_co_tenant 返回的确认 token")
+
+    pending = _pending_co_tenant.pop(token, None)
+    if not pending:
+        return ToolResult.error(
+            "确认 token 无效或已过期（5 分钟有效期）。请重新调用 add_co_tenant 获取新 token。"
+        )
+
+    # 验证是同一个 sender
+    sender = get_current_sender()
+    if pending["sender_id"] != sender.sender_id:
+        _pending_co_tenant[token] = pending  # put back
+        return ToolResult.error("确认 token 与当前用户不匹配")
+
+    new_config = pending["config"]
+    tenant_id = new_config["tenant_id"]
+
+    # 再次检查是否已存在（可能在等待确认期间被创建）
+    existing = tenant_registry.get(tenant_id)
+    if existing:
+        return ToolResult.error(f"租户 {tenant_id} 已存在（可能在等待确认期间被创建）")
+
     # 发布到 Redis（tenant_cfg 持久化 + 队列通知 hot-load）
     from app.services.tenant_sync import publish_tenant_update
     ok = publish_tenant_update("add", new_config)
@@ -390,12 +478,14 @@ def _add_co_tenant(args: dict) -> ToolResult:
     try:
         tenant_registry.register_from_dict(new_config)
     except Exception as e:
-        logger.warning("add_co_tenant: local register failed: %s", e)
+        logger.warning("confirm_add_co_tenant: local register failed: %s", e)
+
+    logger.info("confirm_add_co_tenant: created %s by %s", tenant_id, sender.sender_id)
 
     return ToolResult.success(
         f"Co-tenant {tenant_id} 已添加成功！\n"
-        f"• 凭证从 {tenant.tenant_id} 自动继承\n"
-        f"• open_kfid: {open_kfid}\n"
+        f"• 名称: {new_config['name']}\n"
+        f"• open_kfid: {new_config['wecom_kf_open_kfid']}\n"
         f"• 本容器已立即加载，其他容器 5 秒内同步\n"
         f"• 客户现在可以发消息了"
     )
@@ -650,8 +740,9 @@ TOOL_DEFINITIONS = [
         "name": "add_co_tenant",
         "description": (
             "添加 co-tenant 到当前实例（仅管理员可用，wecom_kf 专属）。"
+            "⚠️ 此工具只生成预览，不会立即创建！必须用户明确确认后再调用 confirm_add_co_tenant 执行。"
             "自动从当前租户继承全部凭证和配置，只需提供 tenant_id、name、open_kfid。"
-            "当用户说要添加同 corp 下的新客服账号/bot 时使用此工具。"
+            "仅当用户明确要求添加新客服账号/bot 时使用。不要自作主张创建。"
         ),
         "input_schema": {
             "type": "object",
@@ -683,6 +774,24 @@ TOOL_DEFINITIONS = [
                 },
             },
             "required": ["tenant_id", "name", "wecom_kf_open_kfid"],
+        },
+    },
+    {
+        "name": "confirm_add_co_tenant",
+        "description": (
+            "确认并执行 add_co_tenant 创建的 co-tenant（仅管理员可用）。"
+            "需要 add_co_tenant 返回的确认 token。"
+            "⚠️ 必须在用户明确确认后才调用此工具。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "token": {
+                    "type": "string",
+                    "description": "add_co_tenant 返回的确认 token",
+                },
+            },
+            "required": ["token"],
         },
     },
     {
@@ -726,6 +835,7 @@ TOOL_MAP = {
     "customer_instance_status": _customer_instance_status,
     "update_customer_notes": _update_customer_notes,
     "add_co_tenant": _add_co_tenant,
+    "confirm_add_co_tenant": _confirm_add_co_tenant,
     "remove_co_tenant": _remove_co_tenant,
     "list_co_tenants": _list_co_tenants,
 }

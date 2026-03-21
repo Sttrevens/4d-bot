@@ -1996,6 +1996,7 @@ async function submitProvision(e) {
 
 // ── Logs ──
 let logsAutoTimer = null;
+let logsLoading = false;  // prevent concurrent fetches
 
 async function initLogsTab() {
   // Populate instance select from cached instancesData or fetch
@@ -2019,6 +2020,9 @@ async function initLogsTab() {
 }
 
 async function loadLogs() {
+  if (logsLoading) return;  // skip if previous fetch still in-flight
+  logsLoading = true;
+
   const tid = document.getElementById('logs-instance-select').value;
   const lines = document.getElementById('logs-lines').value;
   const since = document.getElementById('logs-since').value;
@@ -2027,10 +2031,9 @@ async function loadLogs() {
   const output = document.getElementById('logs-output');
   const stats = document.getElementById('logs-stats');
 
-  if (!tid) { output.textContent = 'Select an instance'; return; }
+  if (!tid) { output.textContent = 'Select an instance'; logsLoading = false; return; }
 
-  output.textContent = 'Loading...';
-  stats.textContent = '';
+  stats.textContent = 'Loading...';
 
   try {
     let logData;
@@ -2073,6 +2076,8 @@ async function loadLogs() {
     output.scrollTop = output.scrollHeight;
   } catch (e) {
     output.textContent = `Error: ${e.message}`;
+  } finally {
+    logsLoading = false;
   }
 
   // Manage auto-refresh timer
