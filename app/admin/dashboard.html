@@ -672,8 +672,9 @@
     </div>
 
     <!-- Edit Tenant Modal -->
-    <div id="edit-tenant-modal" class="hidden fixed inset-0 bg-black/50 z-50 flex items-center justify-center">
-      <div class="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto p-6 m-4">
+    <div id="edit-tenant-modal" class="hidden fixed inset-0 bg-black/50 z-50 overflow-y-auto">
+      <div class="flex items-start justify-center min-h-full py-4 px-4">
+      <div class="bg-white rounded-xl shadow-2xl w-full max-w-2xl p-6 my-auto">
         <div class="flex justify-between items-center mb-4">
           <h3 class="text-lg font-semibold">Edit Tenant: <span id="edit-tid" class="text-blue-600"></span></h3>
           <button onclick="closeEditModal()" class="text-gray-400 hover:text-gray-600 text-xl">&times;</button>
@@ -852,6 +853,7 @@
             <span id="edit-status" class="text-sm ml-auto"></span>
           </div>
         </form>
+      </div>
       </div>
     </div>
 
