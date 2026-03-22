@@ -96,11 +96,12 @@
           <select id="user-tenant-select" onchange="loadUsers()"
             class="border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
           </select>
+          <span id="users-mode-badge" class="ml-2"></span>
           <span id="user-count" class="text-sm text-gray-400 ml-auto"></span>
         </div>
 
-        <!-- Filter buttons -->
-        <div class="flex gap-2 mb-4">
+        <!-- Filter buttons (trial mode only) -->
+        <div id="users-filter-row" class="flex gap-2 mb-4">
           <button onclick="filterUsers('all')" class="filter-btn text-xs px-3 py-1 rounded-full bg-gray-100 text-gray-600">All</button>
           <button onclick="filterUsers('trial')" class="filter-btn text-xs px-3 py-1 rounded-full bg-blue-50 text-blue-600">Trial</button>
           <button onclick="filterUsers('expired')" class="filter-btn text-xs px-3 py-1 rounded-full bg-orange-50 text-orange-600">Expired</button>
@@ -108,10 +109,42 @@
           <button onclick="filterUsers('blocked')" class="filter-btn text-xs px-3 py-1 rounded-full bg-red-50 text-red-600">Blocked</button>
         </div>
 
+        <!-- Add user controls (whitelist mode only) -->
+        <div id="users-add-row" class="hidden mb-4">
+          <div class="flex items-center gap-3 mb-2">
+            <button onclick="showUsersManualAdd()" class="text-xs bg-green-50 text-green-600 px-3 py-1.5 rounded-lg hover:bg-green-100 border border-green-200">+ Manual Add</button>
+            <button onclick="showUsersChatDropdown()" class="text-xs bg-blue-50 text-blue-600 px-3 py-1.5 rounded-lg hover:bg-blue-100 border border-blue-200">+ From Chat History</button>
+            <span class="text-[10px] text-gray-400 ml-auto">Empty whitelist = open access (everyone can use)</span>
+          </div>
+          <!-- Manual add form -->
+          <div id="users-manual-add" class="hidden mb-2 border rounded-lg p-3 bg-green-50">
+            <p class="text-[10px] text-gray-400 mb-2">Paste external_userid (from WeChat KF API or logs) + optional nickname:</p>
+            <div class="flex gap-2 mb-2">
+              <input id="users-manual-euid" type="text" class="flex-1 border rounded-lg px-2 py-1 text-sm" placeholder="wmXXXXXXXXXXXX (external_userid)">
+              <input id="users-manual-nickname" type="text" class="w-32 border rounded-lg px-2 py-1 text-sm" placeholder="Nickname">
+            </div>
+            <div class="flex gap-2">
+              <button onclick="addWhitelistManual()" class="text-xs bg-green-500 text-white px-3 py-1 rounded hover:bg-green-600">Add</button>
+              <button onclick="hideUsersManualAdd()" class="text-xs text-gray-500 px-3 py-1 rounded hover:bg-gray-200">Cancel</button>
+            </div>
+          </div>
+          <!-- Chat history dropdown -->
+          <div id="users-chat-dropdown" class="hidden mb-2 border rounded-lg p-3 bg-blue-50">
+            <p class="text-[10px] text-gray-400 mb-2">Select a user who has chatted with this bot:</p>
+            <select id="users-chat-select" class="w-full border rounded-lg px-3 py-1 text-sm mb-2">
+              <option value="">Loading...</option>
+            </select>
+            <div class="flex gap-2">
+              <button onclick="addWhitelistFromChat()" class="text-xs bg-blue-500 text-white px-3 py-1 rounded hover:bg-blue-600">Add</button>
+              <button onclick="hideUsersChatDropdown()" class="text-xs text-gray-500 px-3 py-1 rounded hover:bg-gray-200">Cancel</button>
+            </div>
+          </div>
+        </div>
+
         <div id="users-table-container">
           <table class="w-full text-sm">
             <thead>
-              <tr class="border-b text-left text-gray-500">
+              <tr id="users-thead" class="border-b text-left text-gray-500">
                 <th class="py-2 px-2">Name</th>
                 <th class="py-2 px-2">User ID</th>
                 <th class="py-2 px-2">Status</th>
@@ -808,10 +841,9 @@
             <label class="block text-xs font-medium text-gray-500 mb-1">Admin Names (comma-separated)</label>
             <input id="edit-admin-names" type="text" class="w-full border rounded-lg px-3 py-2 text-sm">
           </div>
-          <!-- Access Control / Allowed Users -->
+          <!-- Access Control -->
           <div id="edit-access-control">
-            <p class="text-xs font-medium text-gray-500 mb-2">Access Control (Allowed Users Whitelist)</p>
-            <p class="text-[10px] text-gray-400 mb-2">Empty = open to everyone. Add users to restrict access to specific WeChat users only.</p>
+            <p class="text-xs font-medium text-gray-500 mb-2">Access Control</p>
             <div class="mb-2">
               <label class="block text-[10px] text-gray-400 mb-1">Owner (external_userid)</label>
               <input id="edit-owner" type="text" class="w-full border rounded-lg px-3 py-2 text-sm" placeholder="wm_xxx (paying customer)">
@@ -821,42 +853,7 @@
               <input id="edit-access-deny-msg" type="text" class="w-full border rounded-lg px-3 py-2 text-sm"
                 placeholder="抱歉，您没有权限使用此助手。如需开通，请联系管理员。">
             </div>
-            <div class="mb-2">
-              <div class="flex justify-between items-center mb-1">
-                <label class="text-[10px] text-gray-400">Allowed Users</label>
-                <div class="flex gap-2">
-                  <button type="button" onclick="showManualAddUser()" class="text-xs text-green-600 hover:text-green-800">+ Manual</button>
-                  <button type="button" onclick="showAddUserDropdown()" class="text-xs text-blue-500 hover:text-blue-700">+ From chat history</button>
-                </div>
-              </div>
-              <!-- Manual add user (hidden by default) -->
-              <div id="manual-add-user" class="hidden mb-2 border rounded-lg p-2 bg-green-50">
-                <p class="text-[10px] text-gray-400 mb-1">Paste external_userid (from WeChat KF API or logs) + optional nickname:</p>
-                <div class="flex gap-2 mb-1">
-                  <input id="manual-euid" type="text" class="flex-1 border rounded-lg px-2 py-1 text-sm" placeholder="wmXXXXXXXXXXXX (external_userid)">
-                  <input id="manual-nickname" type="text" class="w-32 border rounded-lg px-2 py-1 text-sm" placeholder="Nickname">
-                </div>
-                <div class="flex gap-2">
-                  <button type="button" onclick="addManualUser()" class="text-xs bg-green-500 text-white px-3 py-1 rounded hover:bg-green-600">Add</button>
-                  <button type="button" onclick="hideManualAddUser()" class="text-xs text-gray-500 px-3 py-1 rounded hover:bg-gray-200">Cancel</button>
-                </div>
-              </div>
-              <!-- Add user dropdown (hidden by default) -->
-              <div id="add-user-dropdown" class="hidden mb-2 border rounded-lg p-2 bg-gray-50">
-                <p class="text-[10px] text-gray-400 mb-1">Select a user who has chatted with this bot:</p>
-                <select id="add-user-select" class="w-full border rounded-lg px-3 py-1 text-sm mb-1">
-                  <option value="">Loading...</option>
-                </select>
-                <div class="flex gap-2">
-                  <button type="button" onclick="addSelectedUser()" class="text-xs bg-blue-500 text-white px-3 py-1 rounded hover:bg-blue-600">Add</button>
-                  <button type="button" onclick="hideAddUserDropdown()" class="text-xs text-gray-500 px-3 py-1 rounded hover:bg-gray-200">Cancel</button>
-                </div>
-              </div>
-              <!-- Current whitelist -->
-              <div id="edit-allowed-users-list" class="space-y-1 max-h-40 overflow-y-auto">
-                <p class="text-xs text-gray-400 italic">No users in whitelist (open access)</p>
-              </div>
-            </div>
+            <p class="text-[10px] text-gray-400">Manage whitelist users in the <a href="#" onclick="switchTab('users'); closeEditModal(); return false;" class="text-blue-500 hover:underline">Users tab</a>.</p>
           </div>
           <!-- Submit -->
           <div class="flex items-center gap-3 pt-3 border-t">
@@ -1395,22 +1392,76 @@ async function loadOverview() {
   }
 }
 
-// ── Users ──
+// ── Users (unified: trial + whitelist) ──
+let usersMode = 'trial'; // 'trial' or 'whitelist'
+let whitelistUsers = []; // [{external_userid, nickname}] for whitelist mode
+let whitelistOwner = ''; // owner external_userid
+
 async function loadUsers() {
   const tid = document.getElementById('user-tenant-select').value;
   if (!tid) return;
 
-  const tbody = document.getElementById('users-tbody');
-  tbody.innerHTML = '<tr><td colspan="7" class="text-center text-gray-400 py-8">Loading...</td></tr>';
+  const tenant = tenantsData.find(t => t.tenant_id === tid);
+  usersMode = tenant?.trial_enabled ? 'trial' : 'whitelist';
 
-  try {
-    const res = await api(`/trial/${tid}/users`);
-    usersData = res.users || [];
-    usersTrialDurationHours = res.trial_duration_hours || 48;
-    document.getElementById('user-count').textContent = `${res.total} users`;
-    renderUsers();
-  } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="7" class="text-center text-red-400 py-8">${escapeHtml(e.message)}</td></tr>`;
+  // Update mode badge
+  document.getElementById('users-mode-badge').innerHTML = usersMode === 'trial'
+    ? '<span class="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded">Trial Mode</span>'
+    : '<span class="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded">Whitelist Mode</span>';
+
+  // Show/hide mode-specific UI
+  document.getElementById('users-filter-row').classList.toggle('hidden', usersMode !== 'trial');
+  document.getElementById('users-add-row').classList.toggle('hidden', usersMode !== 'whitelist');
+  hideUsersManualAdd();
+  hideUsersChatDropdown();
+
+  // Update table header
+  const thead = document.getElementById('users-thead');
+  if (usersMode === 'whitelist') {
+    thead.innerHTML = `
+      <th class="py-2 px-2">Name</th>
+      <th class="py-2 px-2">User ID</th>
+      <th class="py-2 px-2">Role</th>
+      <th class="py-2 px-2 text-right" colspan="5">Actions</th>`;
+  } else {
+    thead.innerHTML = `
+      <th class="py-2 px-2">Name</th>
+      <th class="py-2 px-2">User ID</th>
+      <th class="py-2 px-2">Status</th>
+      <th class="py-2 px-2">First Seen</th>
+      <th class="py-2 px-2">Last Active</th>
+      <th class="py-2 px-2">Messages</th>
+      <th class="py-2 px-2">Notes</th>
+      <th class="py-2 px-2 text-right">Actions</th>`;
+  }
+
+  const tbody = document.getElementById('users-tbody');
+  tbody.innerHTML = '<tr><td colspan="8" class="text-center text-gray-400 py-8">Loading...</td></tr>';
+
+  if (usersMode === 'trial') {
+    try {
+      const res = await api(`/trial/${tid}/users`);
+      usersData = res.users || [];
+      usersTrialDurationHours = res.trial_duration_hours || 48;
+      document.getElementById('user-count').textContent = `${res.total} users`;
+      renderUsers();
+    } catch (e) {
+      tbody.innerHTML = `<tr><td colspan="8" class="text-center text-red-400 py-8">${escapeHtml(e.message)}</td></tr>`;
+    }
+  } else {
+    try {
+      const res = await api(`/tenants/${tid}/allowed-users`);
+      whitelistUsers = (res.allowed_users || []).map(u =>
+        typeof u === 'object' ? u : { external_userid: u, nickname: '' }
+      );
+      whitelistOwner = res.owner || '';
+      document.getElementById('user-count').textContent = whitelistUsers.length
+        ? `${whitelistUsers.length} users in whitelist`
+        : 'Open access (no whitelist)';
+      renderUsers();
+    } catch (e) {
+      tbody.innerHTML = `<tr><td colspan="8" class="text-center text-red-400 py-8">${escapeHtml(e.message)}</td></tr>`;
+    }
   }
 }
 
@@ -1423,6 +1474,13 @@ function filterUsers(status) {
 
 function renderUsers() {
   const tbody = document.getElementById('users-tbody');
+
+  if (usersMode === 'whitelist') {
+    renderWhitelistUsers(tbody);
+    return;
+  }
+
+  // Trial mode rendering (existing logic)
   let filtered = currentFilter === 'all' ? usersData : usersData.filter(u => u.status === currentFilter);
 
   if (!filtered.length) {
@@ -1465,7 +1523,6 @@ function renderUsers() {
     const msgCount = u.message_count || '0';
     const notes = escapeHtml(u.notes || '');
 
-    // Action buttons based on status
     let actions = '';
     if (status === 'trial' || status === 'expired') {
       actions += `<button onclick="approveUser('${uid}')" class="text-xs bg-green-50 text-green-600 px-2 py-1 rounded hover:bg-green-100">Approve</button> `;
@@ -1495,6 +1552,119 @@ function renderUsers() {
   }).join('');
 }
 
+function renderWhitelistUsers(tbody) {
+  if (!whitelistUsers.length) {
+    tbody.innerHTML = '<tr><td colspan="8" class="text-center text-gray-400 py-8">No users in whitelist (open access — everyone can use this bot)</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = whitelistUsers.map((u, i) => {
+    const euid = u.external_userid || '';
+    const shortId = euid.length > 20 ? euid.slice(0, 10) + '...' + euid.slice(-6) : euid;
+    const nickname = escapeHtml(u.nickname || 'Unknown');
+    const isOwner = euid === whitelistOwner;
+    const roleBadge = isOwner
+      ? '<span class="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full font-medium">owner</span>'
+      : '<span class="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-medium">allowed</span>';
+
+    return `<tr class="border-b hover:bg-gray-50">
+      <td class="py-2 px-2 font-medium text-gray-800">${nickname}</td>
+      <td class="py-2 px-2 font-mono text-xs text-gray-400" title="${euid}">${shortId}</td>
+      <td class="py-2 px-2">${roleBadge}</td>
+      <td class="py-2 px-2 text-right" colspan="5">
+        <button onclick="removeWhitelistUser(${i})" class="text-xs bg-red-50 text-red-600 px-2 py-1 rounded hover:bg-red-100">Remove</button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+// ── Whitelist add/remove ──
+function showUsersManualAdd() {
+  document.getElementById('users-manual-add').classList.remove('hidden');
+  document.getElementById('users-chat-dropdown').classList.add('hidden');
+  document.getElementById('users-manual-euid').value = '';
+  document.getElementById('users-manual-nickname').value = '';
+  document.getElementById('users-manual-euid').focus();
+}
+
+function hideUsersManualAdd() {
+  document.getElementById('users-manual-add').classList.add('hidden');
+}
+
+async function showUsersChatDropdown() {
+  const tid = document.getElementById('user-tenant-select').value;
+  document.getElementById('users-chat-dropdown').classList.remove('hidden');
+  document.getElementById('users-manual-add').classList.add('hidden');
+  const select = document.getElementById('users-chat-select');
+  select.innerHTML = '<option value="">Loading...</option>';
+
+  try {
+    const data = await api(`/tenants/${tid}/chat-users`);
+    const currentIds = new Set(whitelistUsers.map(u => u.external_userid));
+    const users = (data.users || []).filter(u => !currentIds.has(u.external_userid));
+    if (!users.length) {
+      select.innerHTML = '<option value="">No available users (all added or no chat history)</option>';
+      return;
+    }
+    select.innerHTML = '<option value="">-- Select user --</option>' +
+      users.map(u => `<option value="${u.external_userid}" data-nickname="${u.nickname || ''}">${u.nickname || u.external_userid} (${(u.external_userid || '').substring(0, 12)}...)</option>`).join('');
+  } catch (e) {
+    select.innerHTML = `<option value="">Error: ${e.message}</option>`;
+  }
+}
+
+function hideUsersChatDropdown() {
+  document.getElementById('users-chat-dropdown').classList.add('hidden');
+}
+
+function addWhitelistManual() {
+  const euid = document.getElementById('users-manual-euid').value.trim();
+  const nickname = document.getElementById('users-manual-nickname').value.trim() || euid.substring(0, 12) + '...';
+  if (!euid) { alert('Please enter an external_userid'); return; }
+  if (whitelistUsers.some(u => u.external_userid === euid)) { alert('User already in whitelist'); return; }
+  whitelistUsers.push({ external_userid: euid, nickname: nickname });
+  hideUsersManualAdd();
+  renderUsers();
+  saveWhitelist();
+}
+
+function addWhitelistFromChat() {
+  const select = document.getElementById('users-chat-select');
+  const option = select.options[select.selectedIndex];
+  if (!option || !option.value) return;
+  const euid = option.value;
+  if (whitelistUsers.some(u => u.external_userid === euid)) return;
+  const nickname = option.getAttribute('data-nickname') || option.text.replace(/\s*\(.*\)$/, '');
+  whitelistUsers.push({ external_userid: euid, nickname: nickname });
+  hideUsersChatDropdown();
+  renderUsers();
+  saveWhitelist();
+}
+
+function removeWhitelistUser(index) {
+  const user = whitelistUsers[index];
+  if (!confirm(`Remove ${user.nickname || user.external_userid} from whitelist?`)) return;
+  whitelistUsers.splice(index, 1);
+  renderUsers();
+  saveWhitelist();
+}
+
+async function saveWhitelist() {
+  const tid = document.getElementById('user-tenant-select').value;
+  try {
+    await api(`/tenants/${tid}/config`, {
+      method: 'PUT',
+      body: JSON.stringify({ allowed_users: whitelistUsers }),
+    });
+    document.getElementById('user-count').textContent = whitelistUsers.length
+      ? `${whitelistUsers.length} users in whitelist`
+      : 'Open access (no whitelist)';
+  } catch (e) {
+    alert(`Save failed: ${e.message}`);
+  }
+}
+
+// ── Trial user actions ──
 async function approveUser(userId) {
   const tid = document.getElementById('user-tenant-select').value;
   const tenant = tenantsData.find(t => t.tenant_id === tid);
@@ -1504,7 +1674,7 @@ async function approveUser(userId) {
     `Approve user ${userId.slice(0, 16)}...\n\nDuration (days, 0 = permanent):`,
     String(defaultDays)
   );
-  if (input === null) return;  // cancelled
+  if (input === null) return;
 
   const days = parseInt(input) || 0;
   try {
@@ -2801,107 +2971,19 @@ async function openEditModal(tid) {
     document.getElementById('edit-coworker-quiet-end').value = config.coworker_quiet_hours_end ?? 8;
     document.getElementById('edit-coworker-groups').value = (config.coworker_scan_groups || []).join(', ');
     // Access Control
-    editAllowedUsers = (config.allowed_users || []).map(u => typeof u === 'object' ? u : {external_userid: u, nickname: ''});
     document.getElementById('edit-owner').value = config.owner || '';
     document.getElementById('edit-access-deny-msg').value = config.access_deny_msg || '抱歉，您没有权限使用此助手。如需开通，请联系管理员。';
-    renderAllowedUsersList();
   } catch (e) {
     document.getElementById('edit-status').textContent = 'Load failed: ' + e.message;
     document.getElementById('edit-status').className = 'text-sm ml-auto text-red-600';
   }
 }
 
-// ── Allowed Users Whitelist Management ──
-let editAllowedUsers = []; // [{external_userid, nickname}]
-
-function renderAllowedUsersList() {
-  const container = document.getElementById('edit-allowed-users-list');
-  if (!editAllowedUsers.length) {
-    container.innerHTML = '<p class="text-xs text-gray-400 italic">No users in whitelist (open access)</p>';
-    return;
-  }
-  const owner = document.getElementById('edit-owner').value.trim();
-  container.innerHTML = editAllowedUsers.map((u, i) => {
-    const isOwner = u.external_userid === owner;
-    return `<div class="flex items-center justify-between bg-white border rounded px-2 py-1 text-xs">
-      <span>${u.nickname || 'Unknown'} <span class="text-gray-400">(${(u.external_userid || '').substring(0, 12)}...)</span>
-      ${isOwner ? '<span class="text-blue-500 font-medium ml-1">[owner]</span>' : ''}</span>
-      <button type="button" onclick="removeAllowedUser(${i})" class="text-red-400 hover:text-red-600 ml-2">&times;</button>
-    </div>`;
-  }).join('');
-}
-
-function removeAllowedUser(index) {
-  editAllowedUsers.splice(index, 1);
-  renderAllowedUsersList();
-}
-
-async function showAddUserDropdown() {
-  const dropdown = document.getElementById('add-user-dropdown');
-  const select = document.getElementById('add-user-select');
-  dropdown.classList.remove('hidden');
-  select.innerHTML = '<option value="">Loading...</option>';
-
-  try {
-    const data = await api(`/tenants/${editingTenantId}/chat-users`);
-    const users = (data.users || []).filter(u => !u.in_whitelist);
-    if (!users.length) {
-      select.innerHTML = '<option value="">No available users (all added or no chat history)</option>';
-      return;
-    }
-    select.innerHTML = '<option value="">-- Select user --</option>' +
-      users.map(u => `<option value="${u.external_userid}">${u.nickname} (${(u.external_userid || '').substring(0, 12)}...)</option>`).join('');
-  } catch (e) {
-    select.innerHTML = `<option value="">Error: ${e.message}</option>`;
-  }
-}
-
-function showManualAddUser() {
-  document.getElementById('manual-add-user').classList.remove('hidden');
-  document.getElementById('add-user-dropdown').classList.add('hidden');
-  document.getElementById('manual-euid').value = '';
-  document.getElementById('manual-nickname').value = '';
-  document.getElementById('manual-euid').focus();
-}
-
-function hideManualAddUser() {
-  document.getElementById('manual-add-user').classList.add('hidden');
-}
-
-function addManualUser() {
-  const euid = document.getElementById('manual-euid').value.trim();
-  const nickname = document.getElementById('manual-nickname').value.trim() || euid.substring(0, 12) + '...';
-  if (!euid) { alert('Please enter an external_userid'); return; }
-  if (editAllowedUsers.some(u => u.external_userid === euid)) { alert('User already in whitelist'); return; }
-  editAllowedUsers.push({ external_userid: euid, nickname: nickname });
-  renderAllowedUsersList();
-  hideManualAddUser();
-}
-
-function hideAddUserDropdown() {
-  document.getElementById('add-user-dropdown').classList.add('hidden');
-}
-
-function addSelectedUser() {
-  const select = document.getElementById('add-user-select');
-  const option = select.options[select.selectedIndex];
-  if (!option || !option.value) return;
-
-  const euid = option.value;
-  // Avoid duplicates
-  if (editAllowedUsers.some(u => u.external_userid === euid)) return;
-
-  // Extract nickname from option text (format: "nickname (euid...)")
-  const nickname = option.text.replace(/\s*\(.*\)$/, '');
-  editAllowedUsers.push({ external_userid: euid, nickname: nickname });
-  renderAllowedUsersList();
-  hideAddUserDropdown();
-}
+// ── (Allowed Users management moved to Users tab) ──
 
 function closeEditModal() {
   document.getElementById('edit-tenant-modal').classList.add('hidden');
   editingTenantId = '';
-  editAllowedUsers = [];
   // Reset disabled state for all fields
   for (const id of ['edit-prompt','edit-custom-persona','edit-mem-diary','edit-mem-context',
                      'edit-mem-journal','edit-mem-rounds','edit-mem-ttl','edit-admin-names',
@@ -2953,8 +3035,7 @@ async function submitEditTenant(e) {
     const cg = document.getElementById('edit-coworker-groups').value.trim();
     body.coworker_scan_groups = cg ? cg.split(',').map(s => s.trim()).filter(Boolean) : [];
   }
-  // Access Control (always include)
-  body.allowed_users = editAllowedUsers;
+  // Access Control (allowed_users managed in Users tab)
   body.owner = document.getElementById('edit-owner').value.trim();
   body.access_deny_msg = document.getElementById('edit-access-deny-msg').value.trim() || '抱歉，您没有权限使用此助手。如需开通，请联系管理员。';
 
