@@ -109,12 +109,16 @@
           <button onclick="filterUsers('blocked')" class="filter-btn text-xs px-3 py-1 rounded-full bg-red-50 text-red-600">Blocked</button>
         </div>
 
-        <!-- Add user controls (whitelist mode only) -->
+        <!-- Whitelist mode controls -->
         <div id="users-add-row" class="hidden mb-4">
           <div class="flex items-center gap-3 mb-2">
+            <button onclick="filterUsers('all')" class="filter-btn text-xs px-3 py-1 rounded-full bg-gray-100 text-gray-600 ring-2 ring-blue-400">All</button>
+            <button onclick="filterUsers('allowed')" class="filter-btn text-xs px-3 py-1 rounded-full bg-green-50 text-green-600">Allowed</button>
+            <button onclick="filterUsers('visitor')" class="filter-btn text-xs px-3 py-1 rounded-full bg-yellow-50 text-yellow-600">Visitor</button>
+            <span class="border-l border-gray-200 h-4 mx-1"></span>
             <button onclick="showUsersManualAdd()" class="text-xs bg-green-50 text-green-600 px-3 py-1.5 rounded-lg hover:bg-green-100 border border-green-200">+ Manual Add</button>
             <button onclick="showUsersChatDropdown()" class="text-xs bg-blue-50 text-blue-600 px-3 py-1.5 rounded-lg hover:bg-blue-100 border border-blue-200">+ From Chat History</button>
-            <span class="text-[10px] text-gray-400 ml-auto">Empty whitelist = open access (everyone can use)</span>
+            <span class="text-[10px] text-gray-400 ml-auto">Empty whitelist = open access</span>
           </div>
           <!-- Manual add form -->
           <div id="users-manual-add" class="hidden mb-2 border rounded-lg p-3 bg-green-50">
@@ -1450,14 +1454,34 @@ async function loadUsers() {
     }
   } else {
     try {
-      const res = await api(`/tenants/${tid}/allowed-users`);
-      whitelistUsers = (res.allowed_users || []).map(u =>
+      // Fetch whitelist + all chat users in parallel
+      const [wlRes, chatRes] = await Promise.all([
+        api(`/tenants/${tid}/allowed-users`),
+        api(`/tenants/${tid}/chat-users`).catch(() => ({ users: [] })),
+      ]);
+      const allowedList = (wlRes.allowed_users || []).map(u =>
         typeof u === 'object' ? u : { external_userid: u, nickname: '' }
       );
-      whitelistOwner = res.owner || '';
-      document.getElementById('user-count').textContent = whitelistUsers.length
-        ? `${whitelistUsers.length} users in whitelist`
-        : 'Open access (no whitelist)';
+      whitelistOwner = wlRes.owner || '';
+      const allowedIds = new Set(allowedList.map(u => u.external_userid));
+
+      // Merge: whitelist users (status=allowed) + chat-only users (status=visitor)
+      whitelistUsers = allowedList.map(u => ({ ...u, _status: 'allowed' }));
+      for (const cu of (chatRes.users || [])) {
+        if (!allowedIds.has(cu.external_userid)) {
+          whitelistUsers.push({
+            external_userid: cu.external_userid,
+            nickname: cu.nickname || '',
+            _status: 'visitor',
+          });
+        }
+      }
+
+      const allowedCount = allowedList.length;
+      const visitorCount = whitelistUsers.length - allowedCount;
+      let countText = allowedCount ? `${allowedCount} allowed` : 'Open access';
+      if (visitorCount) countText += ` · ${visitorCount} visitor${visitorCount > 1 ? 's' : ''}`;
+      document.getElementById('user-count').textContent = countText;
       renderUsers();
     } catch (e) {
       tbody.innerHTML = `<tr><td colspan="8" class="text-center text-red-400 py-8">${escapeHtml(e.message)}</td></tr>`;
@@ -1553,27 +1577,48 @@ function renderUsers() {
 }
 
 function renderWhitelistUsers(tbody) {
-  if (!whitelistUsers.length) {
-    tbody.innerHTML = '<tr><td colspan="8" class="text-center text-gray-400 py-8">No users in whitelist (open access — everyone can use this bot)</td></tr>';
+  // Apply filter
+  let filtered = whitelistUsers;
+  if (currentFilter === 'allowed') filtered = whitelistUsers.filter(u => u._status === 'allowed');
+  else if (currentFilter === 'visitor') filtered = whitelistUsers.filter(u => u._status === 'visitor');
+
+  if (!filtered.length) {
+    const msg = currentFilter === 'all'
+      ? 'No users yet — whitelist is empty (open access) and no one has chatted'
+      : `No ${currentFilter} users`;
+    tbody.innerHTML = `<tr><td colspan="8" class="text-center text-gray-400 py-8">${msg}</td></tr>`;
     return;
   }
 
-  tbody.innerHTML = whitelistUsers.map((u, i) => {
+  tbody.innerHTML = filtered.map((u, i) => {
+    const realIndex = whitelistUsers.indexOf(u);
     const euid = u.external_userid || '';
     const shortId = euid.length > 20 ? euid.slice(0, 10) + '...' + euid.slice(-6) : euid;
     const nickname = escapeHtml(u.nickname || 'Unknown');
     const isOwner = euid === whitelistOwner;
-    const roleBadge = isOwner
-      ? '<span class="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full font-medium">owner</span>'
-      : '<span class="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-medium">allowed</span>';
+    const isAllowed = u._status === 'allowed';
+
+    let roleBadge;
+    if (isOwner) {
+      roleBadge = '<span class="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full font-medium">owner</span>';
+    } else if (isAllowed) {
+      roleBadge = '<span class="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-medium">allowed</span>';
+    } else {
+      roleBadge = '<span class="text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded-full font-medium">visitor</span>';
+    }
+
+    let actions = '';
+    if (isAllowed) {
+      actions = `<button onclick="removeWhitelistUser(${realIndex})" class="text-xs bg-red-50 text-red-600 px-2 py-1 rounded hover:bg-red-100">Remove</button>`;
+    } else {
+      actions = `<button onclick="promoteVisitor(${realIndex})" class="text-xs bg-green-50 text-green-600 px-2 py-1 rounded hover:bg-green-100">Add to Whitelist</button>`;
+    }
 
     return `<tr class="border-b hover:bg-gray-50">
       <td class="py-2 px-2 font-medium text-gray-800">${nickname}</td>
       <td class="py-2 px-2 font-mono text-xs text-gray-400" title="${euid}">${shortId}</td>
       <td class="py-2 px-2">${roleBadge}</td>
-      <td class="py-2 px-2 text-right" colspan="5">
-        <button onclick="removeWhitelistUser(${i})" class="text-xs bg-red-50 text-red-600 px-2 py-1 rounded hover:bg-red-100">Remove</button>
-      </td>
+      <td class="py-2 px-2 text-right" colspan="5">${actions}</td>
     </tr>`;
   }).join('');
 }
@@ -1600,8 +1645,8 @@ async function showUsersChatDropdown() {
 
   try {
     const data = await api(`/tenants/${tid}/chat-users`);
-    const currentIds = new Set(whitelistUsers.map(u => u.external_userid));
-    const users = (data.users || []).filter(u => !currentIds.has(u.external_userid));
+    const allowedIds = new Set(whitelistUsers.filter(u => u._status === 'allowed').map(u => u.external_userid));
+    const users = (data.users || []).filter(u => !allowedIds.has(u.external_userid));
     if (!users.length) {
       select.innerHTML = '<option value="">No available users (all added or no chat history)</option>';
       return;
@@ -1621,8 +1666,11 @@ function addWhitelistManual() {
   const euid = document.getElementById('users-manual-euid').value.trim();
   const nickname = document.getElementById('users-manual-nickname').value.trim() || euid.substring(0, 12) + '...';
   if (!euid) { alert('Please enter an external_userid'); return; }
-  if (whitelistUsers.some(u => u.external_userid === euid)) { alert('User already in whitelist'); return; }
-  whitelistUsers.push({ external_userid: euid, nickname: nickname });
+  if (whitelistUsers.some(u => u.external_userid === euid && u._status === 'allowed')) { alert('User already in whitelist'); return; }
+  // If user exists as visitor, promote them
+  const existing = whitelistUsers.find(u => u.external_userid === euid);
+  if (existing) { existing._status = 'allowed'; }
+  else { whitelistUsers.push({ external_userid: euid, nickname: nickname, _status: 'allowed' }); }
   hideUsersManualAdd();
   renderUsers();
   saveWhitelist();
@@ -1633,10 +1681,17 @@ function addWhitelistFromChat() {
   const option = select.options[select.selectedIndex];
   if (!option || !option.value) return;
   const euid = option.value;
-  if (whitelistUsers.some(u => u.external_userid === euid)) return;
   const nickname = option.getAttribute('data-nickname') || option.text.replace(/\s*\(.*\)$/, '');
-  whitelistUsers.push({ external_userid: euid, nickname: nickname });
+  const existing = whitelistUsers.find(u => u.external_userid === euid);
+  if (existing) { existing._status = 'allowed'; existing.nickname = nickname || existing.nickname; }
+  else { whitelistUsers.push({ external_userid: euid, nickname: nickname, _status: 'allowed' }); }
   hideUsersChatDropdown();
+  renderUsers();
+  saveWhitelist();
+}
+
+function promoteVisitor(index) {
+  whitelistUsers[index]._status = 'allowed';
   renderUsers();
   saveWhitelist();
 }
@@ -1644,21 +1699,28 @@ function addWhitelistFromChat() {
 function removeWhitelistUser(index) {
   const user = whitelistUsers[index];
   if (!confirm(`Remove ${user.nickname || user.external_userid} from whitelist?`)) return;
-  whitelistUsers.splice(index, 1);
+  // Demote to visitor instead of removing entirely (they chatted, keep them visible)
+  user._status = 'visitor';
   renderUsers();
   saveWhitelist();
 }
 
 async function saveWhitelist() {
   const tid = document.getElementById('user-tenant-select').value;
+  // Only save allowed users to config (visitors are display-only from chat history)
+  const allowedOnly = whitelistUsers
+    .filter(u => u._status === 'allowed')
+    .map(u => ({ external_userid: u.external_userid, nickname: u.nickname }));
   try {
     await api(`/tenants/${tid}/config`, {
       method: 'PUT',
-      body: JSON.stringify({ allowed_users: whitelistUsers }),
+      body: JSON.stringify({ allowed_users: allowedOnly }),
     });
-    document.getElementById('user-count').textContent = whitelistUsers.length
-      ? `${whitelistUsers.length} users in whitelist`
-      : 'Open access (no whitelist)';
+    const allowedCount = allowedOnly.length;
+    const visitorCount = whitelistUsers.length - allowedCount;
+    let countText = allowedCount ? `${allowedCount} allowed` : 'Open access';
+    if (visitorCount) countText += ` · ${visitorCount} visitor${visitorCount > 1 ? 's' : ''}`;
+    document.getElementById('user-count').textContent = countText;
   } catch (e) {
     alert(`Save failed: ${e.message}`);
   }
