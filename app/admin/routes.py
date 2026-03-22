@@ -164,6 +164,52 @@ def _get_all_tenants() -> list[dict]:
     return sorted(tenants_map.values(), key=lambda t: t.get("tenant_id", ""))
 
 
+def _resolve_tenant(tenant_id: str):
+    """Resolve a TenantConfig from local registry or Redis.
+
+    Returns TenantConfig or None. For remote tenants, constructs a minimal
+    TenantConfig from Redis data so that set_current_tenant() works.
+    """
+    # 1) Local registry (best)
+    t = tenant_registry.get(tenant_id)
+    if t:
+        return t
+
+    if not redis.available():
+        return None
+
+    # 2) Redis tenant_cfg: (full config from dashboard)
+    raw = redis.execute("GET", f"tenant_cfg:{tenant_id}")
+    if raw:
+        try:
+            data = json.loads(raw)
+            from app.tenant.config import TenantConfig
+            t = TenantConfig(tenant_id=tenant_id, **{
+                k: v for k, v in data.items()
+                if k != "tenant_id" and hasattr(TenantConfig, k)
+            })
+            return t
+        except Exception:
+            logger.debug("_resolve_tenant: failed to construct from tenant_cfg:%s", tenant_id, exc_info=True)
+
+    # 3) Redis admin:tenant: (metadata only — minimal config)
+    raw = redis.execute("GET", f"admin:tenant:{tenant_id}")
+    if raw:
+        try:
+            meta = json.loads(raw)
+            from app.tenant.config import TenantConfig
+            t = TenantConfig(
+                tenant_id=tenant_id,
+                name=meta.get("name", ""),
+                platform=meta.get("platform", "feishu"),
+            )
+            return t
+        except Exception:
+            logger.debug("_resolve_tenant: failed to construct from admin:tenant:%s", tenant_id, exc_info=True)
+
+    return None
+
+
 # ── 认证 ──
 
 async def _verify_token(
@@ -411,7 +457,7 @@ def _update_local_tenants_json(tenant_id: str, updates: dict):
 @router.get("/api/tenants/{tenant_id}/allowed-users")
 async def api_get_allowed_users(tenant_id: str, _token: str = Depends(_verify_token)):
     """获取租户白名单"""
-    t = tenant_registry.get(tenant_id)
+    t = _resolve_tenant(tenant_id)
     if not t:
         raise HTTPException(404, f"Tenant {tenant_id} not found")
     return {
@@ -428,7 +474,7 @@ async def api_get_chat_users(tenant_id: str, _token: str = Depends(_verify_token
     用于白名单下拉选择。"""
     from app.services import user_registry
     from app.tenant.context import set_current_tenant
-    t = tenant_registry.get(tenant_id)
+    t = _resolve_tenant(tenant_id)
     if not t:
         raise HTTPException(404, f"Tenant {tenant_id} not found")
     # 临时设置 tenant context 读取对应的 registry
@@ -501,7 +547,7 @@ async def api_trial_users(tenant_id: str, _token: str = Depends(_verify_token)):
     users = list_trial_users(tenant_id)
     # 返回 trial_duration_hours 供前端计算剩余时间
     duration_hours = 48
-    t = tenant_registry.get(tenant_id)
+    t = _resolve_tenant(tenant_id)
     if t:
         duration_hours = getattr(t, "trial_duration_hours", 48) or 48
     return {"tenant_id": tenant_id, "users": users, "total": len(users),
