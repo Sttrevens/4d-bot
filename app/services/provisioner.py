@@ -713,10 +713,23 @@ def _build_from_tenant_registry():
     """
     from app.tenant.registry import tenant_registry
 
-    # Collect all tenant metadata: local + Redis
+    # Collect all tenant metadata: local + Redis (exclude removed tenants)
     all_meta: dict[str, dict] = {}
 
+    # 获取已标记删除的租户
+    _removed: set[str] = set()
+    try:
+        from app.services import redis_client as _redis
+        if _redis.available():
+            members = _redis.execute("SMEMBERS", "admin:removed_tenants")
+            if isinstance(members, list):
+                _removed = set(members)
+    except Exception:
+        pass
+
     for tid, t in tenant_registry.all_tenants().items():
+        if tid in _removed:
+            continue
         all_meta[tid] = {
             "name": t.name,
             "platform": t.platform,
@@ -741,7 +754,7 @@ def _build_from_tenant_registry():
                 keys = result[1] if isinstance(result[1], list) else []
                 for key in keys:
                     tid = key.replace("admin:tenant:", "", 1) if isinstance(key, str) else ""
-                    if tid and tid not in all_meta:
+                    if tid and tid not in all_meta and tid not in _removed:
                         remote_keys.append((tid, key))
                 if cursor == "0":
                     break

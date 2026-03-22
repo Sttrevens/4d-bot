@@ -46,6 +46,30 @@ _TENANT_META_FIELDS = (
     "memory_chat_ttl", "memory_journal_max", "custom_persona",
 )
 
+_REMOVED_TENANTS_KEY = "admin:removed_tenants"
+
+
+def _get_removed_tenants() -> set[str]:
+    """获取已标记删除的租户 ID 集合"""
+    try:
+        if redis.available():
+            members = redis.execute("SMEMBERS", _REMOVED_TENANTS_KEY)
+            if isinstance(members, list):
+                return set(members)
+    except Exception:
+        pass
+    return set()
+
+
+def _mark_tenant_removed(tenant_id: str) -> None:
+    """标记租户为已删除（防止其他容器重新发布）"""
+    try:
+        if redis.available():
+            redis.execute("SADD", _REMOVED_TENANTS_KEY, tenant_id)
+    except Exception:
+        logger.debug("Failed to mark tenant %s as removed", tenant_id, exc_info=True)
+
+
 def publish_tenant_meta() -> int:
     """Publish local tenant metadata to Redis for cross-container admin visibility.
 
@@ -57,9 +81,13 @@ def publish_tenant_meta() -> int:
         logger.warning("publish_tenant_meta: Redis not available (missing UPSTASH env vars?), skipping %d tenants",
                         len(tenant_registry.all_tenants()))
         return 0
+    # 获取已标记删除的租户，避免重新发布
+    removed = _get_removed_tenants()
     count = 0
     failed = 0
     for tid, t in tenant_registry.all_tenants().items():
+        if tid in removed:
+            continue  # 已被 dashboard 删除，不重新发布
         meta = {f: getattr(t, f, None) for f in _TENANT_META_FIELDS}
         meta["tenant_id"] = tid
         try:
@@ -110,11 +138,16 @@ def _get_all_tenants() -> list[dict]:
     1. Local registry (current container's tenants)
     2. Redis admin:tenant:* (metadata published by all containers, no TTL)
     3. Redis tenant_cfg:* (full configs for dashboard-added tenants, no TTL)
+
+    Excludes tenants in admin:removed_tenants set.
     """
+    removed = _get_removed_tenants()
     tenants_map: dict[str, dict] = {}
 
-    # Source 1: Local registry
+    # Source 1: Local registry (exclude removed)
     for tid, t in tenant_registry.all_tenants().items():
+        if tid in removed:
+            continue
         tenants_map[tid] = {f: getattr(t, f, None) for f in _TENANT_META_FIELDS}
         tenants_map[tid]["tenant_id"] = tid
 
@@ -124,7 +157,7 @@ def _get_all_tenants() -> list[dict]:
             # Phase 1: SCAN admin:tenant:* (metadata from all containers)
             remote_keys = [
                 (tid, key) for tid, key in _scan_redis_keys("admin:tenant:*")
-                if tid not in tenants_map
+                if tid not in tenants_map and tid not in removed
             ]
 
             logger.info("_get_all_tenants: found %d remote admin:tenant:* keys (excluding %d local)",
@@ -133,7 +166,7 @@ def _get_all_tenants() -> list[dict]:
             # Phase 2: SCAN tenant_cfg:* (dashboard-added tenants, full config)
             cfg_keys = [
                 (tid, key) for tid, key in _scan_redis_keys("tenant_cfg:*")
-                if tid not in tenants_map and not any(t == tid for t, _ in remote_keys)
+                if tid not in tenants_map and tid not in removed and not any(t == tid for t, _ in remote_keys)
             ]
             logger.info("_get_all_tenants: found %d tenant_cfg:* keys", len(cfg_keys))
 
@@ -1093,6 +1126,9 @@ async def api_remove_co_tenant(
     result = remove_co_tenant(instance_id, co_tenant_id)
     if not result.get("ok"):
         raise HTTPException(400, result.get("error", "Remove failed"))
+
+    # 标记为已删除（防止其他容器 publish_tenant_meta 重新发布）
+    _mark_tenant_removed(co_tenant_id)
 
     # 成功后再通过 Redis 通知目标容器移除内存中的注册
     publish_tenant_update("remove", {"tenant_id": co_tenant_id})
