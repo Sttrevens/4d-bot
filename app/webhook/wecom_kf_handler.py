@@ -1042,11 +1042,11 @@ async def _do_agent_work(
 ) -> str:
     """调用 LLM agent 处理消息"""
     sender_name = await wecom_kf_client.get_customer_name(external_userid)
-    if sender_name:
-        from app.services.user_registry import register as register_user
-        register_user(external_userid, sender_name)
-    else:
+    if not sender_name:
         sender_name = f"微信用户({external_userid[:8]})"
+    # 无论名字来自 API 还是 fallback，都注册到 user_registry（持久化到 Redis）
+    from app.services.user_registry import register as register_user
+    register_user(external_userid, sender_name)
     sender_id = external_userid
 
     # 设置 _current_user_open_id，让工具层（如 xhs_ops 发送二维码）能获取当前用户 ID
