@@ -434,6 +434,10 @@ async def api_get_chat_users(tenant_id: str, _token: str = Depends(_verify_token
     # 临时设置 tenant context 读取对应的 registry
     set_current_tenant(t)
     all_known = user_registry.all_users()
+    # 如果内存为空（可能是 hot-loaded 租户，startup 时没加载），从 Redis 补加载
+    if not all_known:
+        user_registry.load_user_names_from_redis()
+        all_known = user_registry.all_users()
     # 已在白名单中的标记
     allowed_ids = {u.get("external_userid", "") for u in (t.allowed_users or []) if isinstance(u, dict)}
     users = []
