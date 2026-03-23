@@ -194,11 +194,45 @@ async def fetch_url(args: dict) -> ToolResult:
         content_type = resp.headers.get("content-type", "")
         content = resp.text
 
-        # HTML → 提取正文
+        # HTML → 提取正文（先提取结构化数据，再 strip tags）
         if "html" in content_type:
             try:
-                # 用正则简单提取：去掉 script/style 标签，保留文本
                 import re as _re
+                import json as _json
+
+                # ── 阶段 0：在 strip 之前提取结构化数据 ──
+                # JSON-LD（Luma/Eventbrite 等活动页的时间/地点/描述都在这里）
+                structured_parts = []
+                for m in _re.finditer(
+                    r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
+                    content, flags=_re.DOTALL
+                ):
+                    try:
+                        obj = _json.loads(m.group(1).strip())
+                        structured_parts.append(
+                            "── JSON-LD 结构化数据 ──\n" + _json.dumps(obj, ensure_ascii=False, indent=2)
+                        )
+                    except (ValueError, TypeError):
+                        pass
+
+                # Open Graph meta 标签（og:title, og:description, og:start_time 等）
+                og_tags = {}
+                for m in _re.finditer(
+                    r'<meta\s+[^>]*property=["\']og:([^"\']+)["\'][^>]*content=["\']([^"\']*)["\']',
+                    content, flags=_re.IGNORECASE
+                ):
+                    og_tags[m.group(1)] = m.group(2)
+                # 也匹配 content 在 property 前面的情况
+                for m in _re.finditer(
+                    r'<meta\s+[^>]*content=["\']([^"\']*)["\'][^>]*property=["\']og:([^"\']+)["\']',
+                    content, flags=_re.IGNORECASE
+                ):
+                    og_tags[m.group(2)] = m.group(1)
+                if og_tags:
+                    og_text = "\n".join(f"  og:{k} = {v}" for k, v in og_tags.items())
+                    structured_parts.append("── Open Graph 元数据 ──\n" + og_text)
+
+                # ── 阶段 1：常规 strip tags 提取可见文本 ──
                 text = content
                 text = _re.sub(r"<script[^>]*>.*?</script>", "", text, flags=_re.DOTALL)
                 text = _re.sub(r"<style[^>]*>.*?</style>", "", text, flags=_re.DOTALL)
@@ -215,6 +249,11 @@ async def fetch_url(args: dict) -> ToolResult:
                         "\n请改用 browser_open 打开此 URL，它会执行 JavaScript 并渲染完整页面内容。"
                         "\n用法: browser_open({\"url\": \"" + url + "\"})"
                     )
+
+                # ── 组合：结构化数据 + 可见文本 ──
+                if structured_parts:
+                    prefix = "\n\n".join(structured_parts) + "\n\n── 页面正文 ──\n"
+                    text = prefix + text
 
                 # 截断（与 _MAX_TOOL_RESULT_LEN 对齐）
                 max_len = 16000

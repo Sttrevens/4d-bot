@@ -919,7 +919,51 @@ async def api_instance_logs(
         return await api_self_logs(lines=lines, since=since, grep=grep,
                                    level=level, _token=_token)
 
-    # ── 非本容器的 tenant：走 provisioner 三层获取 ──
+    # ── 非本容器的 tenant：优先从 Redis 读取（_log_push_loop 每 30s 推送）──
+    try:
+        import json as _json
+        from app.services import redis_client as redis
+        if redis.available():
+            cached = redis.execute("GET", f"logs:{tenant_id}")
+            if cached:
+                data = _json.loads(cached)
+                cached_lines = data.get("lines", [])
+                if cached_lines:
+                    log_lines = cached_lines[-lines:]
+                    # 应用过滤
+                    if since:
+                        cutoff = _parse_since_to_datetime(since)
+                        if cutoff:
+                            log_lines = [l for l in log_lines if _log_line_after(l, cutoff)]
+                    if level:
+                        level_upper = level.upper()
+                        log_lines = [l for l in log_lines if level_upper in l]
+                    if grep:
+                        grep_lower = grep.lower()
+                        log_lines = [l for l in log_lines if grep_lower in l.lower()]
+                    log_lines = _deduplicate_consecutive(log_lines)
+                    error_lines = [l for l in log_lines if "ERROR" in l or "CRITICAL" in l
+                                   or "Traceback" in l or "Exception" in l]
+                    from datetime import datetime, timezone
+                    return JSONResponse(
+                        content={
+                            "ok": True,
+                            "tenant_id": tenant_id,
+                            "container": "redis-cache",
+                            "log_source": "redis",
+                            "buffer_size": data.get("count", len(cached_lines)),
+                            "total_lines": len(log_lines),
+                            "logs": "\n".join(log_lines),
+                            "error_count": len(error_lines),
+                            "recent_errors": "\n".join(error_lines[-20:]) if error_lines else "",
+                            "fetched_at": datetime.now(timezone.utc).isoformat(),
+                        },
+                        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"},
+                    )
+    except Exception:
+        pass  # Redis 读取失败，fallback 到 provisioner
+
+    # ── Fallback：走 provisioner 三层获取（HTTP 代理 → 文件 → docker logs）──
     from app.services.provisioner import get_instance_logs
     result = get_instance_logs(tenant_id, lines=lines, since=since,
                                 grep=grep, level=level)
