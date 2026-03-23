@@ -162,22 +162,10 @@ async def fetch_url(args: dict) -> ToolResult:
     except Exception:
         pass  # 解析失败不阻塞
 
-    # 已知 SPA 网站：提示 browser_open 更佳，但不硬拦截
-    # （fetch_url 仍可提取 HTML 中的 meta 标签、JSON-LD 等静态数据）
-    _SPA_DOMAINS = ("splashthat.com", "splash.events")
-    _spa_hint = ""
-    try:
-        from urllib.parse import urlparse
-        _host = urlparse(url).hostname or ""
-        for _spa in _SPA_DOMAINS:
-            if _host == _spa or _host.endswith("." + _spa):
-                _spa_hint = (
-                    f"\n\n💡 注意: {_spa} 是 SPA 网站，部分动态内容可能无法通过 fetch_url 获取。"
-                    f" 如需完整页面内容，请使用 browser_open。"
-                )
-                break
-    except Exception:
-        pass
+    # SPA 检测完全依赖运行时（HTML 大但 strip 后文本极少 → 空壳 SPA）
+    # ⛔ 不要在这里维护域名黑名单！曾有 _SPA_DOMAINS 列表硬拦截 luma.com 等域名，
+    # 导致没有 browser_open 的飞书平台 bot 完全无法获取这些 URL。已多次回归。
+    # 运行时检测对所有 SPA 通用且不会阻断 fetch，域名列表是多余的。
 
     offset = int(args.get("offset") or 0)
     query = (args.get("query") or "").strip()
@@ -245,7 +233,7 @@ async def fetch_url(args: dict) -> ToolResult:
         return ToolResult.success(
             f"URL: {url}\n"
             f"Content-Type: {content_type}\n\n"
-            f"── 内容 ──\n{content}{_spa_hint}"
+            f"── 内容 ──\n{content}"
         )
 
     except Exception as e:
