@@ -2017,6 +2017,14 @@ async function showKfPanel(instanceId) {
     const accounts = res.accounts || [];
     const tbody = document.getElementById('kf-accounts-body');
 
+    if (res.error) {
+      tbody.innerHTML = `<tr><td colspan="4" class="text-center py-6">
+        <div class="text-red-500 text-sm font-medium">${escapeHtml(res.error)}</div>
+        ${res.hint ? `<div class="text-gray-400 text-xs mt-1">${escapeHtml(res.hint)}</div>` : ''}
+      </td></tr>`;
+      return;
+    }
+
     if (!accounts.length) {
       tbody.innerHTML = '<tr><td colspan="4" class="text-center text-gray-400 py-8">No KF accounts found in this corp</td></tr>';
       return;

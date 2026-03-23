@@ -1197,7 +1197,9 @@ async def api_list_kf_accounts(
             )
             token_data = token_resp.json()
             if token_data.get("errcode", -1) != 0:
-                raise HTTPException(502, f"WeChat token error: {token_data.get('errmsg', '')}")
+                return {"instance_id": instance_id, "accounts": [],
+                        "error": f"WeChat token error (errcode={token_data.get('errcode')}): {token_data.get('errmsg', '')}",
+                        "hint": "检查 corpid/kf_secret 是否正确，以及服务器 IP 是否在企微白名单中"}
 
             access_token = token_data["access_token"]
 
@@ -1207,7 +1209,9 @@ async def api_list_kf_accounts(
             )
             acct_data = acct_resp.json()
             if acct_data.get("errcode", -1) != 0:
-                raise HTTPException(502, f"WeChat KF list error: {acct_data.get('errmsg', '')}")
+                return {"instance_id": instance_id, "accounts": [],
+                        "error": f"WeChat KF list error (errcode={acct_data.get('errcode')}): {acct_data.get('errmsg', '')}",
+                        "hint": "客服账号列表获取失败，可能是 kf_secret 权限不足"}
 
         accounts = acct_data.get("account_list", [])
 
@@ -1218,7 +1222,9 @@ async def api_list_kf_accounts(
 
         return {"instance_id": instance_id, "accounts": accounts}
     except httpx.HTTPError as e:
-        raise HTTPException(502, f"WeChat API request failed: {e}")
+        return {"instance_id": instance_id, "accounts": [],
+                "error": f"WeChat API 请求失败: {e}",
+                "hint": "网络错误，请检查服务器能否访问 qyapi.weixin.qq.com"}
 
 
 # ── 超级管理员身份管理 ──

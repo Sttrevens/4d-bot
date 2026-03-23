@@ -162,18 +162,20 @@ async def fetch_url(args: dict) -> ToolResult:
     except Exception:
         pass  # 解析失败不阻塞
 
-    # 已知 SPA 网站：fetch_url 无法获取内容，直接引导用 browser_open
-    _SPA_DOMAINS = ("luma.com", "lu.ma", "splashthat.com", "splash.events")
+    # 已知 SPA 网站：提示 browser_open 更佳，但不硬拦截
+    # （fetch_url 仍可提取 HTML 中的 meta 标签、JSON-LD 等静态数据）
+    _SPA_DOMAINS = ("splashthat.com", "splash.events")
+    _spa_hint = ""
     try:
         from urllib.parse import urlparse
         _host = urlparse(url).hostname or ""
         for _spa in _SPA_DOMAINS:
             if _host == _spa or _host.endswith("." + _spa):
-                return ToolResult.error(
-                    f"⚠️ {_spa} 是 JavaScript 单页应用（SPA），fetch_url 无法获取动态内容。\n"
-                    f"请改用 browser_open 打开此 URL：browser_open({{\"url\": \"{url}\"}})\n"
-                    "browser_open 会执行 JavaScript 并渲染完整页面。"
+                _spa_hint = (
+                    f"\n\n💡 注意: {_spa} 是 SPA 网站，部分动态内容可能无法通过 fetch_url 获取。"
+                    f" 如需完整页面内容，请使用 browser_open。"
                 )
+                break
     except Exception:
         pass
 
@@ -243,7 +245,7 @@ async def fetch_url(args: dict) -> ToolResult:
         return ToolResult.success(
             f"URL: {url}\n"
             f"Content-Type: {content_type}\n\n"
-            f"── 内容 ──\n{content}"
+            f"── 内容 ──\n{content}{_spa_hint}"
         )
 
     except Exception as e:
