@@ -620,13 +620,208 @@ async def _scheduler_loop() -> None:
         await asyncio.sleep(_CHECK_INTERVAL)
 
 
+# ── Coworker 模式（主动巡群）──
+
+_COWORKER_DECIDE_PROMPT = """\
+你是一个飞书群里的 AI coworker。以下是群「{group_name}」最近的聊天记录：
+
+{chat_history}
+
+---
+
+你的名字是「{bot_name}」。请判断：
+1. 这些消息中是否有你可以提供价值的讨论？（比如有人遇到问题、讨论技术方案、需要信息整理、有你擅长的话题等）
+2. 你参与是否自然、不突兀？（不要在闲聊/社交/纯表情包对话中强行插话）
+
+如果你决定参与，请直接写出你要发送的回复内容（自然、简洁、像同事一样）。
+如果你觉得不适合参与，请只回复"[SKIP]"。
+
+重要：
+- 不要重复别人已经说过的信息
+- 不要对已经解决的问题再提建议
+- 如果最后一条消息是你自己发的，通常不需要再说话（除非有新讨论）
+- 语气自然，像同事聊天，不要太正式
+- 如果有人明确提到了你或在讨论你能帮忙的事，优先参与
+"""
+
+_COWORKER_CHECK_INTERVAL = 60  # 每 60 秒检查一次是否有租户需要扫描
+_last_coworker_scan: dict[str, float] = {}  # tenant_id:chat_id → last scan timestamp
+
+
+def _in_coworker_hours(tenant) -> bool:
+    """是否在 coworker 活跃时段（非安静时段）。"""
+    now = _now_tz()
+    quiet_start = getattr(tenant, "coworker_quiet_hours_start", 22)
+    quiet_end = getattr(tenant, "coworker_quiet_hours_end", 8)
+    hour = now.hour
+    if quiet_start > quiet_end:
+        # 跨午夜：22:00-08:00
+        return not (hour >= quiet_start or hour < quiet_end)
+    else:
+        return not (quiet_start <= hour < quiet_end)
+
+
+async def _coworker_scan_tenant(tenant) -> None:
+    """为单个租户执行 coworker 巡群扫描。"""
+    from app.tenant.context import set_current_tenant
+    set_current_tenant(tenant)
+
+    tid = tenant.tenant_id
+    scan_interval = getattr(tenant, "coworker_scan_interval_hours", 6) * 3600
+    scan_groups = getattr(tenant, "coworker_scan_groups", [])
+    msg_count = getattr(tenant, "coworker_msg_count", 30)
+    bot_name = tenant.name or tid
+
+    # 获取 bot 所在的群列表
+    try:
+        from app.tools.message_ops import list_bot_groups, fetch_chat_history, send_message
+        result = list_bot_groups()
+        if not result.success:
+            logger.debug("coworker: list_bot_groups failed for %s: %s", tid, result)
+            return
+        # 从结果中提取 chat_id 列表
+        from app.tools.feishu_api import feishu_get
+        data = feishu_get("/im/v1/chats", params={"page_size": 50})
+        if isinstance(data, str):
+            logger.debug("coworker: feishu_get chats failed for %s: %s", tid, data[:100])
+            return
+        groups = data.get("data", {}).get("items", [])
+    except Exception:
+        logger.debug("coworker: failed to list groups for %s", tid, exc_info=True)
+        return
+
+    for group in groups:
+        chat_id = group.get("chat_id", "")
+        group_name = group.get("name", "(未命名)")
+        if not chat_id:
+            continue
+
+        # 如果配置了限定群列表，只扫描指定的群
+        if scan_groups and chat_id not in scan_groups:
+            continue
+
+        # 检查上次扫描时间
+        scan_key = f"{tid}:{chat_id}"
+        last_scan = _last_coworker_scan.get(scan_key, 0)
+        if time.time() - last_scan < scan_interval:
+            continue
+
+        _last_coworker_scan[scan_key] = time.time()
+
+        logger.info("coworker: scanning group '%s' (%s) for tenant=%s",
+                     group_name, chat_id[:15], tid)
+
+        # 拉取最近消息
+        try:
+            history_result = fetch_chat_history(chat_id, count=msg_count)
+            chat_text = history_result.get("text", "")
+            if not chat_text or len(chat_text.strip()) < 20:
+                logger.debug("coworker: no meaningful messages in '%s'", group_name)
+                continue
+        except Exception:
+            logger.debug("coworker: fetch_chat_history failed for %s", chat_id[:15], exc_info=True)
+            continue
+
+        # 检查最近消息中是否有新内容（避免重复回复静默群）
+        # 用 Redis 记录上次看到的最后一条消息摘要
+        try:
+            last_seen_key = f"coworker:last_seen:{tid}:{chat_id}"
+            # 取聊天记录最后 100 字符作为指纹
+            current_fingerprint = chat_text[-100:] if len(chat_text) > 100 else chat_text
+            prev_fingerprint = redis_client.execute("GET", last_seen_key) or ""
+            if current_fingerprint == prev_fingerprint:
+                logger.debug("coworker: no new messages in '%s', skipping", group_name)
+                continue
+            redis_client.execute("SET", last_seen_key, current_fingerprint, "EX", str(86400 * 7))
+        except Exception:
+            # Redis 不可用不阻塞，继续扫描（fail-open）
+            pass
+
+        # 用 LLM 判断是否要参与
+        try:
+            prompt = _COWORKER_DECIDE_PROMPT.format(
+                group_name=group_name,
+                chat_history=chat_text[:6000],  # 控制上下文长度
+                bot_name=bot_name,
+            )
+
+            if tenant.llm_provider == "gemini":
+                from app.services.gemini_provider import handle_message
+            else:
+                from app.services.kimi_coder import handle_message
+
+            reply = await asyncio.wait_for(
+                handle_message(
+                    user_text=prompt,
+                    sender_name="coworker_scanner",
+                    sender_id="system_coworker",
+                    mode="safe",  # 只需要文本回复，不需要工具
+                ),
+                timeout=60,
+            )
+
+            if not reply or "[SKIP]" in reply:
+                logger.info("coworker: LLM decided to skip group '%s'", group_name)
+                continue
+
+            # LLM 决定参与 → 发送消息到群
+            reply_text = reply.strip()
+            if len(reply_text) > 2000:
+                reply_text = reply_text[:2000]
+
+            logger.info("coworker: sending to group '%s' (%s): %s",
+                         group_name, chat_id[:15], reply_text[:80])
+            send_message(chat_id, reply_text, receive_id_type="chat_id")
+
+        except asyncio.TimeoutError:
+            logger.debug("coworker: LLM timeout for group '%s'", group_name)
+        except Exception:
+            logger.debug("coworker: LLM/send failed for group '%s'", group_name, exc_info=True)
+
+
+async def _coworker_loop() -> None:
+    """Coworker 模式后台循环——定期巡群。
+
+    每 60 秒检查一次有没有租户需要扫描。
+    实际扫描间隔由 tenant.coworker_scan_interval_hours 控制。
+    """
+    logger.info("coworker: loop started (check every %ds)", _COWORKER_CHECK_INTERVAL)
+
+    # 启动后等 5 分钟再开始第一次扫描，让系统完全初始化
+    await asyncio.sleep(300)
+
+    while _running:
+        try:
+            from app.tenant.registry import tenant_registry
+            from app.tenant.context import set_current_tenant
+
+            for tid, tenant in tenant_registry.all_tenants().items():
+                if not getattr(tenant, "coworker_mode_enabled", False):
+                    continue
+                if tenant.platform != "feishu":
+                    continue
+                if not _in_coworker_hours(tenant):
+                    continue
+
+                try:
+                    set_current_tenant(tenant)
+                    await _coworker_scan_tenant(tenant)
+                except Exception:
+                    logger.debug("coworker: scan failed for tenant=%s", tid, exc_info=True)
+        except Exception:
+            logger.exception("coworker: loop iteration failed")
+
+        await asyncio.sleep(_COWORKER_CHECK_INTERVAL)
+
+
 def start_scheduler() -> None:
     """启动后台调度器（在 app startup 中调用）。"""
     try:
         loop = asyncio.get_running_loop()
         loop.create_task(_scheduler_loop())
         loop.create_task(_reminder_loop())
-        logger.info("scheduler: background tasks created (plan scheduler + reminder loop)")
+        loop.create_task(_coworker_loop())
+        logger.info("scheduler: background tasks created (plan scheduler + reminder loop + coworker loop)")
     except RuntimeError:
         logger.warning("scheduler: no running event loop, cannot start")
 

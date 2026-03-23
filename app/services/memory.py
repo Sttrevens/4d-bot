@@ -531,6 +531,47 @@ def update_project_knowledge(repo: str, updates: dict) -> bool:
 # ── 上下文构建（注入 system prompt）──
 
 
+def _memory_entry_text(e: dict) -> str:
+    """提取记忆条目中的所有文本字段，用于相关性计算。"""
+    parts = []
+    for key in ("action", "outcome", "details", "summary"):
+        v = e.get(key, "")
+        if v:
+            parts.append(str(v))
+    for tag in e.get("tags", []):
+        parts.append(str(tag))
+    return " ".join(parts)
+
+
+def _text_to_bigrams(text: str) -> set[str]:
+    """将文本转为 2-gram 字符集合（中文友好，无需分词）。"""
+    # 去除标点和空白，只保留有意义的字符
+    cleaned = "".join(c for c in text.lower() if c.isalnum())
+    if len(cleaned) < 2:
+        return {cleaned} if cleaned else set()
+    return {cleaned[i:i + 2] for i in range(len(cleaned) - 1)}
+
+
+def _memory_relevance_score(entry: dict, query_bigrams: set[str]) -> float:
+    """计算记忆条目与当前消息的相关性分数（0~1）。
+
+    使用字符 bigram Jaccard 系数，对中文无需分词。
+    """
+    if not query_bigrams:
+        return 1.0  # 无查询文本时全部通过
+    entry_text = _memory_entry_text(entry)
+    entry_bigrams = _text_to_bigrams(entry_text)
+    if not entry_bigrams:
+        return 0.0
+    intersection = query_bigrams & entry_bigrams
+    # 用较小集合做分母（Overlap coefficient），对短查询更友好
+    denominator = min(len(query_bigrams), len(entry_bigrams))
+    return len(intersection) / denominator if denominator else 0.0
+
+
+_MEMORY_RELEVANCE_THRESHOLD = 0.08  # 至少有 8% bigram 重叠才注入
+
+
 def _format_memory_entry(e: dict) -> str:
     """格式化单条记忆条目为人类可读文本。"""
     t = e.get("time", "?")[:10]
@@ -616,11 +657,26 @@ async def build_memory_context(
                     parts.append(f"相关记忆({label}):\n" + "\n".join(memory_lines))
                     recalled = True
 
-    # 3. LLM 没有建议回忆 → 注入最近 3 条该用户的交互（保底）
+    # 3. LLM 没有建议回忆 → 注入最近交互（保底），但按相关性过滤
     if not recalled:
-        recent = recall(user_id=user_id, limit=3)
-        if recent:
-            memory_lines = [_format_memory_entry(e) for e in recent]
+        recent = recall(user_id=user_id, limit=8)  # 多取几条，过滤后可能剩不多
+        if recent and current_text:
+            q_bigrams = _text_to_bigrams(current_text)
+            scored = [
+                (e, _memory_relevance_score(e, q_bigrams))
+                for e in recent
+            ]
+            # 只注入相关性超过阈值的条目，最多 3 条
+            relevant_recent = [
+                e for e, score in scored
+                if score >= _MEMORY_RELEVANCE_THRESHOLD
+            ][:3]
+            if relevant_recent:
+                memory_lines = [_format_memory_entry(e) for e in relevant_recent]
+                parts.append("最近相关交互:\n" + "\n".join(memory_lines))
+        elif recent and not current_text:
+            # 无当前消息文本时（极少见），退回到不过滤
+            memory_lines = [_format_memory_entry(e) for e in recent[:3]]
             parts.append("最近交互:\n" + "\n".join(memory_lines))
 
     # 4. 组织级记忆共享：搜索其他用户的解决方案
@@ -659,7 +715,11 @@ async def build_memory_context(
     context = "\n\n".join(parts)
     if len(context) > 2000:
         context = context[:2000] + "..."
-    return f"\n\n你的记忆：\n{context}"
+    return (
+        "\n\n── 你的记忆（过去的交互，不是用户当前请求）──\n"
+        f"{context}\n"
+        "── 记忆结束 ──"
+    )
 
 
 # ── 日记系统（写入侧）──

@@ -46,6 +46,30 @@ _TENANT_META_FIELDS = (
     "memory_chat_ttl", "memory_journal_max", "custom_persona",
 )
 
+_REMOVED_TENANTS_KEY = "admin:removed_tenants"
+
+
+def _get_removed_tenants() -> set[str]:
+    """获取已标记删除的租户 ID 集合"""
+    try:
+        if redis.available():
+            members = redis.execute("SMEMBERS", _REMOVED_TENANTS_KEY)
+            if isinstance(members, list):
+                return set(members)
+    except Exception:
+        pass
+    return set()
+
+
+def _mark_tenant_removed(tenant_id: str) -> None:
+    """标记租户为已删除（防止其他容器重新发布）"""
+    try:
+        if redis.available():
+            redis.execute("SADD", _REMOVED_TENANTS_KEY, tenant_id)
+    except Exception:
+        logger.debug("Failed to mark tenant %s as removed", tenant_id, exc_info=True)
+
+
 def publish_tenant_meta() -> int:
     """Publish local tenant metadata to Redis for cross-container admin visibility.
 
@@ -57,9 +81,13 @@ def publish_tenant_meta() -> int:
         logger.warning("publish_tenant_meta: Redis not available (missing UPSTASH env vars?), skipping %d tenants",
                         len(tenant_registry.all_tenants()))
         return 0
+    # 获取已标记删除的租户，避免重新发布
+    removed = _get_removed_tenants()
     count = 0
     failed = 0
     for tid, t in tenant_registry.all_tenants().items():
+        if tid in removed:
+            continue  # 已被 dashboard 删除，不重新发布
         meta = {f: getattr(t, f, None) for f in _TENANT_META_FIELDS}
         meta["tenant_id"] = tid
         try:
@@ -110,11 +138,16 @@ def _get_all_tenants() -> list[dict]:
     1. Local registry (current container's tenants)
     2. Redis admin:tenant:* (metadata published by all containers, no TTL)
     3. Redis tenant_cfg:* (full configs for dashboard-added tenants, no TTL)
+
+    Excludes tenants in admin:removed_tenants set.
     """
+    removed = _get_removed_tenants()
     tenants_map: dict[str, dict] = {}
 
-    # Source 1: Local registry
+    # Source 1: Local registry (exclude removed)
     for tid, t in tenant_registry.all_tenants().items():
+        if tid in removed:
+            continue
         tenants_map[tid] = {f: getattr(t, f, None) for f in _TENANT_META_FIELDS}
         tenants_map[tid]["tenant_id"] = tid
 
@@ -124,7 +157,7 @@ def _get_all_tenants() -> list[dict]:
             # Phase 1: SCAN admin:tenant:* (metadata from all containers)
             remote_keys = [
                 (tid, key) for tid, key in _scan_redis_keys("admin:tenant:*")
-                if tid not in tenants_map
+                if tid not in tenants_map and tid not in removed
             ]
 
             logger.info("_get_all_tenants: found %d remote admin:tenant:* keys (excluding %d local)",
@@ -133,7 +166,7 @@ def _get_all_tenants() -> list[dict]:
             # Phase 2: SCAN tenant_cfg:* (dashboard-added tenants, full config)
             cfg_keys = [
                 (tid, key) for tid, key in _scan_redis_keys("tenant_cfg:*")
-                if tid not in tenants_map and not any(t == tid for t, _ in remote_keys)
+                if tid not in tenants_map and tid not in removed and not any(t == tid for t, _ in remote_keys)
             ]
             logger.info("_get_all_tenants: found %d tenant_cfg:* keys", len(cfg_keys))
 
@@ -162,6 +195,52 @@ def _get_all_tenants() -> list[dict]:
 
     logger.info("_get_all_tenants: returning %d tenants total", len(tenants_map))
     return sorted(tenants_map.values(), key=lambda t: t.get("tenant_id", ""))
+
+
+def _resolve_tenant(tenant_id: str):
+    """Resolve a TenantConfig from local registry or Redis.
+
+    Returns TenantConfig or None. For remote tenants, constructs a minimal
+    TenantConfig from Redis data so that set_current_tenant() works.
+    """
+    # 1) Local registry (best)
+    t = tenant_registry.get(tenant_id)
+    if t:
+        return t
+
+    if not redis.available():
+        return None
+
+    # 2) Redis tenant_cfg: (full config from dashboard)
+    raw = redis.execute("GET", f"tenant_cfg:{tenant_id}")
+    if raw:
+        try:
+            data = json.loads(raw)
+            from app.tenant.config import TenantConfig
+            t = TenantConfig(tenant_id=tenant_id, **{
+                k: v for k, v in data.items()
+                if k != "tenant_id" and hasattr(TenantConfig, k)
+            })
+            return t
+        except Exception:
+            logger.debug("_resolve_tenant: failed to construct from tenant_cfg:%s", tenant_id, exc_info=True)
+
+    # 3) Redis admin:tenant: (metadata only — minimal config)
+    raw = redis.execute("GET", f"admin:tenant:{tenant_id}")
+    if raw:
+        try:
+            meta = json.loads(raw)
+            from app.tenant.config import TenantConfig
+            t = TenantConfig(
+                tenant_id=tenant_id,
+                name=meta.get("name", ""),
+                platform=meta.get("platform", "feishu"),
+            )
+            return t
+        except Exception:
+            logger.debug("_resolve_tenant: failed to construct from admin:tenant:%s", tenant_id, exc_info=True)
+
+    return None
 
 
 # ── 认证 ──
@@ -261,6 +340,10 @@ _EDITABLE_FIELDS = (
     "memory_journal_max", "memory_chat_rounds", "memory_chat_ttl",
     "admin_names", "tools_enabled", "capability_modules",
     "self_iteration_enabled", "instance_management_enabled",
+    "coworker_mode_enabled", "coworker_scan_interval_hours",
+    "coworker_scan_groups", "coworker_msg_count",
+    "coworker_quiet_hours_start", "coworker_quiet_hours_end",
+    "allowed_users", "owner", "access_deny_msg",
 )
 
 
@@ -402,6 +485,50 @@ def _update_local_tenants_json(tenant_id: str, updates: dict):
             logger.warning("_update_local_tenants_json failed for %s: %s", tenant_id, e)
 
 
+# ── 白名单管理 ──
+
+@router.get("/api/tenants/{tenant_id}/allowed-users")
+async def api_get_allowed_users(tenant_id: str, _token: str = Depends(_verify_token)):
+    """获取租户白名单"""
+    t = _resolve_tenant(tenant_id)
+    if not t:
+        raise HTTPException(404, f"Tenant {tenant_id} not found")
+    return {
+        "tenant_id": tenant_id,
+        "allowed_users": t.allowed_users or [],
+        "owner": t.owner or "",
+        "access_deny_msg": t.access_deny_msg,
+    }
+
+
+@router.get("/api/tenants/{tenant_id}/chat-users")
+async def api_get_chat_users(tenant_id: str, _token: str = Depends(_verify_token)):
+    """获取跟该 bot 聊过天的用户列表（从 user_registry 读取）。
+    用于白名单下拉选择。"""
+    from app.services import user_registry
+    from app.tenant.context import set_current_tenant
+    t = _resolve_tenant(tenant_id)
+    if not t:
+        raise HTTPException(404, f"Tenant {tenant_id} not found")
+    # 临时设置 tenant context 读取对应的 registry
+    set_current_tenant(t)
+    all_known = user_registry.all_users()
+    # 如果内存为空（可能是 hot-loaded 租户，startup 时没加载），从 Redis 补加载
+    if not all_known:
+        user_registry.load_user_names_from_redis()
+        all_known = user_registry.all_users()
+    # 已在白名单中的标记
+    allowed_ids = {u.get("external_userid", "") for u in (t.allowed_users or []) if isinstance(u, dict)}
+    users = []
+    for uid, name in all_known.items():
+        users.append({
+            "external_userid": uid,
+            "nickname": name,
+            "in_whitelist": uid in allowed_ids,
+        })
+    return {"tenant_id": tenant_id, "users": users}
+
+
 # ── 用量统计 ──
 
 @router.get("/api/usage/{tenant_id}")
@@ -453,7 +580,7 @@ async def api_trial_users(tenant_id: str, _token: str = Depends(_verify_token)):
     users = list_trial_users(tenant_id)
     # 返回 trial_duration_hours 供前端计算剩余时间
     duration_hours = 48
-    t = tenant_registry.get(tenant_id)
+    t = _resolve_tenant(tenant_id)
     if t:
         duration_hours = getattr(t, "trial_duration_hours", 48) or 48
     return {"tenant_id": tenant_id, "users": users, "total": len(users),
@@ -999,6 +1126,9 @@ async def api_remove_co_tenant(
     result = remove_co_tenant(instance_id, co_tenant_id)
     if not result.get("ok"):
         raise HTTPException(400, result.get("error", "Remove failed"))
+
+    # 标记为已删除（防止其他容器 publish_tenant_meta 重新发布）
+    _mark_tenant_removed(co_tenant_id)
 
     # 成功后再通过 Redis 通知目标容器移除内存中的注册
     publish_tenant_update("remove", {"tenant_id": co_tenant_id})

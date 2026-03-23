@@ -44,6 +44,11 @@ router = APIRouter()
 _dedup = MessageDedup(max_cache=2048)
 _state = UserStateManager()
 
+# ── 回调级去重：防止企微短时间内推送相同回调多次触发重复 _pull_and_process ──
+_callback_dedup: dict[str, float] = {}  # key → timestamp
+_CALLBACK_DEDUP_TTL = 15  # 同一回调 15 秒内不重复处理
+_CALLBACK_DEDUP_MAX = 1024  # 最大缓存条目，防止内存泄漏
+
 # enter_session 去重：同一用户短时间内只处理一次
 _enter_session_last: dict[str, float] = {}
 _ENTER_SESSION_COOLDOWN = 60  # 秒
@@ -271,6 +276,22 @@ async def wecom_kf_callback(tenant_id: str, request: Request) -> Response:
             return Response("success", media_type="text/plain")
 
     if event == "kf_msg_or_event" and callback_token:
+        # 回调级去重：相同 msg_signature+timestamp+nonce 短时间内不重复处理
+        cb_dedup_key = f"{tenant.tenant_id}:{msg_signature}:{timestamp}:{nonce}"
+        now = time.time()
+        last_seen = _callback_dedup.get(cb_dedup_key)
+        if last_seen and now - last_seen < _CALLBACK_DEDUP_TTL:
+            logger.info("wecom_kf callback dedup: skipping duplicate callback for tenant=%s", tenant.tenant_id)
+            return Response("success", media_type="text/plain")
+
+        # 记录并清理过期条目
+        _callback_dedup[cb_dedup_key] = now
+        if len(_callback_dedup) > _CALLBACK_DEDUP_MAX:
+            # 清理过期条目
+            expired = [k for k, v in _callback_dedup.items() if now - v > _CALLBACK_DEDUP_TTL]
+            for k in expired:
+                del _callback_dedup[k]
+
         # 异步拉取消息并处理
         asyncio.create_task(
             _pull_and_process(tenant, callback_token, open_kfid)
@@ -311,6 +332,13 @@ async def _pull_and_process(tenant, callback_token: str, open_kfid: str) -> None
             break
 
         if data.get("errcode", -1) != 0:
+            errcode = data.get("errcode", -1)
+            # token 失效已在 wecom_kf_client.sync_msg 内部自动重试，
+            # 如果到这里仍然报错，记录详细信息
+            if errcode in (95007, 42001, 40014):
+                logger.error("wecom_kf sync_msg token still invalid after refresh: errcode=%d %s",
+                             errcode, data.get("errmsg", ""))
+                break
             # 保存的 cursor 可能已过期，回退到无 cursor 重试一次
             if cursor and not retried_without_cursor:
                 logger.warning("wecom_kf sync_msg failed with saved cursor, retrying from scratch: %s",
@@ -1042,11 +1070,11 @@ async def _do_agent_work(
 ) -> str:
     """调用 LLM agent 处理消息"""
     sender_name = await wecom_kf_client.get_customer_name(external_userid)
-    if sender_name:
-        from app.services.user_registry import register as register_user
-        register_user(external_userid, sender_name)
-    else:
+    if not sender_name:
         sender_name = f"微信用户({external_userid[:8]})"
+    # 无论名字来自 API 还是 fallback，都注册到 user_registry（持久化到 Redis）
+    from app.services.user_registry import register as register_user
+    register_user(external_userid, sender_name)
     sender_id = external_userid
 
     # 设置 _current_user_open_id，让工具层（如 xhs_ops 发送二维码）能获取当前用户 ID

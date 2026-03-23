@@ -96,11 +96,12 @@
           <select id="user-tenant-select" onchange="loadUsers()"
             class="border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
           </select>
+          <span id="users-mode-badge" class="ml-2"></span>
           <span id="user-count" class="text-sm text-gray-400 ml-auto"></span>
         </div>
 
-        <!-- Filter buttons -->
-        <div class="flex gap-2 mb-4">
+        <!-- Filter buttons (trial mode only) -->
+        <div id="users-filter-row" class="flex gap-2 mb-4">
           <button onclick="filterUsers('all')" class="filter-btn text-xs px-3 py-1 rounded-full bg-gray-100 text-gray-600">All</button>
           <button onclick="filterUsers('trial')" class="filter-btn text-xs px-3 py-1 rounded-full bg-blue-50 text-blue-600">Trial</button>
           <button onclick="filterUsers('expired')" class="filter-btn text-xs px-3 py-1 rounded-full bg-orange-50 text-orange-600">Expired</button>
@@ -108,10 +109,46 @@
           <button onclick="filterUsers('blocked')" class="filter-btn text-xs px-3 py-1 rounded-full bg-red-50 text-red-600">Blocked</button>
         </div>
 
+        <!-- Whitelist mode controls -->
+        <div id="users-add-row" class="hidden mb-4">
+          <div class="flex items-center gap-3 mb-2">
+            <button onclick="filterUsers('all')" class="filter-btn text-xs px-3 py-1 rounded-full bg-gray-100 text-gray-600 ring-2 ring-blue-400">All</button>
+            <button onclick="filterUsers('allowed')" class="filter-btn text-xs px-3 py-1 rounded-full bg-green-50 text-green-600">Allowed</button>
+            <button onclick="filterUsers('visitor')" class="filter-btn text-xs px-3 py-1 rounded-full bg-yellow-50 text-yellow-600">Visitor</button>
+            <span class="border-l border-gray-200 h-4 mx-1"></span>
+            <button onclick="showUsersManualAdd()" class="text-xs bg-green-50 text-green-600 px-3 py-1.5 rounded-lg hover:bg-green-100 border border-green-200">+ Manual Add</button>
+            <button onclick="showUsersChatDropdown()" class="text-xs bg-blue-50 text-blue-600 px-3 py-1.5 rounded-lg hover:bg-blue-100 border border-blue-200">+ From Chat History</button>
+            <span class="text-[10px] text-gray-400 ml-auto">Empty whitelist = open access</span>
+          </div>
+          <!-- Manual add form -->
+          <div id="users-manual-add" class="hidden mb-2 border rounded-lg p-3 bg-green-50">
+            <p class="text-[10px] text-gray-400 mb-2">Paste external_userid (from WeChat KF API or logs) + optional nickname:</p>
+            <div class="flex gap-2 mb-2">
+              <input id="users-manual-euid" type="text" class="flex-1 border rounded-lg px-2 py-1 text-sm" placeholder="wmXXXXXXXXXXXX (external_userid)">
+              <input id="users-manual-nickname" type="text" class="w-32 border rounded-lg px-2 py-1 text-sm" placeholder="Nickname">
+            </div>
+            <div class="flex gap-2">
+              <button onclick="addWhitelistManual()" class="text-xs bg-green-500 text-white px-3 py-1 rounded hover:bg-green-600">Add</button>
+              <button onclick="hideUsersManualAdd()" class="text-xs text-gray-500 px-3 py-1 rounded hover:bg-gray-200">Cancel</button>
+            </div>
+          </div>
+          <!-- Chat history dropdown -->
+          <div id="users-chat-dropdown" class="hidden mb-2 border rounded-lg p-3 bg-blue-50">
+            <p class="text-[10px] text-gray-400 mb-2">Select a user who has chatted with this bot:</p>
+            <select id="users-chat-select" class="w-full border rounded-lg px-3 py-1 text-sm mb-2">
+              <option value="">Loading...</option>
+            </select>
+            <div class="flex gap-2">
+              <button onclick="addWhitelistFromChat()" class="text-xs bg-blue-500 text-white px-3 py-1 rounded hover:bg-blue-600">Add</button>
+              <button onclick="hideUsersChatDropdown()" class="text-xs text-gray-500 px-3 py-1 rounded hover:bg-gray-200">Cancel</button>
+            </div>
+          </div>
+        </div>
+
         <div id="users-table-container">
           <table class="w-full text-sm">
             <thead>
-              <tr class="border-b text-left text-gray-500">
+              <tr id="users-thead" class="border-b text-left text-gray-500">
                 <th class="py-2 px-2">Name</th>
                 <th class="py-2 px-2">User ID</th>
                 <th class="py-2 px-2">Status</th>
@@ -672,8 +709,9 @@
     </div>
 
     <!-- Edit Tenant Modal -->
-    <div id="edit-tenant-modal" class="hidden fixed inset-0 bg-black/50 z-50 flex items-center justify-center">
-      <div class="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto p-6 m-4">
+    <div id="edit-tenant-modal" class="hidden fixed inset-0 bg-black/50 z-50 overflow-y-auto">
+      <div class="flex items-start justify-center min-h-full py-4 px-4">
+      <div class="bg-white rounded-xl shadow-2xl w-full max-w-2xl p-6 my-auto">
         <div class="flex justify-between items-center mb-4">
           <h3 class="text-lg font-semibold">Edit Tenant: <span id="edit-tid" class="text-blue-600"></span></h3>
           <button onclick="closeEditModal()" class="text-gray-400 hover:text-gray-600 text-xl">&times;</button>
@@ -770,10 +808,56 @@
               </div>
             </div>
           </div>
+          <!-- Coworker Mode -->
+          <div>
+            <p class="text-xs font-medium text-gray-500 mb-2">Coworker Mode (Proactive Group Scanning)</p>
+            <div class="grid grid-cols-2 gap-3 mb-2">
+              <label class="flex items-center gap-2 text-sm text-gray-600 col-span-2">
+                <input id="edit-coworker-enabled" type="checkbox" class="rounded">
+                Enable Coworker Mode (bot proactively joins group discussions)
+              </label>
+            </div>
+            <div class="grid grid-cols-3 gap-3 mb-2">
+              <div>
+                <label class="block text-[10px] text-gray-400 mb-1">Scan Interval (hours)</label>
+                <input id="edit-coworker-interval" type="number" class="w-full border rounded-lg px-3 py-2 text-sm">
+              </div>
+              <div>
+                <label class="block text-[10px] text-gray-400 mb-1">Messages to Fetch</label>
+                <input id="edit-coworker-msg-count" type="number" class="w-full border rounded-lg px-3 py-2 text-sm">
+              </div>
+              <div>
+                <label class="block text-[10px] text-gray-400 mb-1">Quiet Hours (start-end)</label>
+                <div class="flex gap-1 items-center">
+                  <input id="edit-coworker-quiet-start" type="number" min="0" max="23" class="w-12 border rounded-lg px-2 py-2 text-sm text-center">
+                  <span class="text-gray-400">-</span>
+                  <input id="edit-coworker-quiet-end" type="number" min="0" max="23" class="w-12 border rounded-lg px-2 py-2 text-sm text-center">
+                </div>
+              </div>
+            </div>
+            <div>
+              <label class="block text-[10px] text-gray-400 mb-1">Target Groups (chat_ids, comma-separated, empty=all)</label>
+              <input id="edit-coworker-groups" type="text" class="w-full border rounded-lg px-3 py-2 text-sm" placeholder="oc_xxx, oc_yyy (empty = scan all groups)">
+            </div>
+          </div>
           <!-- Admin Names -->
           <div>
             <label class="block text-xs font-medium text-gray-500 mb-1">Admin Names (comma-separated)</label>
             <input id="edit-admin-names" type="text" class="w-full border rounded-lg px-3 py-2 text-sm">
+          </div>
+          <!-- Access Control -->
+          <div id="edit-access-control">
+            <p class="text-xs font-medium text-gray-500 mb-2">Access Control</p>
+            <div class="mb-2">
+              <label class="block text-[10px] text-gray-400 mb-1">Owner (external_userid)</label>
+              <input id="edit-owner" type="text" class="w-full border rounded-lg px-3 py-2 text-sm" placeholder="wm_xxx (paying customer)">
+            </div>
+            <div class="mb-2">
+              <label class="block text-[10px] text-gray-400 mb-1">Deny Message</label>
+              <input id="edit-access-deny-msg" type="text" class="w-full border rounded-lg px-3 py-2 text-sm"
+                placeholder="抱歉，您没有权限使用此助手。如需开通，请联系管理员。">
+            </div>
+            <p class="text-[10px] text-gray-400">Manage whitelist users in the <a href="#" onclick="switchTab('users'); closeEditModal(); return false;" class="text-blue-500 hover:underline">Users tab</a>.</p>
           </div>
           <!-- Submit -->
           <div class="flex items-center gap-3 pt-3 border-t">
@@ -785,6 +869,7 @@
             <span id="edit-status" class="text-sm ml-auto"></span>
           </div>
         </form>
+      </div>
       </div>
     </div>
 
@@ -1311,22 +1396,96 @@ async function loadOverview() {
   }
 }
 
-// ── Users ──
+// ── Users (unified: trial + whitelist) ──
+let usersMode = 'trial'; // 'trial' or 'whitelist'
+let whitelistUsers = []; // [{external_userid, nickname}] for whitelist mode
+let whitelistOwner = ''; // owner external_userid
+
 async function loadUsers() {
   const tid = document.getElementById('user-tenant-select').value;
   if (!tid) return;
 
-  const tbody = document.getElementById('users-tbody');
-  tbody.innerHTML = '<tr><td colspan="7" class="text-center text-gray-400 py-8">Loading...</td></tr>';
+  const tenant = tenantsData.find(t => t.tenant_id === tid);
+  usersMode = tenant?.trial_enabled ? 'trial' : 'whitelist';
 
-  try {
-    const res = await api(`/trial/${tid}/users`);
-    usersData = res.users || [];
-    usersTrialDurationHours = res.trial_duration_hours || 48;
-    document.getElementById('user-count').textContent = `${res.total} users`;
-    renderUsers();
-  } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="7" class="text-center text-red-400 py-8">${escapeHtml(e.message)}</td></tr>`;
+  // Update mode badge
+  document.getElementById('users-mode-badge').innerHTML = usersMode === 'trial'
+    ? '<span class="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded">Trial Mode</span>'
+    : '<span class="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded">Whitelist Mode</span>';
+
+  // Show/hide mode-specific UI
+  document.getElementById('users-filter-row').classList.toggle('hidden', usersMode !== 'trial');
+  document.getElementById('users-add-row').classList.toggle('hidden', usersMode !== 'whitelist');
+  hideUsersManualAdd();
+  hideUsersChatDropdown();
+
+  // Update table header
+  const thead = document.getElementById('users-thead');
+  if (usersMode === 'whitelist') {
+    thead.innerHTML = `
+      <th class="py-2 px-2">Name</th>
+      <th class="py-2 px-2">User ID</th>
+      <th class="py-2 px-2">Role</th>
+      <th class="py-2 px-2 text-right" colspan="5">Actions</th>`;
+  } else {
+    thead.innerHTML = `
+      <th class="py-2 px-2">Name</th>
+      <th class="py-2 px-2">User ID</th>
+      <th class="py-2 px-2">Status</th>
+      <th class="py-2 px-2">First Seen</th>
+      <th class="py-2 px-2">Last Active</th>
+      <th class="py-2 px-2">Messages</th>
+      <th class="py-2 px-2">Notes</th>
+      <th class="py-2 px-2 text-right">Actions</th>`;
+  }
+
+  const tbody = document.getElementById('users-tbody');
+  tbody.innerHTML = '<tr><td colspan="8" class="text-center text-gray-400 py-8">Loading...</td></tr>';
+
+  if (usersMode === 'trial') {
+    try {
+      const res = await api(`/trial/${tid}/users`);
+      usersData = res.users || [];
+      usersTrialDurationHours = res.trial_duration_hours || 48;
+      document.getElementById('user-count').textContent = `${res.total} users`;
+      renderUsers();
+    } catch (e) {
+      tbody.innerHTML = `<tr><td colspan="8" class="text-center text-red-400 py-8">${escapeHtml(e.message)}</td></tr>`;
+    }
+  } else {
+    try {
+      // Fetch whitelist + all chat users in parallel
+      const [wlRes, chatRes] = await Promise.all([
+        api(`/tenants/${tid}/allowed-users`),
+        api(`/tenants/${tid}/chat-users`).catch(() => ({ users: [] })),
+      ]);
+      const allowedList = (wlRes.allowed_users || []).map(u =>
+        typeof u === 'object' ? u : { external_userid: u, nickname: '' }
+      );
+      whitelistOwner = wlRes.owner || '';
+      const allowedIds = new Set(allowedList.map(u => u.external_userid));
+
+      // Merge: whitelist users (status=allowed) + chat-only users (status=visitor)
+      whitelistUsers = allowedList.map(u => ({ ...u, _status: 'allowed' }));
+      for (const cu of (chatRes.users || [])) {
+        if (!allowedIds.has(cu.external_userid)) {
+          whitelistUsers.push({
+            external_userid: cu.external_userid,
+            nickname: cu.nickname || '',
+            _status: 'visitor',
+          });
+        }
+      }
+
+      const allowedCount = allowedList.length;
+      const visitorCount = whitelistUsers.length - allowedCount;
+      let countText = allowedCount ? `${allowedCount} allowed` : 'Open access';
+      if (visitorCount) countText += ` · ${visitorCount} visitor${visitorCount > 1 ? 's' : ''}`;
+      document.getElementById('user-count').textContent = countText;
+      renderUsers();
+    } catch (e) {
+      tbody.innerHTML = `<tr><td colspan="8" class="text-center text-red-400 py-8">${escapeHtml(e.message)}</td></tr>`;
+    }
   }
 }
 
@@ -1339,6 +1498,13 @@ function filterUsers(status) {
 
 function renderUsers() {
   const tbody = document.getElementById('users-tbody');
+
+  if (usersMode === 'whitelist') {
+    renderWhitelistUsers(tbody);
+    return;
+  }
+
+  // Trial mode rendering (existing logic)
   let filtered = currentFilter === 'all' ? usersData : usersData.filter(u => u.status === currentFilter);
 
   if (!filtered.length) {
@@ -1381,7 +1547,6 @@ function renderUsers() {
     const msgCount = u.message_count || '0';
     const notes = escapeHtml(u.notes || '');
 
-    // Action buttons based on status
     let actions = '';
     if (status === 'trial' || status === 'expired') {
       actions += `<button onclick="approveUser('${uid}')" class="text-xs bg-green-50 text-green-600 px-2 py-1 rounded hover:bg-green-100">Approve</button> `;
@@ -1411,6 +1576,157 @@ function renderUsers() {
   }).join('');
 }
 
+function renderWhitelistUsers(tbody) {
+  // Apply filter
+  let filtered = whitelistUsers;
+  if (currentFilter === 'allowed') filtered = whitelistUsers.filter(u => u._status === 'allowed');
+  else if (currentFilter === 'visitor') filtered = whitelistUsers.filter(u => u._status === 'visitor');
+
+  if (!filtered.length) {
+    const msg = currentFilter === 'all'
+      ? 'No users yet — whitelist is empty (open access) and no one has chatted'
+      : `No ${currentFilter} users`;
+    tbody.innerHTML = `<tr><td colspan="8" class="text-center text-gray-400 py-8">${msg}</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = filtered.map((u, i) => {
+    const realIndex = whitelistUsers.indexOf(u);
+    const euid = u.external_userid || '';
+    const shortId = euid.length > 20 ? euid.slice(0, 10) + '...' + euid.slice(-6) : euid;
+    const nickname = escapeHtml(u.nickname || 'Unknown');
+    const isOwner = euid === whitelistOwner;
+    const isAllowed = u._status === 'allowed';
+
+    let roleBadge;
+    if (isOwner) {
+      roleBadge = '<span class="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full font-medium">owner</span>';
+    } else if (isAllowed) {
+      roleBadge = '<span class="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-medium">allowed</span>';
+    } else {
+      roleBadge = '<span class="text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded-full font-medium">visitor</span>';
+    }
+
+    let actions = '';
+    if (isAllowed) {
+      actions = `<button onclick="removeWhitelistUser(${realIndex})" class="text-xs bg-red-50 text-red-600 px-2 py-1 rounded hover:bg-red-100">Remove</button>`;
+    } else {
+      actions = `<button onclick="promoteVisitor(${realIndex})" class="text-xs bg-green-50 text-green-600 px-2 py-1 rounded hover:bg-green-100">Add to Whitelist</button>`;
+    }
+
+    return `<tr class="border-b hover:bg-gray-50">
+      <td class="py-2 px-2 font-medium text-gray-800">${nickname}</td>
+      <td class="py-2 px-2 font-mono text-xs text-gray-400" title="${euid}">${shortId}</td>
+      <td class="py-2 px-2">${roleBadge}</td>
+      <td class="py-2 px-2 text-right" colspan="5">${actions}</td>
+    </tr>`;
+  }).join('');
+}
+
+// ── Whitelist add/remove ──
+function showUsersManualAdd() {
+  document.getElementById('users-manual-add').classList.remove('hidden');
+  document.getElementById('users-chat-dropdown').classList.add('hidden');
+  document.getElementById('users-manual-euid').value = '';
+  document.getElementById('users-manual-nickname').value = '';
+  document.getElementById('users-manual-euid').focus();
+}
+
+function hideUsersManualAdd() {
+  document.getElementById('users-manual-add').classList.add('hidden');
+}
+
+async function showUsersChatDropdown() {
+  const tid = document.getElementById('user-tenant-select').value;
+  document.getElementById('users-chat-dropdown').classList.remove('hidden');
+  document.getElementById('users-manual-add').classList.add('hidden');
+  const select = document.getElementById('users-chat-select');
+  select.innerHTML = '<option value="">Loading...</option>';
+
+  try {
+    const data = await api(`/tenants/${tid}/chat-users`);
+    const allowedIds = new Set(whitelistUsers.filter(u => u._status === 'allowed').map(u => u.external_userid));
+    const users = (data.users || []).filter(u => !allowedIds.has(u.external_userid));
+    if (!users.length) {
+      select.innerHTML = '<option value="">No available users (all added or no chat history)</option>';
+      return;
+    }
+    select.innerHTML = '<option value="">-- Select user --</option>' +
+      users.map(u => `<option value="${u.external_userid}" data-nickname="${u.nickname || ''}">${u.nickname || u.external_userid} (${(u.external_userid || '').substring(0, 12)}...)</option>`).join('');
+  } catch (e) {
+    select.innerHTML = `<option value="">Error: ${e.message}</option>`;
+  }
+}
+
+function hideUsersChatDropdown() {
+  document.getElementById('users-chat-dropdown').classList.add('hidden');
+}
+
+function addWhitelistManual() {
+  const euid = document.getElementById('users-manual-euid').value.trim();
+  const nickname = document.getElementById('users-manual-nickname').value.trim() || euid.substring(0, 12) + '...';
+  if (!euid) { alert('Please enter an external_userid'); return; }
+  if (whitelistUsers.some(u => u.external_userid === euid && u._status === 'allowed')) { alert('User already in whitelist'); return; }
+  // If user exists as visitor, promote them
+  const existing = whitelistUsers.find(u => u.external_userid === euid);
+  if (existing) { existing._status = 'allowed'; }
+  else { whitelistUsers.push({ external_userid: euid, nickname: nickname, _status: 'allowed' }); }
+  hideUsersManualAdd();
+  renderUsers();
+  saveWhitelist();
+}
+
+function addWhitelistFromChat() {
+  const select = document.getElementById('users-chat-select');
+  const option = select.options[select.selectedIndex];
+  if (!option || !option.value) return;
+  const euid = option.value;
+  const nickname = option.getAttribute('data-nickname') || option.text.replace(/\s*\(.*\)$/, '');
+  const existing = whitelistUsers.find(u => u.external_userid === euid);
+  if (existing) { existing._status = 'allowed'; existing.nickname = nickname || existing.nickname; }
+  else { whitelistUsers.push({ external_userid: euid, nickname: nickname, _status: 'allowed' }); }
+  hideUsersChatDropdown();
+  renderUsers();
+  saveWhitelist();
+}
+
+function promoteVisitor(index) {
+  whitelistUsers[index]._status = 'allowed';
+  renderUsers();
+  saveWhitelist();
+}
+
+function removeWhitelistUser(index) {
+  const user = whitelistUsers[index];
+  if (!confirm(`Remove ${user.nickname || user.external_userid} from whitelist?`)) return;
+  // Demote to visitor instead of removing entirely (they chatted, keep them visible)
+  user._status = 'visitor';
+  renderUsers();
+  saveWhitelist();
+}
+
+async function saveWhitelist() {
+  const tid = document.getElementById('user-tenant-select').value;
+  // Only save allowed users to config (visitors are display-only from chat history)
+  const allowedOnly = whitelistUsers
+    .filter(u => u._status === 'allowed')
+    .map(u => ({ external_userid: u.external_userid, nickname: u.nickname }));
+  try {
+    await api(`/tenants/${tid}/config`, {
+      method: 'PUT',
+      body: JSON.stringify({ allowed_users: allowedOnly }),
+    });
+    const allowedCount = allowedOnly.length;
+    const visitorCount = whitelistUsers.length - allowedCount;
+    let countText = allowedCount ? `${allowedCount} allowed` : 'Open access';
+    if (visitorCount) countText += ` · ${visitorCount} visitor${visitorCount > 1 ? 's' : ''}`;
+    document.getElementById('user-count').textContent = countText;
+  } catch (e) {
+    alert(`Save failed: ${e.message}`);
+  }
+}
+
+// ── Trial user actions ──
 async function approveUser(userId) {
   const tid = document.getElementById('user-tenant-select').value;
   const tenant = tenantsData.find(t => t.tenant_id === tid);
@@ -1420,7 +1736,7 @@ async function approveUser(userId) {
     `Approve user ${userId.slice(0, 16)}...\n\nDuration (days, 0 = permanent):`,
     String(defaultDays)
   );
-  if (input === null) return;  // cancelled
+  if (input === null) return;
 
   const days = parseInt(input) || 0;
   try {
@@ -1964,6 +2280,7 @@ async function submitProvision(e) {
 
 // ── Logs ──
 let logsAutoTimer = null;
+let logsLoading = false;  // prevent concurrent fetches
 
 async function initLogsTab() {
   // Populate instance select from cached instancesData or fetch
@@ -1987,6 +2304,9 @@ async function initLogsTab() {
 }
 
 async function loadLogs() {
+  if (logsLoading) return;  // skip if previous fetch still in-flight
+  logsLoading = true;
+
   const tid = document.getElementById('logs-instance-select').value;
   const lines = document.getElementById('logs-lines').value;
   const since = document.getElementById('logs-since').value;
@@ -1995,10 +2315,9 @@ async function loadLogs() {
   const output = document.getElementById('logs-output');
   const stats = document.getElementById('logs-stats');
 
-  if (!tid) { output.textContent = 'Select an instance'; return; }
+  if (!tid) { output.textContent = 'Select an instance'; logsLoading = false; return; }
 
-  output.textContent = 'Loading...';
-  stats.textContent = '';
+  stats.textContent = 'Loading...';
 
   try {
     let logData;
@@ -2041,6 +2360,8 @@ async function loadLogs() {
     output.scrollTop = output.scrollHeight;
   } catch (e) {
     output.textContent = `Error: ${e.message}`;
+  } finally {
+    logsLoading = false;
   }
 
   // Manage auto-refresh timer
@@ -2704,18 +3025,32 @@ async function openEditModal(tid) {
     document.getElementById('edit-mem-rounds').value = config.memory_chat_rounds ?? 5;
     document.getElementById('edit-mem-ttl').value = config.memory_chat_ttl ?? 3600;
     document.getElementById('edit-admin-names').value = (config.admin_names || []).join(', ');
+    // Coworker mode
+    document.getElementById('edit-coworker-enabled').checked = !!config.coworker_mode_enabled;
+    document.getElementById('edit-coworker-interval').value = config.coworker_scan_interval_hours ?? 6;
+    document.getElementById('edit-coworker-msg-count').value = config.coworker_msg_count ?? 30;
+    document.getElementById('edit-coworker-quiet-start').value = config.coworker_quiet_hours_start ?? 22;
+    document.getElementById('edit-coworker-quiet-end').value = config.coworker_quiet_hours_end ?? 8;
+    document.getElementById('edit-coworker-groups').value = (config.coworker_scan_groups || []).join(', ');
+    // Access Control
+    document.getElementById('edit-owner').value = config.owner || '';
+    document.getElementById('edit-access-deny-msg').value = config.access_deny_msg || '抱歉，您没有权限使用此助手。如需开通，请联系管理员。';
   } catch (e) {
     document.getElementById('edit-status').textContent = 'Load failed: ' + e.message;
     document.getElementById('edit-status').className = 'text-sm ml-auto text-red-600';
   }
 }
 
+// ── (Allowed Users management moved to Users tab) ──
+
 function closeEditModal() {
   document.getElementById('edit-tenant-modal').classList.add('hidden');
   editingTenantId = '';
   // Reset disabled state for all fields
   for (const id of ['edit-prompt','edit-custom-persona','edit-mem-diary','edit-mem-context',
-                     'edit-mem-journal','edit-mem-rounds','edit-mem-ttl','edit-admin-names']) {
+                     'edit-mem-journal','edit-mem-rounds','edit-mem-ttl','edit-admin-names',
+                     'edit-coworker-enabled','edit-coworker-interval','edit-coworker-msg-count',
+                     'edit-coworker-quiet-start','edit-coworker-quiet-end','edit-coworker-groups']) {
     const el = document.getElementById(id);
     if (el) { el.disabled = false; el.placeholder = ''; }
   }
@@ -2753,7 +3088,18 @@ async function submitEditTenant(e) {
     const an = document.getElementById('edit-admin-names').value.trim();
     if (an) body.admin_names = an.split(',').map(s => s.trim()).filter(Boolean);
     else body.admin_names = [];
+    // Coworker mode
+    body.coworker_mode_enabled = document.getElementById('edit-coworker-enabled').checked;
+    body.coworker_scan_interval_hours = parseInt(document.getElementById('edit-coworker-interval').value) || 6;
+    body.coworker_msg_count = parseInt(document.getElementById('edit-coworker-msg-count').value) || 30;
+    body.coworker_quiet_hours_start = parseInt(document.getElementById('edit-coworker-quiet-start').value) || 22;
+    body.coworker_quiet_hours_end = parseInt(document.getElementById('edit-coworker-quiet-end').value) || 8;
+    const cg = document.getElementById('edit-coworker-groups').value.trim();
+    body.coworker_scan_groups = cg ? cg.split(',').map(s => s.trim()).filter(Boolean) : [];
   }
+  // Access Control (allowed_users managed in Users tab)
+  body.owner = document.getElementById('edit-owner').value.trim();
+  body.access_deny_msg = document.getElementById('edit-access-deny-msg').value.trim() || '抱歉，您没有权限使用此助手。如需开通，请联系管理员。';
 
   try {
     const res = await api(`/tenants/${editingTenantId}/config`, {

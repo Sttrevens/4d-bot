@@ -3,23 +3,44 @@
 安全模型：
 - 超管专属工具（硬拦截）：bind_customer, list_customers, update_customer_notes,
   list_provision_requests, approve_provision_request, reject_provision_request,
-  add_co_tenant, remove_co_tenant, list_co_tenants
+  add_co_tenant, confirm_add_co_tenant, remove_co_tenant, list_co_tenants
 - 任何人可用：request_provision（创建待审批请求）, lookup_customer, customer_instance_status
 - 敏感工具（provision_ops.py 里的 provision_tenant 等）也需在 agent 层拦截
 
 拦截机制：工具 handler 通过 get_current_sender() 读取 contextvar，
 判断 is_super_admin，非超管调用超管工具直接返回权限错误。
 这是硬拦截，不依赖 LLM 遵守 system prompt。
+
+安全增强（两步确认）：
+add_co_tenant 不再直接执行，而是返回预览信息 + 确认 token。
+必须用户确认后调用 confirm_add_co_tenant(token) 才真正创建租户。
+防止 LLM 误判意图直接创建新 bot。
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import secrets
+import time
 
 from app.tools.tool_result import ToolResult
 
 logger = logging.getLogger(__name__)
+
+# ── 两步确认：add_co_tenant 的 pending 请求 ──
+# {token: {"config": dict, "created_at": float, "sender_id": str}}
+_pending_co_tenant: dict[str, dict] = {}
+_PENDING_TTL = 300  # 5 分钟过期
+
+
+def _cleanup_expired_pending():
+    """清理过期的 pending 确认。"""
+    now = time.time()
+    expired = [k for k, v in _pending_co_tenant.items()
+               if now - v["created_at"] > _PENDING_TTL]
+    for k in expired:
+        del _pending_co_tenant[k]
 
 
 def _require_super_admin() -> ToolResult | None:
@@ -312,17 +333,217 @@ def _customer_instance_status(args: dict) -> ToolResult:
     return ToolResult.success(json.dumps(result, indent=2, ensure_ascii=False))
 
 
+# ── 白名单管理（超管专属）──────────────────────────────────────────
+
+
+def _manage_allowed_users(args: dict) -> ToolResult:
+    """管理 bot 白名单（超管专属）。
+
+    支持 add / remove / list 三种操作。
+    add 时通过昵称从 user_registry 中匹配 external_userid。
+    """
+    denied = _require_super_admin()
+    if denied:
+        return denied
+
+    from app.tenant.registry import tenant_registry
+    from app.tenant.context import get_current_tenant, set_current_tenant
+    from app.services import user_registry
+
+    action = args.get("action", "list").strip().lower()
+    tenant_id = args.get("tenant_id", "").strip()
+
+    # 如果没指定 tenant_id，默认当前租户
+    if not tenant_id:
+        tenant_id = get_current_tenant().tenant_id
+
+    target = tenant_registry.get(tenant_id)
+    if not target:
+        return ToolResult.error(f"租户 {tenant_id} 不存在")
+
+    if action == "list":
+        users = target.allowed_users or []
+        if not users:
+            return ToolResult.success(f"租户 {tenant_id} 的白名单为空（所有人可用）。")
+        lines = [f"租户 {tenant_id} 白名单（{len(users)} 人）："]
+        for u in users:
+            nick = u.get("nickname", "未知")
+            euid = u.get("external_userid", "")
+            owner_mark = " [owner]" if euid == target.owner else ""
+            lines.append(f"  - {nick} ({euid[:12]}...){owner_mark}")
+        return ToolResult.success("\n".join(lines))
+
+    if action == "add":
+        nicknames = args.get("nicknames", [])
+        if isinstance(nicknames, str):
+            nicknames = [n.strip() for n in nicknames.split(",") if n.strip()]
+        # 也支持直接传 external_userid（不需要昵称匹配）
+        external_userids = args.get("external_userids", [])
+        if isinstance(external_userids, str):
+            external_userids = [e.strip() for e in external_userids.split(",") if e.strip()]
+
+        if not nicknames and not external_userids:
+            return ToolResult.invalid_param(
+                "add 操作需要 nicknames（昵称列表）或 external_userids（用户ID列表）其中一个"
+            )
+
+        # 切换到目标租户的上下文来查找用户
+        current = get_current_tenant()
+        set_current_tenant(target)
+        results = []
+        added = 0
+        current_allowed = list(target.allowed_users or [])
+        current_ids = {u.get("external_userid", "") for u in current_allowed if isinstance(u, dict)}
+
+        # 通过 external_userid 直接添加
+        for euid in external_userids:
+            if euid in current_ids:
+                results.append(f"{euid[:12]}... 已在白名单中")
+                continue
+            # 尝试从 user_registry 获取昵称
+            nick = user_registry.get_name(euid)
+            if not nick:
+                # 尝试从微信客服 API 获取昵称
+                try:
+                    import asyncio
+                    from app.services.wecom_kf import wecom_kf_client
+                    nick = asyncio.get_event_loop().run_until_complete(
+                        wecom_kf_client.get_customer_name(euid)
+                    )
+                except Exception:
+                    pass
+            nick = nick or euid[:12] + "..."
+            current_allowed.append({"external_userid": euid, "nickname": nick})
+            current_ids.add(euid)
+            added += 1
+            results.append(f"已添加「{nick}」({euid[:12]}...)")
+
+        # 通过昵称匹配添加
+        for nick in nicknames:
+            uid = user_registry.find_by_name(nick)
+            if not uid:
+                # 尝试在所有已知用户中模糊匹配
+                all_known = user_registry.all_users()
+                candidates = [(k, v) for k, v in all_known.items() if nick in v or v in nick]
+                if len(candidates) == 1:
+                    uid = candidates[0][0]
+                elif len(candidates) > 1:
+                    options = ", ".join(f"{v}({k[:8]}...)" for k, v in candidates[:5])
+                    results.append(f"「{nick}」匹配到多个用户: {options}，请更精确")
+                    continue
+                else:
+                    results.append(f"「{nick}」未找到（该用户可能还没跟 bot 聊过天，可以用 external_userids 直接传 ID 添加）")
+                    continue
+
+            if uid in current_ids:
+                actual_name = user_registry.get_name(uid) or nick
+                results.append(f"「{actual_name}」已在白名单中")
+                continue
+
+            actual_name = user_registry.get_name(uid) or nick
+            current_allowed.append({"external_userid": uid, "nickname": actual_name})
+            current_ids.add(uid)
+            added += 1
+            results.append(f"已添加「{actual_name}」")
+
+        set_current_tenant(current)
+
+        if added > 0:
+            target.allowed_users = current_allowed
+            _persist_allowed_users(tenant_id, current_allowed, target.owner)
+
+        return ToolResult.success("\n".join(results))
+
+    if action == "remove":
+        nicknames = args.get("nicknames", [])
+        if isinstance(nicknames, str):
+            nicknames = [n.strip() for n in nicknames.split(",") if n.strip()]
+        if not nicknames:
+            return ToolResult.invalid_param("remove 操作需要 nicknames 参数")
+
+        current = get_current_tenant()
+        set_current_tenant(target)
+        current_allowed = list(target.allowed_users or [])
+        results = []
+        removed = 0
+
+        for nick in nicknames:
+            found = False
+            for i, u in enumerate(current_allowed):
+                if isinstance(u, dict) and (
+                    u.get("nickname", "") == nick
+                    or nick in u.get("nickname", "")
+                    or u.get("nickname", "") in nick
+                ):
+                    results.append(f"已移除「{u.get('nickname', '')}」")
+                    current_allowed.pop(i)
+                    removed += 1
+                    found = True
+                    break
+            if not found:
+                results.append(f"「{nick}」不在白名单中")
+
+        set_current_tenant(current)
+
+        if removed > 0:
+            target.allowed_users = current_allowed
+            _persist_allowed_users(tenant_id, current_allowed, target.owner)
+
+        return ToolResult.success("\n".join(results))
+
+    return ToolResult.invalid_param(f"不支持的操作: {action}，可用: add / remove / list")
+
+
+def _persist_allowed_users(tenant_id: str, allowed_users: list, owner: str) -> None:
+    """将 allowed_users 持久化到 Redis tenant_cfg + tenants.json"""
+    try:
+        from app.services.tenant_sync import publish_tenant_update
+        publish_tenant_update("update", {
+            "tenant_id": tenant_id,
+            "allowed_users": allowed_users,
+            "owner": owner,
+        })
+    except Exception:
+        logger.warning("persist allowed_users to Redis failed for %s", tenant_id)
+
+    # 也更新本地 tenants.json
+    try:
+        from pathlib import Path
+        for candidate in ("/app/tenants.json", "tenants.json"):
+            path = Path(candidate)
+            if not path.exists():
+                continue
+            import json as json_mod
+            data = json_mod.loads(path.read_text())
+            tenants = data.get("tenants", [])
+            for t in tenants:
+                if t.get("tenant_id") == tenant_id:
+                    t["allowed_users"] = allowed_users
+                    t["owner"] = owner
+                    break
+            data["tenants"] = tenants
+            path.write_text(json_mod.dumps(data, indent=2, ensure_ascii=False) + "\n")
+            break
+    except Exception:
+        logger.warning("persist allowed_users to tenants.json failed for %s", tenant_id)
+
+
 # ── Co-tenant Management ──────────────────────────────────────────
 
 
 def _add_co_tenant(args: dict) -> ToolResult:
-    """添加 co-tenant（超管专用，自动继承 primary 凭证）"""
+    """添加 co-tenant 第一步：预览并生成确认 token（不执行）。
+
+    必须让用户看到预览信息并明确确认后，才调用 confirm_add_co_tenant 执行。
+    """
     check = _require_super_admin()
     if check:
         return check
 
-    from app.tenant.context import get_current_tenant
+    from app.tenant.context import get_current_sender, get_current_tenant
     from app.tenant.registry import tenant_registry
+
+    _cleanup_expired_pending()
 
     tenant = get_current_tenant()
     if tenant.platform != "wecom_kf":
@@ -380,6 +601,68 @@ def _add_co_tenant(args: dict) -> ToolResult:
     if args.get("tools_enabled"):
         new_config["tools_enabled"] = args["tools_enabled"]
 
+    # 生成确认 token（不执行）
+    token = f"cotenant_{secrets.token_hex(8)}"
+    sender = get_current_sender()
+    _pending_co_tenant[token] = {
+        "config": new_config,
+        "created_at": time.time(),
+        "sender_id": sender.sender_id,
+    }
+
+    prompt_preview = new_config.get("llm_system_prompt", "(继承 primary)")
+    if len(prompt_preview) > 80:
+        prompt_preview = prompt_preview[:80] + "..."
+
+    return ToolResult.success(
+        f"⚠️ 即将创建新 co-tenant，请向用户确认以下信息：\n"
+        f"• 租户 ID: {tenant_id}\n"
+        f"• 名称: {name}\n"
+        f"• open_kfid: {open_kfid}\n"
+        f"• 继承凭证自: {tenant.tenant_id}\n"
+        f"• 系统提示词: {prompt_preview}\n"
+        f"\n确认 token: {token}\n"
+        f"\n⚠️ 重要：你必须先把以上信息展示给用户，等用户明确说「确认」「好的」「创建」等确认词后，"
+        f"才能调用 confirm_add_co_tenant(token='{token}') 执行创建。\n"
+        f"如果用户没有明确要求创建新 bot，不要调用确认工具。"
+    )
+
+
+def _confirm_add_co_tenant(args: dict) -> ToolResult:
+    """确认并执行 add_co_tenant（第二步）。需要 add_co_tenant 返回的确认 token。"""
+    check = _require_super_admin()
+    if check:
+        return check
+
+    from app.tenant.context import get_current_sender
+    from app.tenant.registry import tenant_registry
+
+    _cleanup_expired_pending()
+
+    token = args.get("token", "").strip()
+    if not token:
+        return ToolResult.invalid_param("需要 add_co_tenant 返回的确认 token")
+
+    pending = _pending_co_tenant.pop(token, None)
+    if not pending:
+        return ToolResult.error(
+            "确认 token 无效或已过期（5 分钟有效期）。请重新调用 add_co_tenant 获取新 token。"
+        )
+
+    # 验证是同一个 sender
+    sender = get_current_sender()
+    if pending["sender_id"] != sender.sender_id:
+        _pending_co_tenant[token] = pending  # put back
+        return ToolResult.error("确认 token 与当前用户不匹配")
+
+    new_config = pending["config"]
+    tenant_id = new_config["tenant_id"]
+
+    # 再次检查是否已存在（可能在等待确认期间被创建）
+    existing = tenant_registry.get(tenant_id)
+    if existing:
+        return ToolResult.error(f"租户 {tenant_id} 已存在（可能在等待确认期间被创建）")
+
     # 发布到 Redis（tenant_cfg 持久化 + 队列通知 hot-load）
     from app.services.tenant_sync import publish_tenant_update
     ok = publish_tenant_update("add", new_config)
@@ -390,12 +673,14 @@ def _add_co_tenant(args: dict) -> ToolResult:
     try:
         tenant_registry.register_from_dict(new_config)
     except Exception as e:
-        logger.warning("add_co_tenant: local register failed: %s", e)
+        logger.warning("confirm_add_co_tenant: local register failed: %s", e)
+
+    logger.info("confirm_add_co_tenant: created %s by %s", tenant_id, sender.sender_id)
 
     return ToolResult.success(
         f"Co-tenant {tenant_id} 已添加成功！\n"
-        f"• 凭证从 {tenant.tenant_id} 自动继承\n"
-        f"• open_kfid: {open_kfid}\n"
+        f"• 名称: {new_config['name']}\n"
+        f"• open_kfid: {new_config['wecom_kf_open_kfid']}\n"
         f"• 本容器已立即加载，其他容器 5 秒内同步\n"
         f"• 客户现在可以发消息了"
     )
@@ -645,13 +930,52 @@ TOOL_DEFINITIONS = [
             "required": ["external_userid"],
         },
     },
+    # ── 白名单管理 ──
+    {
+        "name": "manage_allowed_users",
+        "description": (
+            "管理 bot 白名单（仅管理员可用）。"
+            "控制哪些微信用户可以使用指定 bot。白名单为空则不限制。"
+            "通过昵称或 external_userid 添加/移除用户。"
+            "例：「把张三加到 xxx bot 的白名单」→ action=add, nicknames=['张三'], tenant_id='xxx'"
+            "例：直接用 ID 添加 → action=add, external_userids=['wmXXXX'], tenant_id='xxx'"
+            "例：「看看 xxx bot 谁能用」→ action=list, tenant_id='xxx'"
+            "例：「把李四从 xxx bot 移除」→ action=remove, nicknames=['李四'], tenant_id='xxx'"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["add", "remove", "list"],
+                    "description": "操作类型：add=添加用户, remove=移除用户, list=查看白名单",
+                },
+                "tenant_id": {
+                    "type": "string",
+                    "description": "目标 bot 的 tenant_id（不填则为当前 bot）",
+                },
+                "nicknames": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "要添加/移除的用户昵称列表（通过昵称匹配 external_userid）",
+                },
+                "external_userids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "要添加的用户 external_userid 列表（直接用 ID，无需昵称匹配。适用于用户没跟 bot 聊过天的情况）",
+                },
+            },
+            "required": ["action"],
+        },
+    },
     # ── Co-tenant 管理（与 dashboard 对齐）──
     {
         "name": "add_co_tenant",
         "description": (
             "添加 co-tenant 到当前实例（仅管理员可用，wecom_kf 专属）。"
+            "⚠️ 此工具只生成预览，不会立即创建！必须用户明确确认后再调用 confirm_add_co_tenant 执行。"
             "自动从当前租户继承全部凭证和配置，只需提供 tenant_id、name、open_kfid。"
-            "当用户说要添加同 corp 下的新客服账号/bot 时使用此工具。"
+            "仅当用户明确要求添加新客服账号/bot 时使用。不要自作主张创建。"
         ),
         "input_schema": {
             "type": "object",
@@ -683,6 +1007,24 @@ TOOL_DEFINITIONS = [
                 },
             },
             "required": ["tenant_id", "name", "wecom_kf_open_kfid"],
+        },
+    },
+    {
+        "name": "confirm_add_co_tenant",
+        "description": (
+            "确认并执行 add_co_tenant 创建的 co-tenant（仅管理员可用）。"
+            "需要 add_co_tenant 返回的确认 token。"
+            "⚠️ 必须在用户明确确认后才调用此工具。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "token": {
+                    "type": "string",
+                    "description": "add_co_tenant 返回的确认 token",
+                },
+            },
+            "required": ["token"],
         },
     },
     {
@@ -725,7 +1067,9 @@ TOOL_MAP = {
     "list_customers": _list_customers,
     "customer_instance_status": _customer_instance_status,
     "update_customer_notes": _update_customer_notes,
+    "manage_allowed_users": _manage_allowed_users,
     "add_co_tenant": _add_co_tenant,
+    "confirm_add_co_tenant": _confirm_add_co_tenant,
     "remove_co_tenant": _remove_co_tenant,
     "list_co_tenants": _list_co_tenants,
 }

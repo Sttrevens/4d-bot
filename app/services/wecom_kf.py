@@ -79,6 +79,15 @@ class WeComKfClient:
         self._token_cache[cache_key] = (token, expire)
         return token
 
+    def _clear_token_cache(self) -> None:
+        """清除 token 缓存，强制下次请求重新获取。
+        用于 95007/42001 等 token 失效场景。
+        """
+        self._token_cache.clear()
+        logger.info("wecom kf token cache cleared")
+
+    _TOKEN_INVALID_CODES = {95007, 42001, 40014}
+
     # ── 客服账号管理 API ──
 
     async def list_accounts(self) -> list[dict]:
@@ -222,6 +231,20 @@ class WeComKfClient:
                 json=body,
             )
             data = resp.json()
+
+        errcode = data.get("errcode", 0)
+        if errcode in self._TOKEN_INVALID_CODES:
+            # token 失效，清除缓存并用新 token 重试一次
+            logger.warning("wecom kf sync_msg token invalid (errcode=%d), refreshing token and retrying", errcode)
+            self._clear_token_cache()
+            token = await self._get_token()
+            async with httpx.AsyncClient(timeout=30, trust_env=False) as client:
+                resp = await client.post(
+                    _SYNC_MSG_URL,
+                    params={"access_token": token},
+                    json=body,
+                )
+                data = resp.json()
 
         if data.get("errcode", -1) != 0:
             logger.error("wecom kf sync_msg failed: %s", data)

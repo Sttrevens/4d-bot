@@ -713,10 +713,23 @@ def _build_from_tenant_registry():
     """
     from app.tenant.registry import tenant_registry
 
-    # Collect all tenant metadata: local + Redis
+    # Collect all tenant metadata: local + Redis (exclude removed tenants)
     all_meta: dict[str, dict] = {}
 
+    # 获取已标记删除的租户
+    _removed: set[str] = set()
+    try:
+        from app.services import redis_client as _redis
+        if _redis.available():
+            members = _redis.execute("SMEMBERS", "admin:removed_tenants")
+            if isinstance(members, list):
+                _removed = set(members)
+    except Exception:
+        pass
+
     for tid, t in tenant_registry.all_tenants().items():
+        if tid in _removed:
+            continue
         all_meta[tid] = {
             "name": t.name,
             "platform": t.platform,
@@ -741,7 +754,7 @@ def _build_from_tenant_registry():
                 keys = result[1] if isinstance(result[1], list) else []
                 for key in keys:
                     tid = key.replace("admin:tenant:", "", 1) if isinstance(key, str) else ""
-                    if tid and tid not in all_meta:
+                    if tid and tid not in all_meta and tid not in _removed:
                         remote_keys.append((tid, key))
                 if cursor == "0":
                     break
@@ -1105,40 +1118,56 @@ def remove_co_tenant(instance_id: str, co_tenant_id: str) -> dict:
 
     inst_dir = INSTANCES_DIR / instance_id
     tenants_file = inst_dir / "tenants.json"
-    if not tenants_file.exists():
-        return {"ok": False, "error": "tenants.json not found"}
-
-    data = json.loads(tenants_file.read_text())
-    tenants = data.get("tenants", [])
-    original_len = len(tenants)
 
     removed_kfid = ""
-    new_tenants = []
-    for t in data.get("tenants", []):
-        if t.get("tenant_id") == co_tenant_id:
-            removed_kfid = t.get("wecom_kf_open_kfid", "")
-        else:
-            new_tenants.append(t)
 
-    if len(new_tenants) == original_len:
-        return {"ok": False, "error": f"Tenant {co_tenant_id} not found in instance"}
+    if tenants_file.exists():
+        # 文件存在：从 tenants.json 移除
+        data = json.loads(tenants_file.read_text())
+        tenants = data.get("tenants", [])
+        original_len = len(tenants)
 
-    data["tenants"] = new_tenants
-    tenants_file.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+        new_tenants = []
+        for t in data.get("tenants", []):
+            if t.get("tenant_id") == co_tenant_id:
+                removed_kfid = t.get("wecom_kf_open_kfid", "")
+            else:
+                new_tenants.append(t)
+
+        if len(new_tenants) == original_len:
+            return {"ok": False, "error": f"Tenant {co_tenant_id} not found in instance"}
+
+        data["tenants"] = new_tenants
+        tenants_file.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+    else:
+        # tenants.json 不存在（Redis-only 租户）：仍可通过 Redis 清理
+        logger.warning("tenants.json not found for %s, removing via Redis only", instance_id)
 
     # Unregister kf dispatch
     if removed_kfid:
         _unregister_kf_dispatch(removed_kfid)
 
+    # 清理 Redis 持久化的租户配置
+    try:
+        from app.services.redis_client import execute, available
+        if available():
+            execute("DEL", f"tenant_cfg:{co_tenant_id}")
+            execute("DEL", f"admin:tenant:{co_tenant_id}")
+            logger.info("Cleaned Redis keys for %s", co_tenant_id)
+    except Exception:
+        logger.debug("Redis cleanup for %s failed", co_tenant_id, exc_info=True)
+
     # Sync removal to root tenants.json
     _sync_to_root_tenants({"tenant_id": co_tenant_id}, remove=True)
 
-    # Restart container
-    _run([
-        "docker", "compose",
-        "-f", str(inst_dir / "docker-compose.yml"),
-        "restart",
-    ])
+    # Restart container (only if compose file exists)
+    compose_file = inst_dir / "docker-compose.yml"
+    if compose_file.exists():
+        _run([
+            "docker", "compose",
+            "-f", str(compose_file),
+            "restart",
+        ])
 
     logger.info("Removed co-tenant %s from %s", co_tenant_id, instance_id)
     return {"ok": True, "tenant_id": co_tenant_id, "instance_id": instance_id}
