@@ -106,6 +106,16 @@ async def handle_code_task(user_text: str) -> str:
             ]
             return "\n".join(text_parts) or "任务完成。"
 
+        # max_tokens 截断：返回已有的文本部分
+        if response.stop_reason == "max_tokens":
+            logger.warning("response truncated by max_tokens at round %d", round_num + 1)
+            text_parts = [
+                block.text
+                for block in assistant_content
+                if block.type == "text"
+            ]
+            return "\n".join(text_parts) or "回复被截断，请简化任务后重试。"
+
         # 处理 tool_use blocks
         tool_results = []
         for block in assistant_content:
@@ -133,6 +143,16 @@ async def handle_code_task(user_text: str) -> str:
                     "content": str(result),
                 }
             )
+
+        # 没有 tool_use blocks（不应该发生，但防御性处理）
+        if not tool_results:
+            logger.warning("no tool_use blocks found with stop_reason=%s", response.stop_reason)
+            text_parts = [
+                block.text
+                for block in assistant_content
+                if block.type == "text"
+            ]
+            return "\n".join(text_parts) or "任务完成。"
 
         # 把 assistant 回复和 tool 结果加入上下文
         messages.append({"role": "assistant", "content": assistant_content})
