@@ -572,8 +572,10 @@ TOOL_DEFINITIONS = [
 ]
 
 
-def _export_file(filename: str, content: str) -> ToolResult:
-    """生成文件 → 上传 → 发送给用户"""
+async def _export_file(filename: str, content: str) -> ToolResult:
+    """生成文件 → 上传 → 发送给用户（async，避免 WeasyPrint 阻塞事件循环）"""
+    import asyncio as _aio
+
     tenant = get_current_tenant()
     platform = tenant.platform
     sender_id = _current_user_open_id.get("")
@@ -605,17 +607,17 @@ def _export_file(filename: str, content: str) -> ToolResult:
                 len(removed_urls), filename,
             )
 
-    # 生成文件字节
+    # 生成文件字节（PDF 用 to_thread 避免阻塞事件循环）
     if ext == "xlsx":
         try:
-            file_bytes = _generate_xlsx(content)
+            file_bytes = await _aio.to_thread(_generate_xlsx, content)
         except Exception:
             logger.exception("XLSX generation failed, falling back to .csv")
             filename = filename.rsplit(".", 1)[0] + ".csv"
             file_bytes = _generate_csv(content)
     elif ext == "pdf":
         try:
-            file_bytes = _generate_pdf(content)
+            file_bytes = await _aio.to_thread(_generate_pdf, content)
         except Exception:
             logger.exception("PDF generation failed, falling back to .html")
             filename = filename.rsplit(".", 1)[0] + ".html"
@@ -634,7 +636,7 @@ def _export_file(filename: str, content: str) -> ToolResult:
         )
 
     try:
-        # 获取 token
+        # 获取 token（同步，但很快）
         if platform == "wecom":
             token = _get_token_sync(tenant.wecom_corpid, tenant.wecom_corpsecret)
         else:  # wecom_kf
@@ -644,16 +646,16 @@ def _export_file(filename: str, content: str) -> ToolResult:
                 cache_key=f"{tenant.wecom_corpid}:kf",
             )
 
-        # 上传临时素材
-        media_id = _upload_media_sync(token, file_bytes, filename)
+        # 上传临时素材（同步 HTTP，用 to_thread 避免阻塞）
+        media_id = await _aio.to_thread(_upload_media_sync, token, file_bytes, filename)
         if not media_id:
             return ToolResult.error("文件上传失败，media_id 为空", code="api_error")
 
-        # 发送文件消息
+        # 发送文件消息（同步 HTTP，用 to_thread 避免阻塞）
         if platform == "wecom":
-            result = _send_file_wecom(token, sender_id, media_id, tenant.wecom_agent_id)
+            result = await _aio.to_thread(_send_file_wecom, token, sender_id, media_id, tenant.wecom_agent_id)
         else:  # wecom_kf
-            result = _send_file_wecom_kf(token, sender_id, media_id, tenant.wecom_kf_open_kfid)
+            result = await _aio.to_thread(_send_file_wecom_kf, token, sender_id, media_id, tenant.wecom_kf_open_kfid)
 
         if result.get("errcode", -1) != 0:
             return ToolResult.error(f"文件发送失败: {result}", code="api_error")
