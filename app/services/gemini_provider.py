@@ -30,6 +30,7 @@ from app.services.base_agent import (
     _has_unmatched_reads,
     check_unfulfilled_deliverables,
     detect_action_claims,
+    detect_ungrounded_claims,
     llm_exit_review,
     _CUSTOM_TOOL_META_NAMES,
     _GROUP_DESCRIPTIONS,
@@ -1651,6 +1652,26 @@ async def handle_message(
                             "请立即调用对应的工具完成操作。不要用文字描述你做了什么——直接调用工具去做。"
                             "如果之前的操作失败了，请重新尝试。"
                         ))],
+                    ))
+                    continue
+
+            # ── 退出前检查 4a2: Grounding gate（事实验证关卡）──
+            # 检测"回复了事实但没搜过" → 强制打回重搜
+            # 只在第一轮检测（防止后续轮重复 nudge），且只 nudge 一次
+            if _exit_gate_nudge_count < _MAX_EXIT_GATE_NUDGES and reply_text and round_num <= 1:
+                _grounding_nudge = detect_ungrounded_claims(
+                    reply_text, user_text, tool_names_called,
+                )
+                if _grounding_nudge:
+                    _exit_gate_nudge_count += 1
+                    logger.info(
+                        "grounding gate nudge at round %d (reply: %s)",
+                        round_num + 1, reply_text[:80],
+                    )
+                    contents.append(content_obj)
+                    contents.append(types.Content(
+                        role="user",
+                        parts=[types.Part(text=_grounding_nudge)],
                     ))
                     continue
 
