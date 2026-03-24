@@ -28,13 +28,29 @@ if _log_dir:
     _os.makedirs(_log_dir, exist_ok=True)
 
 # ── 内存日志环形缓冲区（dashboard 实时读取，彻底绕开文件系统）──
-LOG_BUFFER: _deque = _deque(maxlen=3000)
+# 20000 条 × ~200 字节/条 ≈ 4MB，可存约 8-12 小时的日志（排除了 health check 噪音）
+LOG_BUFFER: _deque = _deque(maxlen=20000)
+
+# health check 等高频噪音 pattern，只排除在 buffer 外（文件/console 照常写）
+_BUFFER_SKIP_PATTERNS = (
+    '"GET /health HTTP',
+    '"GET /admin/api/logs',   # dashboard 自己的轮询
+)
 
 class _BufferLogHandler(logging.Handler):
-    """把每条日志格式化后存入内存环形缓冲区，dashboard API 直接读这里。"""
+    """把每条日志格式化后存入内存环形缓冲区，dashboard API 直接读这里。
+
+    过滤掉高频噪音（health check 每 30s 一条 = 一天 2880 条），
+    让有限的 buffer 装更多有意义的日志。文件/console 不受影响。
+    """
     def emit(self, record):
         try:
-            LOG_BUFFER.append(self.format(record))
+            msg = self.format(record)
+            # 跳过 health check 等噪音（只是不存 buffer，file/console 照常写）
+            for pat in _BUFFER_SKIP_PATTERNS:
+                if pat in msg:
+                    return
+            LOG_BUFFER.append(msg)
         except Exception:
             pass
 
@@ -493,22 +509,31 @@ async def _log_push_loop() -> None:
     while True:
         try:
             if redis.available() and LOG_BUFFER:
-                # 取 LOG_BUFFER 最近 N 行
                 buf_list = list(LOG_BUFFER)
-                tail = buf_list[-_PUSH_LINES:] if len(buf_list) > _PUSH_LINES else buf_list
-                payload = _json.dumps({
-                    "lines": tail,
-                    "ts": _t.time(),
-                    "count": len(tail),
-                }, ensure_ascii=False)
-
-                # 为本容器的每个租户都写一份（dashboard 按 tenant_id 查）
                 all_tids = list(tenant_registry.all_tenants().keys())
+
                 if all_tids:
                     cmds = []
-                    for tid in all_tids:
-                        key = f"logs:{tid}"
-                        cmds.append(["SET", key, payload, "EX", "120"])
+                    if len(all_tids) == 1:
+                        # 单租户容器：所有日志都属于这个租户，不需要过滤
+                        tail = buf_list[-_PUSH_LINES:] if len(buf_list) > _PUSH_LINES else buf_list
+                        payload = _json.dumps({
+                            "lines": tail, "ts": _t.time(), "count": len(tail),
+                        }, ensure_ascii=False)
+                        cmds.append(["SET", f"logs:{all_tids[0]}", payload, "EX", "120"])
+                    else:
+                        # 多租户共容器：按 tenant= 标签过滤，避免日志串租户
+                        # 没有 tenant= 标签的系统日志（startup/scheduler 等）放入所有租户
+                        for tid in all_tids:
+                            filtered = [
+                                line for line in buf_list[-_PUSH_LINES * 2:]
+                                if f"tenant={tid}" in line
+                                or "tenant=" not in line  # 系统日志保留
+                            ][-_PUSH_LINES:]
+                            payload = _json.dumps({
+                                "lines": filtered, "ts": _t.time(), "count": len(filtered),
+                            }, ensure_ascii=False)
+                            cmds.append(["SET", f"logs:{tid}", payload, "EX", "120"])
                     redis.pipeline(cmds)
         except Exception:
             pass  # fail-open，不影响业务
