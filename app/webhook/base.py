@@ -121,6 +121,30 @@ def truncate_text(text: str, max_len: int, label: str = "文本") -> str:
     return text[:max_len] + f"\n\n... ({label}过长已截断，原文共 {len(text)} 字符)"
 
 
+# ── 长回复检测 ──
+# 报告型回复特征：长 + 有结构（标题/列表/分节）
+_REPORT_MIN_LEN = 3000  # 字符数阈值（纯文本长度，strip_markdown 之后）
+_STRUCTURE_MARKERS = re.compile(
+    r"^#{1,3}\s|"        # markdown 标题
+    r"^\d+[\.\)]\s|"     # 有序列表
+    r"^[-*+]\s.{10,}",   # 无序列表（内容 ≥10 字，排除短条目）
+    re.MULTILINE,
+)
+
+
+def is_report_like(text: str) -> bool:
+    """检测回复是否为报告型长文本（适合导出为文档而非分段发送）。
+
+    判定条件（必须同时满足）:
+    1. 纯文本长度超过阈值
+    2. 有足够的结构化标记（标题/列表 ≥3 处）
+    """
+    if len(text) < _REPORT_MIN_LEN:
+        return False
+    markers = _STRUCTURE_MARKERS.findall(text)
+    return len(markers) >= 3
+
+
 # ── Markdown 清洗（IM 平台不渲染 markdown）──
 
 # 预编译正则：匹配 markdown 语法，转为 IM 友好的纯文本

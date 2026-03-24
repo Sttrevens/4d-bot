@@ -33,10 +33,26 @@ from app.services.error_log import record_error
 from app.webhook.base import (
     MessageDedup, UserStateManager, tuk,
     split_reply, strip_markdown, handle_mode_command, handle_status_command,
+    is_report_like,
     DEFAULT_PROCESS_TIMEOUT, DEFAULT_MAX_USER_TEXT_LEN,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_create_task(coro, *, name: str | None = None) -> asyncio.Task:
+    """create_task + 错误回调，防止后台任务异常被静默吞掉。"""
+    task = asyncio.create_task(coro, name=name)
+    def _on_done(t: asyncio.Task) -> None:
+        if t.cancelled():
+            return
+        exc = t.exception()
+        if exc:
+            logger.error("background task %s failed: %s", t.get_name(), exc, exc_info=exc)
+            record_error("bg_task", f"{t.get_name()} failed: {exc}", exc=exc)
+    task.add_done_callback(_on_done)
+    return task
+
 
 router = APIRouter()
 
@@ -48,6 +64,10 @@ _state = UserStateManager()
 _callback_dedup: dict[str, float] = {}  # key → timestamp
 _CALLBACK_DEDUP_TTL = 15  # 同一回调 15 秒内不重复处理
 _CALLBACK_DEDUP_MAX = 1024  # 最大缓存条目，防止内存泄漏
+
+# sync_msg 临时网络错误重试
+_SYNC_MSG_MAX_RETRIES = 2
+_SYNC_MSG_RETRY_DELAY = 1.0  # 秒
 
 # enter_session 去重：同一用户短时间内只处理一次
 _enter_session_last: dict[str, float] = {}
@@ -270,9 +290,9 @@ async def wecom_kf_callback(tenant_id: str, request: Request) -> Response:
             logger.info("wecom_kf: kf_dispatch local → %s", tenant.tenant_id)
         else:
             # 跨容器转发
-            asyncio.create_task(_forward_kf_callback(
+            _safe_create_task(_forward_kf_callback(
                 open_kfid, raw_body, dict(request.query_params),
-            ))
+            ), name="kf_forward")
             return Response("success", media_type="text/plain")
 
     if event == "kf_msg_or_event" and callback_token:
@@ -293,8 +313,9 @@ async def wecom_kf_callback(tenant_id: str, request: Request) -> Response:
                 del _callback_dedup[k]
 
         # 异步拉取消息并处理
-        asyncio.create_task(
-            _pull_and_process(tenant, callback_token, open_kfid)
+        _safe_create_task(
+            _pull_and_process(tenant, callback_token, open_kfid),
+            name=f"kf_pull_{tenant.tenant_id}",
         )
 
     return Response("success", media_type="text/plain")
@@ -319,17 +340,27 @@ async def _pull_and_process(tenant, callback_token: str, open_kfid: str) -> None
     retried_without_cursor = False
 
     while True:
-        try:
-            data = await wecom_kf_client.sync_msg(
-                callback_token=callback_token,
-                cursor=cursor,
-                open_kfid=open_kfid,
-                limit=200,
-            )
-        except Exception as exc:
-            logger.exception("wecom_kf sync_msg failed")
-            record_error("wecom_kf", f"sync_msg error: {exc}", exc=exc)
-            break
+        # sync_msg 临时网络错误重试（retry 后继续循环，而非 break 丢消息）
+        data = None
+        for _attempt in range(_SYNC_MSG_MAX_RETRIES + 1):
+            try:
+                data = await wecom_kf_client.sync_msg(
+                    callback_token=callback_token,
+                    cursor=cursor,
+                    open_kfid=open_kfid,
+                    limit=200,
+                )
+                break  # 成功，退出重试循环
+            except Exception as exc:
+                if _attempt < _SYNC_MSG_MAX_RETRIES:
+                    logger.warning("wecom_kf sync_msg attempt %d failed, retrying in %.1fs: %s",
+                                   _attempt + 1, _SYNC_MSG_RETRY_DELAY, exc)
+                    await asyncio.sleep(_SYNC_MSG_RETRY_DELAY)
+                else:
+                    logger.exception("wecom_kf sync_msg failed after %d attempts", _attempt + 1)
+                    record_error("wecom_kf", f"sync_msg error after retries: {exc}", exc=exc)
+        if data is None:
+            break  # 所有重试都失败
 
         if data.get("errcode", -1) != 0:
             errcode = data.get("errcode", -1)
@@ -825,8 +856,8 @@ async def _enqueue_message(
     if old:
         old.cancel()
 
-    _batch_timers[uk] = asyncio.create_task(
-        _flush_after_wait(external_userid)
+    _batch_timers[uk] = _safe_create_task(
+        _flush_after_wait(external_userid), name=f"kf_batch_{external_userid[:12]}"
     )
 
 
@@ -997,6 +1028,56 @@ async def _safe_send(external_userid: str, text: str, _hit_limit: list[bool] | N
             _hit_limit[0] = True
 
 
+async def _try_export_long_reply(
+    reply: str,
+    external_userid: str,
+    hit_send_limit: list[bool] | None = None,
+) -> str | None:
+    """检测报告型长回复 → 自动导出为文档文件 + 返回摘要文本。
+
+    返回 None 表示不需要导出（短回复/非报告型），交给 split_reply 处理。
+    返回 str 表示导出成功，返回的文本是发给用户的摘要（代替原始长文）。
+    """
+    if not is_report_like(reply):
+        return None
+
+    try:
+        from app.tools.file_export import (
+            _get_token_sync, _upload_media_sync, _send_file_wecom_kf,
+        )
+        from app.tenant.context import get_current_tenant
+
+        tenant = get_current_tenant()
+
+        # 用 markdown 格式导出（保留原始格式）
+        file_bytes = reply.encode("utf-8")
+        filename = f"report_{int(time.time())}.md"
+
+        # 获取企微 token + 上传 + 发送
+        token = _get_token_sync(tenant.wecom_kf_corpid, tenant.wecom_kf_secret)
+        if not token:
+            logger.warning("wecom_kf: cannot export long reply, no token")
+            return None
+
+        media_id = _upload_media_sync(token, file_bytes, filename)
+        if not media_id:
+            return None
+
+        _send_file_wecom_kf(token, external_userid, media_id, tenant.wecom_kf_open_kfid)
+
+        # 生成摘要：取前 3 行非空内容 + "详见文档"
+        lines = [ln.strip() for ln in reply.split("\n") if ln.strip()][:3]
+        summary = "\n".join(lines)
+        summary += f"\n\n（完整内容已生成文档，请查收上方文件 📄）"
+        logger.info("wecom_kf: auto-exported long reply (%d chars) as %s for %s",
+                     len(reply), filename, external_userid[:12])
+        return summary
+
+    except Exception as exc:
+        logger.warning("wecom_kf: auto-export long reply failed, falling back to split: %s", exc)
+        return None  # 导出失败，回退到 split_reply
+
+
 async def _process_and_reply(
     external_userid: str,
     text: str,
@@ -1033,7 +1114,7 @@ async def _process_and_reply(
                     await ib.put({"text": "", "images": [img_url]})
                     logger.info("wecom_kf: queued image %d/%d into inbox for %s",
                                 i + 1, len(remaining_images), external_userid[:12])
-            asyncio.create_task(_inject_remaining())
+            _safe_create_task(_inject_remaining(), name="kf_inject_images")
 
         try:
             reply = await asyncio.wait_for(
@@ -1045,9 +1126,19 @@ async def _process_and_reply(
             if reply:
                 _archive_kf_msg(external_userid, "assistant", reply)
 
-            display_reply = strip_markdown(reply) if reply else reply
-            for chunk in split_reply(display_reply, _MAX_REPLY_LEN, max_bytes=_MAX_REPLY_BYTES):
-                await _safe_send(external_userid, chunk, hit_send_limit)
+            # 报告型长回复 → 自动导出为文档文件
+            exported_summary = await _try_export_long_reply(
+                reply or "", external_userid, hit_send_limit,
+            )
+            if exported_summary:
+                # 导出成功：发摘要文本（文件已发送）
+                display_summary = strip_markdown(exported_summary)
+                await _safe_send(external_userid, display_summary, hit_send_limit)
+            else:
+                # 普通回复 / 导出失败 / 短回复：分段发送
+                display_reply = strip_markdown(reply) if reply else reply
+                for chunk in split_reply(display_reply, _MAX_REPLY_LEN, max_bytes=_MAX_REPLY_BYTES):
+                    await _safe_send(external_userid, chunk, hit_send_limit)
 
         except asyncio.TimeoutError:
             logger.error("wecom_kf: processing timeout for user=%s", external_userid)
