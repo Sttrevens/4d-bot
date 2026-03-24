@@ -2109,12 +2109,13 @@ _EXIT_REVIEW_PROMPT = """\
 A) **任务已完成** — agent 已经做完了用户要求的事，正在汇报结果
 B) **正常对话** — 在问用户问题、确认需求、或礼貌寒暄，不需要工具
 C) **承诺未执行** — agent 说了"我去做/再试/马上"等承诺，但实际没有调用工具就想退出
+D) **未验证的事实声称** — agent 给出了包含具体事实（人名、公司信息、数据、日期等）的回复，但没有调用搜索/浏览工具来验证。注意：如果用户问的是编程/技术问题、数学计算、或请求创意写作，不算事实声称
 
 用户消息: {user_text}
 agent 本轮已调用的工具: {tools_used}
 agent 的回复: {reply_text}
 
-只回复一个字母: A、B 或 C"""
+只回复一个字母: A、B、C 或 D"""
 
 
 async def llm_exit_review(
@@ -2162,6 +2163,9 @@ async def llm_exit_review(
         if answer.startswith("C"):
             logger.info("exit review → nudge (reply: %s)", reply_text[:60])
             return "nudge"
+        if answer.startswith("D"):
+            logger.info("exit review → grounding nudge (reply: %s)", reply_text[:60])
+            return "grounding"
         logger.debug("exit review → pass (%s)", answer[:5])
         return "pass"
 

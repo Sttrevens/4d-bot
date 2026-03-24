@@ -1714,6 +1714,22 @@ async def handle_message(
                         ))],
                     ))
                     continue
+                if _gate == "grounding":
+                    _exit_gate_nudge_count += 1
+                    logger.info(
+                        "exit gate grounding nudge #%d at round %d (reply: %s)",
+                        _exit_gate_nudge_count, round_num + 1, reply_text[:80],
+                    )
+                    contents.append(content_obj)
+                    contents.append(types.Content(
+                        role="user",
+                        parts=[types.Part(text=(
+                            "⚠️ 你的回复包含具体的事实信息（人名、公司、数据等），"
+                            "但你没有调用任何搜索工具来验证。你的知识可能过时或错误。"
+                            "请先用 web_search 搜索确认，然后基于搜索结果回答。"
+                        ))],
+                    ))
+                    continue
 
             # ── P2: 事实断言防幻觉守卫（架构层） ──
             # 当模型声称"你之前说的是X"但从未调用 fetch_chat_history 验证时，
