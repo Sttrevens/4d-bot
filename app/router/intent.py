@@ -68,6 +68,24 @@ _MEDIA_KEYWORDS_RE = re.compile(
 )
 
 
+# ── 上下文重置检测（fresh start）──
+# 当用户表达"重新来/重做/改错了重改"等意图时，
+# 清除对话历史和近期记忆，让 bot 从干净状态开始。
+_FRESH_START_RE = re.compile(
+    r"(重新[改做来写]|从头[开来再]|重来|重做|推倒重来"
+    r"|忘[掉了].{0,6}重[改做新]|不[对要行].{0,6}重[改做新来写]"
+    r"|别改了.{0,6}重新|放弃.{0,6}重[改做新来]"
+    r"|之前.{0,6}[错乱].{0,6}重|清空.{0,6}重[改做新]"
+    r"|start\s*over|redo|from\s*scratch)",
+    re.IGNORECASE,
+)
+
+
+def _is_fresh_start(text: str) -> bool:
+    """检测用户是否要求重新开始（清除上下文污染）。"""
+    return bool(_FRESH_START_RE.search(text))
+
+
 def _is_multimodal(text: str, image_urls: list[str] | None) -> tuple[bool, str]:
     """判断消息是否涉及多模态内容。
 
@@ -106,8 +124,6 @@ async def route_message(
     channel_platform = current_ch.platform if current_ch else tenant.platform
 
     # ── Agent Profile 路由（借鉴 OpenClaw binding 系统）──
-    # 如果 tenant 配置了 agent_profiles + agent_bindings，
-    # 按 channel/chat/user 匹配最佳 profile，覆盖 tenant 级配置
     _apply_agent_profile(tenant, channel_platform, chat_id, chat_type, sender_id)
     _resolve_identity(tenant, channel_platform, sender_id, sender_name)
 
@@ -166,6 +182,18 @@ async def route_message(
         sender_ctx = get_current_sender()
         history_key = sender_ctx.identity_id if sender_ctx.identity_id else sender_id
 
+    # ── 上下文重置检测 ──
+    # 用户说"重新改/重来/推倒重来"时，清除污染的对话历史和近期记忆，
+    # 让 bot 从干净状态开始处理新的请求。
+    if _is_fresh_start(user_text):
+        chat_history.clear(history_key)
+        try:
+            from app.services.memory import mark_recent_as_failed
+            mark_recent_as_failed(sender_id)
+        except Exception:
+            logger.debug("mark_recent_as_failed failed", exc_info=True)
+        logger.info("fresh start detected for %s: context cleared", sender_id[:12])
+
     # 获取对话历史
     history = chat_history.get(history_key)
 
@@ -188,16 +216,12 @@ async def route_message(
     t_start = time.monotonic()
 
     # ── 路由策略 ──
-    # coding_model 配置时：非多模态消息全部走 K2.5，多模态走 Gemini
-    # 多模态 = 有图片/视频附件，或文本中包含视频平台 URL
-    # 未配置时：全部走主 provider（向后兼容）
     provider_used = tenant.llm_provider
     model_used = tenant.llm_model
 
     multimodal, mm_reason = _is_multimodal(user_text, image_urls)
 
     if tenant.coding_model and not multimodal:
-        # 纯文本（无图片、无媒体 URL、无媒体意图）：走 K2.5
         logger.info("text-only → routing to %s", tenant.coding_model)
         model_used = tenant.coding_model
         provider_used = "openai"
@@ -244,25 +268,18 @@ async def route_message(
         chat_type=chat_type,
     )
 
-    # 记录助手回复（附加工具调用摘要，下一轮对话能看到上下文）
     chat_history.add_assistant(history_key, _enrich_reply(reply))
-
-    # 记录用量
     _record(tenant.tenant_id, sender_id, model_used, provider_used, t_start)
 
     return reply
 
 
 def _enrich_reply(reply: str) -> str:
-    """将工具调用摘要附加到 reply，存入对话历史。
-
-    摘要由 provider 通过 last_tool_summary contextvar 传递。
-    用户看到的是原始 reply，历史中存的是 enriched 版本。
-    """
+    """将工具调用摘要附加到 reply，存入对话历史。"""
     try:
         summary = last_tool_summary.get("")
         if summary:
-            last_tool_summary.set("")  # 消费后清空
+            last_tool_summary.set("")
             return f"{summary}\n{reply}"
     except Exception:
         pass
@@ -270,20 +287,12 @@ def _enrich_reply(reply: str) -> str:
 
 
 def _resolve_identity(tenant, channel_platform: str, sender_id: str, sender_name: str) -> None:
-    """解析发送者的跨平台统一身份，设置到 SenderContext。
-
-    如果 sender 有已关联的 identity，将 identity_id 和 linked_platforms 设入上下文，
-    让 LLM 和工具层知道这个人在其他平台的身份。
-    """
+    """解析发送者的跨平台统一身份，设置到 SenderContext。"""
     try:
         from app.services.identity import resolve_sender
         from app.tenant.context import set_current_sender
 
         identity_id, linked = resolve_sender(tenant.tenant_id, channel_platform, sender_id)
-
-        # 注意：不自动创建 identity。身份记录只通过用户主动操作创建
-        # （identity tools: search_known_user / initiate_verification 等）。
-        # 自动创建会在用户不知情的情况下建立跨平台关联记录。
 
         sender_ctx = SenderContext(
             sender_id=sender_id,
@@ -295,7 +304,6 @@ def _resolve_identity(tenant, channel_platform: str, sender_id: str, sender_name
         set_current_sender(sender_ctx)
     except Exception:
         logger.debug("identity resolution failed for %s", sender_id[:12], exc_info=True)
-        # fail-open: identity resolution 失败不阻塞消息处理
         from app.tenant.context import set_current_sender
         set_current_sender(SenderContext(
             sender_id=sender_id,
@@ -315,7 +323,6 @@ def _record(
     try:
         latency_ms = int((time.monotonic() - t_start) * 1000)
         in_tok, out_tok = last_usage_tokens.get((0, 0))
-        # 消费后清空，避免被下一次请求误读
         last_usage_tokens.set((0, 0))
 
         record_usage(UsageRecord(
@@ -329,7 +336,6 @@ def _record(
             latency_ms=latency_ms,
         ))
 
-        # Per-user token 配额记录（滑动窗口）
         total_tokens = in_tok + out_tok
         if total_tokens > 0:
             record_user_tokens(tenant_id, sender_id, total_tokens)
@@ -340,14 +346,7 @@ def _record(
 def _apply_agent_profile(
     tenant, channel_platform: str, chat_id: str, chat_type: str, sender_id: str,
 ) -> None:
-    """按 channel/chat/user 匹配 agent profile，覆盖 tenant 运行时配置。
-
-    借鉴 OpenClaw 的 binding-based routing：
-    同一个 bot 可以在不同 channel/chat 上展现不同人格。
-
-    如果没配置 agent_profiles/agent_bindings，此函数是 no-op。
-    匹配到 profile 后，动态修改 tenant 的运行时属性（不影响持久化）。
-    """
+    """按 channel/chat/user 匹配 agent profile，覆盖 tenant 运行时配置。"""
     if not tenant.agent_profiles or not tenant.agent_bindings:
         return
 
@@ -372,7 +371,6 @@ def _apply_agent_profile(
         if not profile:
             return
 
-        # 覆盖 tenant 运行时配置（不写回持久化）
         if profile.system_prompt:
             tenant.llm_system_prompt = profile.system_prompt
         if profile.tools_enabled:
