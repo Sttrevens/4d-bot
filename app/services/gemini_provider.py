@@ -30,6 +30,7 @@ from app.services.base_agent import (
     _has_unmatched_reads,
     check_unfulfilled_deliverables,
     detect_action_claims,
+    detect_ungrounded_claims,
     llm_exit_review,
     _CUSTOM_TOOL_META_NAMES,
     _GROUP_DESCRIPTIONS,
@@ -1654,6 +1655,26 @@ async def handle_message(
                     ))
                     continue
 
+            # ── 退出前检查 4a2: Grounding gate（事实验证关卡）──
+            # 检测"回复了事实但没搜过" → 强制打回重搜
+            # 只在第一轮检测（防止后续轮重复 nudge），且只 nudge 一次
+            if _exit_gate_nudge_count < _MAX_EXIT_GATE_NUDGES and reply_text and round_num <= 1:
+                _grounding_nudge = detect_ungrounded_claims(
+                    reply_text, user_text, tool_names_called,
+                )
+                if _grounding_nudge:
+                    _exit_gate_nudge_count += 1
+                    logger.info(
+                        "grounding gate nudge at round %d (reply: %s)",
+                        round_num + 1, reply_text[:80],
+                    )
+                    contents.append(content_obj)
+                    contents.append(types.Content(
+                        role="user",
+                        parts=[types.Part(text=_grounding_nudge)],
+                    ))
+                    continue
+
             # ── 退出前检查 4b: LLM exit gate（兜底，处理本地检测不了的复杂情况）──
             # fail-OPEN：超时时放行（本地 detect_action_claims 已做了第一道检查）
             # ⚠️ 关键守卫：模型已调 ≥3 工具时跳过 LLM exit review。
@@ -1690,6 +1711,22 @@ async def handle_message(
                         parts=[types.Part(text=(
                             "你说了要执行操作但实际上没有调用任何工具。"
                             "请立即调用对应的工具完成操作，不要只是说你会做——直接做。"
+                        ))],
+                    ))
+                    continue
+                if _gate == "grounding":
+                    _exit_gate_nudge_count += 1
+                    logger.info(
+                        "exit gate grounding nudge #%d at round %d (reply: %s)",
+                        _exit_gate_nudge_count, round_num + 1, reply_text[:80],
+                    )
+                    contents.append(content_obj)
+                    contents.append(types.Content(
+                        role="user",
+                        parts=[types.Part(text=(
+                            "⚠️ 你的回复包含具体的事实信息（人名、公司、数据等），"
+                            "但你没有调用任何搜索工具来验证。你的知识可能过时或错误。"
+                            "请先用 web_search 搜索确认，然后基于搜索结果回答。"
                         ))],
                     ))
                     continue

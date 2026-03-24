@@ -2018,6 +2018,85 @@ def detect_action_claims(reply_text: str, tool_names_called: list[str]) -> bool:
     return False
 
 
+# ── Grounding Gate: 检测未经验证的事实性声称 ──
+# 根治 LLM "不搜就编" 的问题。不是逐类别加 prompt（打地鼠），
+# 而是在代码层检测"回复了事实但没搜过" → 强制打回重搜。
+
+# 验证类工具 —— 调过任何一个就算"有搜索行为"
+_GROUNDING_TOOLS = frozenset({
+    "web_search", "fetch_url", "browser_open", "browser_read",
+    "search_social_media", "xhs_search", "xhs_playwright_search",
+    "recall_memory",
+})
+
+# 用户明确要求搜索/调研的意图关键词
+_RESEARCH_INTENT = _re.compile(
+    r"(搜[一搜索]|查[一查找询]|research|调研|调查|了解一下|看看|帮我[找查搜看]|"
+    r"谁是|有哪些|现在[是有]|最新的|目前|现状|什么情况|怎么样了|"
+    r"哪些人|成员|董事|高管|管理层|创始人|CEO|CTO|CFO)",
+    _re.IGNORECASE,
+)
+
+# 事实密度信号 —— 回复中含有这些模式说明在陈述具体事实
+_FACTUAL_CLAIM_SIGNALS = _re.compile(
+    # 具体职位+人名模式（如 "执行董事: 闫俊杰"、"CEO 张三"）
+    r"(?:执行董事|监事|总经理|董事长|CEO|CTO|CFO|COO|创始人|联合创始人|总裁|副总裁)"
+    r".{0,5}[\uff1a:].{0,5}[\u4e00-\u9fff]{2,4}"
+    # 或者 "根据公开信息/工商信息/官方资料"（LLM 编造出处的常见模式）
+    r"|根据(?:公开|工商|官方|最新|公开的).{0,8}(?:信息|资料|数据|披露|显示|记录)"
+    # 或者列举多个中文人名（3个以上 = 高度可能是编造的名单）
+    r"|[\u4e00-\u9fff]{2,4}[、,，][\u4e00-\u9fff]{2,4}[、,，][\u4e00-\u9fff]{2,4}",
+)
+
+
+def detect_ungrounded_claims(
+    reply_text: str,
+    user_text: str,
+    tool_names_called: list[str],
+) -> str | None:
+    """检测回复中是否有未经工具验证的事实性声称。
+
+    返回 nudge 消息（应注入 agent loop 催促搜索）或 None（安全）。
+    """
+    if not reply_text or not user_text:
+        return None
+
+    called = set(tool_names_called)
+
+    # 如果已经调过验证类工具，放行（不管回复内容如何）
+    if called & _GROUNDING_TOOLS:
+        return None
+
+    # ── 层 1: 用户明确要求搜索/调研，但 bot 没搜就答了 ──
+    if _RESEARCH_INTENT.search(user_text):
+        # 回复够长（>50字）= 在实质性回答，不是在确认需求
+        if len(reply_text) > 50:
+            logger.info(
+                "grounding gate: user asked to research but no search tool called. "
+                "user=%s reply=%s",
+                user_text[:60], reply_text[:60],
+            )
+            return (
+                "⚠️ 你没有使用任何搜索工具就给出了回答。用户明确要求搜索/调研，"
+                "请先用 web_search 搜索最新信息，然后基于搜索结果回答。"
+                "不要依赖你的记忆，你的知识可能过时或错误。"
+            )
+
+    # ── 层 2: 回复含高密度事实声称（人名列表、职位信息、编造出处）──
+    if _FACTUAL_CLAIM_SIGNALS.search(reply_text):
+        logger.info(
+            "grounding gate: factual claims detected without verification. "
+            "reply=%s",
+            reply_text[:80],
+        )
+        return (
+            "⚠️ 你的回复包含具体的人名、职位等事实信息，但你没有通过搜索工具验证。"
+            "这些信息可能是过时或错误的。请用 web_search 搜索验证后再回答。"
+        )
+
+    return None
+
+
 # ── LLM Exit Gate (backup, with fail-closed) ──
 # 本地检测器处理不了的复杂情况，用小模型兜底。
 # 关键改动：超时时 fail-CLOSED（nudge），不再 fail-open。
@@ -2030,12 +2109,13 @@ _EXIT_REVIEW_PROMPT = """\
 A) **任务已完成** — agent 已经做完了用户要求的事，正在汇报结果
 B) **正常对话** — 在问用户问题、确认需求、或礼貌寒暄，不需要工具
 C) **承诺未执行** — agent 说了"我去做/再试/马上"等承诺，但实际没有调用工具就想退出
+D) **未验证的事实声称** — agent 给出了包含具体事实（人名、公司信息、数据、日期等）的回复，但没有调用搜索/浏览工具来验证。注意：如果用户问的是编程/技术问题、数学计算、或请求创意写作，不算事实声称
 
 用户消息: {user_text}
 agent 本轮已调用的工具: {tools_used}
 agent 的回复: {reply_text}
 
-只回复一个字母: A、B 或 C"""
+只回复一个字母: A、B、C 或 D"""
 
 
 async def llm_exit_review(
@@ -2083,6 +2163,9 @@ async def llm_exit_review(
         if answer.startswith("C"):
             logger.info("exit review → nudge (reply: %s)", reply_text[:60])
             return "nudge"
+        if answer.startswith("D"):
+            logger.info("exit review → grounding nudge (reply: %s)", reply_text[:60])
+            return "grounding"
         logger.debug("exit review → pass (%s)", answer[:5])
         return "pass"
 
