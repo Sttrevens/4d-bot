@@ -2478,8 +2478,11 @@ _HALLUCINATION_TAGS = re.compile(
 )
 
 # LLM 模仿内部标签（从 chat history 中学到 <tools_used> 模式并输出给用户）
+# 匹配两种情况：
+#   1. 完整闭合：<tools_used>...</tools_used>
+#   2. 未闭合（被截断/LLM 没写闭合标签）：<tools_used>... 到文末
 _INTERNAL_TAGS = re.compile(
-    r"<tools_used>.*?</tools_used>\s*",
+    r"<tools_used>.*?(?:</tools_used>|$)\s*",
     re.DOTALL,
 )
 
