@@ -198,6 +198,13 @@ class TenantConfig:
                                               # True = build_memory_context 时也搜索其他用户的解决方案
                                               # 同一 tenant 下的用户共享「解决方案」类记忆
 
+    # ── AGENT.md 项目上下文 ──
+    # 类似 Claude Code 的 CLAUDE.md：从 GitHub 仓库加载项目级上下文，
+    # 让 bot 理解项目结构、编码规范和架构约定。
+    # 修改代码前 bot 会自然参照 AGENT.md 的描述，而不是盲目修改。
+    agentmd_enabled: bool = True        # 是否从 GitHub 仓库加载 AGENT.md
+    agentmd_path: str = "AGENT.md"      # AGENT.md 在仓库中的路径（支持子目录如 docs/AGENT.md）
+
     # ── 试用期 ──
     trial_enabled: bool = False         # 是否启用试用期（新用户首次对话开始计时）
     trial_duration_hours: int = 48      # 试用时长（小时），默认 2 天
