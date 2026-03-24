@@ -63,15 +63,3 @@ app/
     ├── gemini-proxy.js  # Gemini API 代理（绕墙）
     └── ddg-search-proxy.js # DuckDuckGo 搜索代理
 ```
-
-## 文件导出能力（File Export）
-
-`export_file` 工具支持格式: **CSV, TXT, Markdown, JSON, PDF, HTML, XLSX**
-
-### XLSX（Excel）导出
-- 依赖 `openpyxl`（requirements.txt）
-- 推荐传入 JSON 数组: `[{"列A": "值1", "列B": "值2"}, ...]`
-- 也支持 CSV 文本（自动解析）
-- 自动生成: 表头样式（蓝底白字）、斑马纹、冻结首行、自适应列宽
-- 生成失败时自动降级为 CSV
-- 适用场景: 报价单、设备清单、巡检报告、数据导出 — 客户零门槛打开
