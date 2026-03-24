@@ -384,6 +384,24 @@ class ChatHistory:
         if len(msgs) > max_msgs:
             self._store[sk] = msgs[-max_msgs:]
 
+    def clear(self, sender_id: str) -> None:
+        """清除某用户的对话历史（内存 + Redis）。
+
+        用于"重新开始"场景：用户要求重做时，
+        清除污染的上下文，让 bot 从干净状态开始。
+        """
+        sk = _store_key(sender_id)
+        self._store[sk] = []
+        self._loaded_from_redis.discard(sk)
+        try:
+            from app.services import redis_client as redis
+            if redis.available():
+                redis.execute("DEL", _redis_key(sender_id))
+        except Exception:
+            logger.debug("chat history redis clear failed for %s",
+                         sender_id[:12], exc_info=True)
+        logger.info("chat history cleared: %s (fresh start)", sender_id[:12])
+
     def _cleanup(self, sk: str) -> None:
         """清除过期消息"""
         _, expire = self._get_config()
