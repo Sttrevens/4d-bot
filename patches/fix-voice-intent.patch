@@ -1,0 +1,33 @@
+diff --git a/app/services/gemini_provider.py b/app/services/gemini_provider.py
+index 2ac51c0..827c60a 100644
+--- a/app/services/gemini_provider.py
++++ b/app/services/gemini_provider.py
+@@ -130,8 +130,14 @@ async def _classify_intent_llm(
+     user_text: str,
+ ) -> dict | None:
+     """Use LLM to classify user intent. Returns {"type": ..., "groups": [...]} or None on failure."""
+-    # 快速消息跳过 LLM 调用
++    # 语音消息跳过 LLM 意图分类 —— 分类器只看文本（"[语音消息]..."），
++    # 看不到实际音频内容，LLM 分类必然错误。直接返回通用类型让主 agent 理解语音。
+     text_stripped = user_text.strip()
++    if "[语音消息]" in text_stripped or "[音频]" in text_stripped:
++        logger.info("LLM intent classification: voice message detected, skipping classification")
++        return {"type": "normal", "groups": ["core", "research"]}
++
++    # 快速消息跳过 LLM 调用
+     if len(text_stripped) < 5:
+         return {"type": "quick", "groups": ["core"]}
+     text_lower = text_stripped.lower()
+@@ -142,9 +148,11 @@ async def _classify_intent_llm(
+     try:
+         # 截断长消息（分类只需要前 200 字）
+         truncated = text_stripped[:200]
++        # 在 prompt 尾部追加 JSON 强制指令，防止 CF Worker 代理不传递 response_mime_type
++        classification_input = _CLASSIFY_PROMPT + truncated + "\n\nReply ONLY with valid JSON, no other text."
+         resp = await client.aio.models.generate_content(
+             model=model_name,
+-            contents=_CLASSIFY_PROMPT + truncated,
++            contents=classification_input,
+             config=types.GenerateContentConfig(
+                 temperature=0.0,
+                 max_output_tokens=100,
