@@ -1845,6 +1845,31 @@ print(html_resp.status_code)  # → 400（不支持）
 3. 分支管理需要显式指令，模型不会自动检查已有分支
 4. `response_mime_type="application/json"` 经过代理后可能不生效，必须有 JSON 提取 fallback
 
+### _classify_intent_llm fallback 改变工具加载行为（语音消息罢工）
+
+**严重程度：P1 — 所有语音消息处理失败，用户反复收到"处理超时了"。**
+
+**事故经过（2026-03-24）：** 客户反馈智能体"罢工"，发语音消息全部超时无响应。文本消息正常。
+
+**根因链：**
+1. CF Worker 代理不传递 `response_mime_type="application/json"` → Gemini 对意图分类请求返回 `"Here is the"` 而非 JSON
+2. `_classify_intent_llm` JSON 解析失败 → 走 fallback
+3. **关键变化（05654fa, 2026-03-18）：** fallback 从 `return None` 改为 `return _classify_intent_keywords(user_text)`
+4. 对语音消息 `"[语音消息] 请听取并理解这段语音"` 的影响：
+   - **改之前：** `None` → `_llm_groups=None` → `_get_tenant_tools` 走 `elif user_text:` 分支 → 关键词不匹配 → **加载全部工具** → 语音正常处理
+   - **改之后：** `{"groups":["core"]}` → `_llm_groups={"core"}` → `_get_tenant_tools` 走 `elif suggested_groups:` 分支 → **只加载 core 工具组** → agent 缺少必要工具 → 处理失败/超时
+
+**修复（两层）：**
+1. 语音消息（检测 `[语音消息]`/`[音频]`）直接跳过 LLM 意图分类，返回 `{type: "normal", groups: ["core", "research"]}`
+2. 分类 prompt 尾部追加 `"Reply ONLY with valid JSON"` 防御 CF Worker 不传 `response_mime_type`
+
+**实现位置：** `app/services/gemini_provider.py:_classify_intent_llm()`
+
+**教训：**
+1. **改 fallback 行为时必须检查下游影响** — `None` 和 `{"groups":["core"]}` 虽然都是 fallback，但对工具加载的影响完全不同（全量 vs 只加 core）
+2. **意图分类器不能处理非文本输入** — 语音消息的文本只是指令，不代表用户真正的意图，应直接跳过分类
+3. **CF Worker 代理是意图分类的单点故障** — `response_mime_type` 不被传递会导致每次分类都 fallback
+
 ## Pending Tasks
 
 ### Phase 1.5 — 运维加固（优先级最高）
