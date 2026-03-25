@@ -2219,20 +2219,38 @@ def detect_ungrounded_claims(
 # 关键改动：超时时 fail-CLOSED（nudge），不再 fail-open。
 
 _EXIT_REVIEW_PROMPT = """\
-你是一个 AI agent 的退出审查器。agent 正在帮用户完成任务，现在 agent 给出了一段回复但**没有调用任何工具**。
+你是一个独立的 AI agent 退出审查器（Evaluator），负责评估 agent 的回复质量。
+agent 正在帮用户完成任务，现在 agent 给出了一段回复但**没有调用任何工具**（或工具调用很少）。
 
-请判断这段回复属于哪种情况：
+请从三个维度对 agent 的回复打分（1-10 分）：
 
-A) **任务已完成** — agent 已经做完了用户要求的事，正在汇报结果
-B) **正常对话** — 在问用户问题、确认需求、或礼貌寒暄，不需要工具
-C) **承诺未执行** — agent 说了"我去做/再试/马上"等承诺，但实际没有调用工具就想退出
-D) **未验证的事实声称** — agent 给出了包含具体事实（人名、公司信息、数据、日期等）的回复，但没有调用搜索/浏览工具来验证。注意：如果用户问的是编程/技术问题、数学计算、或请求创意写作，不算事实声称
+**意图匹配度（权重 40%）：**
+用户的消息和 agent 的回复是否对应？
+- 10: 精确回答了用户的问题
+- 7-9: 基本对应，但有些偏题
+- 4-6: 部分相关，回答了用户没问的东西
+- 1-3: 完全跑偏，回答和用户的问题无关
+
+**事实可靠性（权重 30%）：**
+回复中的事实是否有工具返回数据支撑？
+- 10: 纯对话/确认需求/基于工具结果，无需验证
+- 7-9: 有少量推断但合理
+- 4-6: 包含未验证的具体事实（人名、数据、URL）
+- 1-3: 大量编造内容
+
+**行为合理性（权重 30%）：**
+agent 的行为是否合理？
+- 10: 任务已完成，正常汇报/对话
+- 7-9: 正在确认需求或寒暄
+- 4-6: 声称要做什么但没调工具
+- 1-3: 自作主张做了用户没要求的事
 
 用户消息: {user_text}
 agent 本轮已调用的工具: {tools_used}
 agent 的回复: {reply_text}
 
-只回复一个字母: A、B、C 或 D"""
+请用以下 JSON 格式回复（不要输出任何其他内容）：
+{{"relevance": N, "factual": N, "behavioral": N}}"""
 
 
 async def llm_exit_review(
@@ -2242,10 +2260,16 @@ async def llm_exit_review(
     *,
     gemini_client=None,
 ) -> str:
-    """用小模型判断 agent 的纯文本退出是否合理。
+    """用独立 Evaluator 对 agent 退出进行多维评分。
 
-    返回: "pass"（放行退出）或 "nudge"（催促执行）。
-    超时/异常时默认 pass（fail-open），因为本地 detect_action_claims 已做了第一道检查。
+    返回: "pass"（放行退出）或 "nudge"（催促执行）或 "grounding"（催促搜索验证）。
+    超时/异常时默认 pass（fail-open）。
+
+    评分维度（借鉴 Anthropic Harness 架构 + harness/evaluate.md 量化评估）：
+    - 意图匹配度 40%：回复是否回答了用户实际问的问题
+    - 事实可靠性 30%：事实是否有工具数据支撑
+    - 行为合理性 30%：执行的行为是否被用户要求
+    加权分 < 6.0 → nudge
     """
     if gemini_client is None:
         return "pass"
@@ -2269,21 +2293,53 @@ async def llm_exit_review(
                 contents=prompt,
                 config=_t.GenerateContentConfig(
                     temperature=0.0,
-                    max_output_tokens=5,
+                    max_output_tokens=50,
                     thinking_config=_t.ThinkingConfig(include_thoughts=False),
+                    response_mime_type="application/json",
                 ),
             ),
             timeout=5.0,
         )
 
-        answer = (resp.text or "").strip().upper()
-        if answer.startswith("C"):
-            logger.info("exit review → nudge (reply: %s)", reply_text[:60])
+        raw = (resp.text or "").strip()
+        # 解析 JSON 分数
+        try:
+            scores = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            # JSON 解析失败，尝试 regex 提取
+            m = _re.search(r'\{[^}]+\}', raw)
+            if m:
+                scores = json.loads(m.group(0))
+            else:
+                logger.info("exit review: cannot parse scores from %r, pass", raw[:60])
+                return "pass"
+
+        relevance = scores.get("relevance", 8)
+        factual = scores.get("factual", 8)
+        behavioral = scores.get("behavioral", 8)
+        weighted = relevance * 0.4 + factual * 0.3 + behavioral * 0.3
+
+        logger.info(
+            "exit review: relevance=%d factual=%d behavioral=%d weighted=%.1f (reply: %s)",
+            relevance, factual, behavioral, weighted, reply_text[:60],
+        )
+
+        if weighted < 6.0:
+            # 低分 → 分析具体原因给出精准 nudge
+            if factual <= 4:
+                logger.info("exit review → grounding nudge (factual=%.0f)", factual)
+                return "grounding"
+            if behavioral <= 4:
+                logger.info("exit review → nudge (behavioral=%.0f)", behavioral)
+                return "nudge"
+            if relevance <= 4:
+                logger.info("exit review → nudge (relevance=%.0f)", relevance)
+                return "nudge"
+            # 整体偏低
+            logger.info("exit review → nudge (weighted=%.1f)", weighted)
             return "nudge"
-        if answer.startswith("D"):
-            logger.info("exit review → grounding nudge (reply: %s)", reply_text[:60])
-            return "grounding"
-        logger.debug("exit review → pass (%s)", answer[:5])
+
+        logger.debug("exit review → pass (weighted=%.1f)", weighted)
         return "pass"
 
     except Exception:
