@@ -27,7 +27,7 @@ TOOL_DEFINITIONS = [
             "例: '30 17 * * 5' = 每周五下午 5:30\n"
             "例: '0 */2 * * *' = 每 2 小时"
         ),
-        "parameters": {
+        "input_schema": {
             "type": "object",
             "properties": {
                 "name": {
@@ -62,7 +62,7 @@ TOOL_DEFINITIONS = [
     {
         "name": "list_cron_agents",
         "description": "列出当前租户的所有定时 Agent 任务",
-        "parameters": {
+        "input_schema": {
             "type": "object",
             "properties": {},
         },
@@ -70,7 +70,7 @@ TOOL_DEFINITIONS = [
     {
         "name": "delete_cron_agent",
         "description": "删除一个定时 Agent 任务",
-        "parameters": {
+        "input_schema": {
             "type": "object",
             "properties": {
                 "agent_id": {
@@ -84,7 +84,7 @@ TOOL_DEFINITIONS = [
     {
         "name": "toggle_cron_agent",
         "description": "启用或暂停一个定时 Agent 任务",
-        "parameters": {
+        "input_schema": {
             "type": "object",
             "properties": {
                 "agent_id": {
@@ -102,7 +102,7 @@ TOOL_DEFINITIONS = [
     {
         "name": "get_cron_agent_log",
         "description": "查看定时任务的执行日志",
-        "parameters": {
+        "input_schema": {
             "type": "object",
             "properties": {
                 "limit": {
