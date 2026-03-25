@@ -167,6 +167,72 @@ def _backfill_from_wecom_kf(sender_id: str, max_rounds: int) -> list[Message]:
         return []
 
 
+def _describe_image_sync(message_id: str, image_key: str) -> str:
+    """同步下载飞书图片并用 Gemini 生成简短描述。
+
+    返回图片描述文本，失败时返回空字符串。
+    """
+    import base64
+
+    try:
+        from app.tools.feishu_api import _headers, _API_BASE
+        import httpx
+
+        hdrs, tok_type = _headers()
+        if tok_type == "none":
+            return ""
+
+        url = f"{_API_BASE}/im/v1/messages/{message_id}/resources/{image_key}"
+        with httpx.Client(timeout=15, trust_env=False) as client:
+            resp = client.get(url, headers=hdrs, params={"type": "image"})
+        if resp.status_code != 200:
+            logger.warning("backfill image download failed: status=%d", resp.status_code)
+            return ""
+
+        raw_ct = resp.headers.get("content-type", "image/png").split(";")[0].strip()
+        if not raw_ct.startswith("image/"):
+            raw_ct = "image/png"
+        image_bytes = resp.content
+        if len(image_bytes) < 100:
+            return ""
+
+        # 用 Gemini 生成简短描述
+        from google import genai
+        from google.genai import types
+
+        from app.tenant.context import get_current_tenant
+        tenant = get_current_tenant()
+        base_url = getattr(tenant, "gemini_base_url", "") or "https://generativelanguage.googleapis.com"
+        api_key = getattr(tenant, "gemini_api_key", "") or ""
+        if not api_key:
+            return ""
+
+        http_options = {}
+        if base_url and "googleapis.com" not in base_url:
+            http_options["base_url"] = base_url
+        gc = genai.Client(api_key=api_key, http_options=http_options)
+
+        result = gc.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=[
+                types.Part(inline_data=types.Blob(mime_type=raw_ct, data=image_bytes)),
+                "用一两句中文简要描述这张图片的内容（不超过 100 字）。",
+            ],
+            config=types.GenerateContentConfig(
+                max_output_tokens=150,
+                temperature=0.2,
+            ),
+        )
+        desc = (result.text or "").strip()
+        if desc:
+            logger.info("backfill image described: key=%s desc=%s", image_key[:15], desc[:60])
+        return desc
+
+    except Exception:
+        logger.warning("backfill image describe failed: %s", image_key[:15], exc_info=True)
+        return ""
+
+
 def _backfill_from_feishu(sender_id: str, max_rounds: int) -> list[Message]:
     """当 Redis 缓存为空时，从飞书 API 拉取最近聊天记录回填。
 
@@ -269,7 +335,21 @@ def _backfill_from_feishu(sender_id: str, max_rounds: int) -> list[Message]:
                 except Exception:
                     text = "[富文本]"
             elif msg_type == "image":
-                text = "[图片]"
+                # 尝试下载图片并用 Gemini 描述内容
+                try:
+                    img_content = json.loads(content_raw)
+                    img_key = img_content.get("image_key", "")
+                    msg_id = msg.get("message_id", "")
+                except (ValueError, TypeError):
+                    img_key, msg_id = "", ""
+                if img_key and msg_id:
+                    desc = _describe_image_sync(msg_id, img_key)
+                    if desc:
+                        text = f"[图片: {desc}]"
+                    else:
+                        text = "[用户发送了一张图片，历史回填无法获取内容]"
+                else:
+                    text = "[用户发送了一张图片，历史回填无法获取内容]"
             elif msg_type in ("file", "audio", "video", "sticker"):
                 text = f"[{msg_type}]"
             else:
