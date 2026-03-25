@@ -158,6 +158,10 @@ from app.tools.skill_mgmt_ops import (
     TOOL_DEFINITIONS as SKILL_MGMT_TOOLS,
     TOOL_MAP as SKILL_MGMT_TOOL_MAP,
 )
+from app.tools.cron_agent_ops import (
+    TOOL_DEFINITIONS as CRON_AGENT_TOOLS,
+    TOOL_MAP as CRON_AGENT_TOOL_MAP,
+)
 from app.services import user_registry
 from app.services import memory as bot_memory
 from app.services import planner as bot_planner
@@ -217,6 +221,7 @@ ALL_TOOL_MAP = {
     **IDENTITY_TOOL_MAP,
     **IMAGE_TOOL_MAP,
     **SKILL_MGMT_TOOL_MAP,
+    **CRON_AGENT_TOOL_MAP,
 }
 
 # 自我迭代相关工具名（客户租户禁用）
@@ -268,6 +273,7 @@ _ALL_TOOL_DEFS = (
     + IDENTITY_TOOLS
     + IMAGE_TOOLS
     + SKILL_MGMT_TOOLS
+    + CRON_AGENT_TOOLS
 )
 
 
@@ -498,6 +504,7 @@ _TOOL_GROUPS: dict[str, frozenset[str]] = {
         | frozenset(ENV_TOOL_MAP) | frozenset(CAPABILITY_TOOL_MAP)
     ),
     "extension": frozenset(CUSTOM_TOOL_MAP) | frozenset(SKILL_TOOL_MAP),
+    "automation": frozenset(CRON_AGENT_TOOL_MAP) | frozenset(REMINDER_TOOL_MAP.keys()),
 }
 
 # 关键词 → 工具组映射（大小写不敏感匹配）
@@ -533,6 +540,10 @@ _GROUP_KEYWORDS: dict[str, list[str]] = {
     "extension": [
         "自定义工具", "custom tool", "skill", "技能",
     ],
+    "automation": [
+        "定时", "cron", "自动", "定期", "每天", "每周", "每月",
+        "schedule", "scheduled", "定时任务", "自动执行",
+    ],
 }
 
 # 工具组描述（供 request_more_tools 展示给 LLM）
@@ -544,6 +555,7 @@ _GROUP_DESCRIPTIONS: dict[str, str] = {
     "content": "内容输出：视频分析/文件导出",
     "admin": "管理运维：实例管理/包安装/能力评估",
     "extension": "工具扩展：自定义工具/技能安装",
+    "automation": "自动化：定时 Agent 任务/提醒/cron 调度",
 }
 
 
@@ -1089,15 +1101,15 @@ _MODULE_KEYWORDS: dict[str, list[str]] = {
         "市场", "客服", "项目管理", "调研", "通用",
         "什么类型", "推荐", "模板",
     ],
+    "html_slides": [
+        "PPT", "ppt", "幻灯片", "演示", "slides", "presentation",
+        "deck", "slide deck", "keynote", "演示文稿",
+    ],
     "anti_drone_safety": [
         "反无人机", "低空安全", "低空防御", "无人机反制", "无人机管控",
         "无人机探测", "净空保护", "黑飞", "飞手", "低空经济",
         "招标", "安保", "反制", "射频", "干扰", "晴空",
         "活动安保", "禁飞区", "无人机防御",
-    ],
-    "html_slides": [
-        "PPT", "ppt", "幻灯片", "演示", "slides", "presentation",
-        "deck", "slide deck", "keynote", "演示文稿",
     ],
 }
 

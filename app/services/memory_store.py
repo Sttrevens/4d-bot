@@ -33,18 +33,40 @@ _cache: dict[str, tuple[Any, float]] = {}
 _CACHE_TTL = 300  # 5 分钟
 
 
-def _prefix() -> str:
-    """当前租户的 Redis key 前缀"""
+def _prefix(channel_id: str = "") -> str:
+    """当前租户/频道的 Redis key 前缀。
+
+    NanoClaw 启发的 per-channel 隔离：每个群聊/频道有独立的记忆空间。
+    - channel_id 为空 → 租户级记忆（向后兼容）
+    - channel_id 非空 → 频道级记忆（群聊隔离）
+
+    Redis key 结构：
+        {tenant_id}:mem:{key}                  → 租户级（全局记忆）
+        {tenant_id}:ch:{channel_id}:mem:{key}  → 频道级（群聊独立记忆）
+    """
     tenant = get_current_tenant()
+    if channel_id:
+        return f"{tenant.tenant_id}:ch:{channel_id}:mem"
+    return f"{tenant.tenant_id}:mem"
+
+
+def get_channel_prefix(channel_id: str) -> str:
+    """获取指定频道的 Redis key 前缀（供外部模块使用）。"""
+    tenant = get_current_tenant()
+    if channel_id:
+        return f"{tenant.tenant_id}:ch:{channel_id}:mem"
     return f"{tenant.tenant_id}:mem"
 
 
 # ── 核心读写 ──
 
 
-def read_json(key: str) -> dict | list | None:
-    """读取 JSON 数据。带内存缓存，避免频繁 Redis 调用。"""
-    full_key = f"{_prefix()}:{key}"
+def read_json(key: str, channel_id: str = "") -> dict | list | None:
+    """读取 JSON 数据。带内存缓存，避免频繁 Redis 调用。
+
+    channel_id: 非空时读取频道级记忆（per-channel 隔离）
+    """
+    full_key = f"{_prefix(channel_id)}:{key}"
 
     cached = _cache.get(full_key)
     if cached and time.time() - cached[1] < _CACHE_TTL:
@@ -63,9 +85,12 @@ def read_json(key: str) -> dict | list | None:
         return None
 
 
-def write_json(key: str, data: dict | list, message: str = "") -> bool:
-    """写入 JSON 数据。"""
-    full_key = f"{_prefix()}:{key}"
+def write_json(key: str, data: dict | list, message: str = "", channel_id: str = "") -> bool:
+    """写入 JSON 数据。
+
+    channel_id: 非空时写入频道级记忆（per-channel 隔离）
+    """
+    full_key = f"{_prefix(channel_id)}:{key}"
     value = json.dumps(data, ensure_ascii=False)
 
     _MEM_TTL = 365 * 86400  # 1 year
@@ -78,13 +103,15 @@ def write_json(key: str, data: dict | list, message: str = "") -> bool:
     return False
 
 
-def append_journal(entry: dict) -> int:
+def append_journal(entry: dict, channel_id: str = "") -> int:
     """追加一条记录到 journal（Redis List，原子操作）。
 
     返回当前 journal 长度。调用方可据此判断是否需要触发压缩。
     硬上限 2000 条（安全阀，防止压缩失败时无限膨胀）。
+
+    channel_id: 非空时写入频道级 journal（per-channel 隔离）
     """
-    full_key = f"{_prefix()}:journal"
+    full_key = f"{_prefix(channel_id)}:journal"
 
     entry.setdefault("ts", time.time())
     value = json.dumps(entry, ensure_ascii=False)
@@ -107,9 +134,9 @@ def append_journal(entry: dict) -> int:
     return length
 
 
-def read_journal(limit: int = 50) -> list[dict]:
+def read_journal(limit: int = 50, channel_id: str = "") -> list[dict]:
     """读取最近的 journal 条目。"""
-    full_key = f"{_prefix()}:journal"
+    full_key = f"{_prefix(channel_id)}:journal"
 
     items = redis.execute("LRANGE", full_key, str(-limit), str(-1))
     if not items or not isinstance(items, list):
@@ -124,9 +151,9 @@ def read_journal(limit: int = 50) -> list[dict]:
     return entries
 
 
-def read_journal_all() -> list[dict]:
+def read_journal_all(channel_id: str = "") -> list[dict]:
     """读取全部 journal 条目（压缩时用）。"""
-    full_key = f"{_prefix()}:journal"
+    full_key = f"{_prefix(channel_id)}:journal"
 
     items = redis.execute("LRANGE", full_key, str(0), str(-1))
     if not items or not isinstance(items, list):
@@ -141,12 +168,12 @@ def read_journal_all() -> list[dict]:
     return entries
 
 
-def rewrite_journal(entries: list[dict]) -> bool:
+def rewrite_journal(entries: list[dict], channel_id: str = "") -> bool:
     """原子重写整个 journal（压缩后替换用）。
 
     用 pipeline: DEL + RPUSH 所有条目，最小化数据丢失窗口。
     """
-    full_key = f"{_prefix()}:journal"
+    full_key = f"{_prefix(channel_id)}:journal"
 
     if not entries:
         redis.execute("DEL", full_key)
@@ -170,17 +197,17 @@ def rewrite_journal(entries: list[dict]) -> bool:
     return ok
 
 
-def journal_length() -> int:
+def journal_length(channel_id: str = "") -> int:
     """获取当前 journal 长度。"""
-    full_key = f"{_prefix()}:journal"
+    full_key = f"{_prefix(channel_id)}:journal"
     result = redis.execute("LLEN", full_key)
     return int(result) if result else 0
 
 
-def invalidate_cache(key: str | None = None) -> None:
+def invalidate_cache(key: str | None = None, channel_id: str = "") -> None:
     """清除缓存。key=None 清除全部。"""
     if key is None:
         _cache.clear()
     else:
-        full_key = f"{_prefix()}:{key}"
+        full_key = f"{_prefix(channel_id)}:{key}"
         _cache.pop(full_key, None)

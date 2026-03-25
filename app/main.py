@@ -246,6 +246,16 @@ async def _startup_sync():
     start_scheduler()
     logger.info("startup: autonomous scheduler started")
 
+    # 启动 Cron Agent 调度器（NanoClaw 启发的定时 Agent 任务）
+    from app.services.cron_agent import start_cron_scheduler
+    _bg_tasks.append(asyncio.create_task(start_cron_scheduler()))
+    logger.info("startup: cron agent scheduler started")
+
+    # 插件系统预扫描（NanoClaw 启发的可插拔架构）
+    from app.plugins.registry import plugin_registry
+    plugin_count = plugin_registry.discover()
+    logger.info("startup: plugin registry discovered %d tool modules", plugin_count)
+
     # 记录出口 IP 并启动 IP 变化监控
     _bg_tasks.append(asyncio.create_task(_log_and_monitor_ip()))
 

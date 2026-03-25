@@ -203,6 +203,19 @@ class TenantConfig:
     agent_profiles: list[dict] = field(default_factory=list)
     agent_bindings: list[dict] = field(default_factory=list)
 
+    # ── 插件系统（NanoClaw 启发）──
+    plugin_groups_enabled: list[str] = field(default_factory=list)  # 启用的工具组 ["core","feishu_collab","code_dev"]，空=全部
+    plugin_lazy_loading: bool = True   # 是否按需加载工具（减少 context）
+
+    # ── 容器沙箱（NanoClaw 启发）──
+    container_sandbox_enabled: bool = False  # 是否使用 Docker 容器级沙箱（需服务器有 Docker）
+
+    # ── Per-Channel 记忆隔离（NanoClaw 启发）──
+    memory_channel_isolation: bool = False   # 是否启用频道级记忆隔离（每个群聊独立记忆空间）
+
+    # ── Cron Agent 定时任务（NanoClaw 启发）──
+    cron_agent_enabled: bool = False  # 是否启用定时 Agent 任务
+
     # ── Channel 辅助方法 ──
 
     def get_channels(self) -> list[ChannelConfig]:
