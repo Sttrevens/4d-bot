@@ -50,6 +50,7 @@ from app.services.base_agent import (
     ProgressCallback,
     extract_urls,
     check_url_provenance,
+    check_write_intent,
 )
 from app.tools.tool_result import ToolResult
 from app.services.error_log import record_error
@@ -761,6 +762,13 @@ async def _run_sub_agent(
                 logger.warning("sub-agent URL provenance failed for %s: %s", name, _url_warn[:200])
                 _sub_blocked_urls.update(_flagged)
                 return f"[ERROR] {_url_warn}"
+            # 写操作意图验证（独立 evaluator）
+            _intent_block = check_write_intent(
+                name, args, user_text, tool_names_called,
+            )
+            if _intent_block:
+                logger.warning("sub-agent write intent blocked: %s", _intent_block[:200])
+                return f"[ERROR] {_intent_block}"
             handler = tool_map.get(name)
             if not handler:
                 return f"[ERROR] 工具 '{name}' 不存在"
@@ -1921,6 +1929,11 @@ async def handle_message(
                     _blocked_urls.update(_flagged)  # 记录本次拦截的 URL
                     result = ToolResult.error(_url_warning, code="url_hallucination")
                     # 不执行工具，让 LLM 修正参数
+                elif (_intent_block := check_write_intent(
+                    func_name, func_args, user_text, tool_names_called,
+                )):
+                    logger.warning("write intent blocked: %s", _intent_block[:200])
+                    result = ToolResult.error(_intent_block, code="write_intent_blocked")
                 elif (risk := _get_custom_tool_risk(tenant.tenant_id, func_name)) in ("yellow", "red"):
                     risk_hint = "写操作" if risk == "yellow" else "批量/高风险操作"
                     result = ToolResult.blocked(

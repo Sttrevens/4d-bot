@@ -317,9 +317,108 @@ _URL_CHECK_WRITE_TOOLS = frozenset({
     "send_mail",
 })
 
+# ── 写操作意图验证器（结构性防幻觉 — Generator-Evaluator 分离）──
+# 在执行写操作前，用独立 LLM 调用验证用户是否明确要求了此操作。
+# 这是 Anthropic Harness 架构思路的落地：生成器和评估器分离，
+# 不让同一个 agent 既做事又评判自己。
 
-def _normalize_url(u: str) -> str:
-    """URL 规范化：去尾部斜杠、小写、去常见追踪参数、统一编码"""
+_WRITE_INTENT_VERIFY_TOOLS = frozenset({
+    "create_calendar_event", "update_calendar_event",
+    "create_feishu_task", "update_feishu_task",
+    "create_document", "edit_feishu_doc", "write_feishu_doc",
+    "send_mail",
+    "send_feishu_message", "reply_feishu_message",
+    "send_message_to_user",
+    "add_bitable_record", "update_bitable_record", "batch_update_bitable_records",
+    "xhs_publish",
+})
+
+
+def check_write_intent(
+    func_name: str,
+    func_args: dict,
+    user_text: str,
+    tools_called_so_far: list[str],
+) -> str | None:
+    """独立 LLM 验证：用户是否明确要求了这个写操作。
+
+    返回 None 表示通过（允许执行），返回字符串表示拦截（含拒绝理由）。
+    仅对 _WRITE_INTENT_VERIFY_TOOLS 中的工具生效。
+
+    设计原则：
+    - fail-open：LLM 调用失败/超时 → 放行（不阻塞正常流程）
+    - 快速：用最小模型、低 token、短超时
+    - 只在"无中生有"时拦截：用户已经在对话中表达了相关意图则放行
+    """
+    if func_name not in _WRITE_INTENT_VERIFY_TOOLS:
+        return None
+
+    # 如果用户消息本身包含明确的动作指令，直接放行（减少不必要的 LLM 调用）
+    _EXPLICIT_ACTION_RE = re.compile(
+        r"(创建|新建|添加|加个|安排|设置|发[给到]|写[个一]|生成|帮我[做弄搞发建排]|"
+        r"约[个一]|排[个一]|建[个一]|提醒|通知|create|send|add|schedule|make)",
+        re.IGNORECASE,
+    )
+    if _EXPLICIT_ACTION_RE.search(user_text):
+        return None
+
+    # 如果本轮已经调用过同类工具多次（批量操作），跳过验证
+    same_tool_count = sum(1 for t in tools_called_so_far if t == func_name)
+    if same_tool_count >= 1:
+        return None  # 第一次已经验证过/放行了，后续批量不重复验证
+
+    # 独立 LLM 调用验证
+    try:
+        from google import genai
+        from google.genai import types
+        from app.tenant.context import get_current_tenant
+
+        tenant = get_current_tenant()
+        base_url = getattr(tenant, "gemini_base_url", "") or "https://generativelanguage.googleapis.com"
+        api_key = getattr(tenant, "gemini_api_key", "") or ""
+        if not api_key:
+            return None  # fail-open
+
+        http_options = {}
+        if base_url and "googleapis.com" not in base_url:
+            http_options["base_url"] = base_url
+        gc = genai.Client(api_key=api_key, http_options=http_options)
+
+        args_brief = json.dumps(func_args, ensure_ascii=False)[:300]
+        prompt = (
+            f"用户原文：「{user_text[:200]}」\n"
+            f"Agent 准备执行：{func_name}({args_brief})\n\n"
+            f"判断：用户是否明确要求或暗示了这个操作？\n"
+            f"- 如果用户的消息可以合理推导出需要这个操作，回答 YES\n"
+            f"- 如果用户完全没有提到相关意图，这是 agent 自作主张，回答 NO\n"
+            f"只回答 YES 或 NO，不要解释。"
+        )
+
+        result = gc.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=[prompt],
+            config=types.GenerateContentConfig(
+                max_output_tokens=10,
+                temperature=0.0,
+            ),
+        )
+        answer = (result.text or "").strip().upper()
+        logger.info(
+            "write_intent_check: tool=%s user='%s' → %s",
+            func_name, user_text[:50], answer,
+        )
+
+        if answer.startswith("NO"):
+            return (
+                f"[BLOCKED] 用户没有明确要求执行 {func_name}。"
+                f"请先询问用户是否需要此操作，不要自作主张。"
+                f"用户原文：「{user_text[:100]}」"
+            )
+        return None  # YES or ambiguous → allow
+
+    except Exception:
+        logger.warning("write_intent_check failed (fail-open)", exc_info=True)
+        return None  # fail-open
     from urllib.parse import urlparse, urlunparse, parse_qs, urlencode, unquote
     u = unquote(u).rstrip("/").lower()
     try:
