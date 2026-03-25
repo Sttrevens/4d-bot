@@ -1987,3 +1987,45 @@ print(html_resp.status_code)  # → 400（不支持）
 - **新增工具必看顶部 checklist！** `tools_enabled` 白名单、`_RESEARCH_TOOLS`、平台过滤常量都需要同步更新。详见「⚠️ Adding New Tools — MANDATORY Checklist」章节
 - 社媒数据 API（TikHub）中国可直连 `api.tikhub.dev`，Bearer token 认证。配置 `social_media_api_provider: "tikhub"` 启用
 - 记忆系统支持 per-tenant 配置（5 个字段），不同 bot 可有不同记忆深度。详见「Per-Tenant 记忆配置」章节
+
+### NanoClaw 启发的新架构（2026-03-25）
+
+#### 插件注册表（Plugin Registry）
+- **位置：** `app/plugins/registry.py`
+- **理念：** 借鉴 NanoClaw "skills over features" —— 工具模块自描述元数据，按需加载
+- **用法：** `plugin_registry.discover()` 扫描 `app/tools/`，`get_tools_for_tenant()` 按租户配置过滤
+- **新工具零改动核心代码：** 在 `app/tools/` 放文件 + 在 `_DEFAULT_MANIFESTS` 声明组/平台/权限即可
+- **TenantConfig 新字段：** `plugin_groups_enabled`（指定启用的工具组）、`plugin_lazy_loading`（按需加载）
+
+#### 容器级沙箱（Container Sandbox）
+- **位置：** `app/services/container_sandbox.py`
+- **理念：** 借鉴 NanoClaw OS 级隔离 —— 代码在独立 Docker 容器执行
+- **安全限制：** 64MB 内存、0.5 CPU、只读文件系统、网络隔离、32 进程上限
+- **降级：** Docker 不可用时自动回退到现有 sandbox.py（进程级隔离）
+- **TenantConfig 新字段：** `container_sandbox_enabled`
+
+#### Per-Channel 记忆隔离
+- **位置：** `app/services/memory_store.py`（所有函数新增 `channel_id` 参数）
+- **理念：** 借鉴 NanoClaw per-group context —— 每个群聊有独立的记忆空间
+- **Redis key 结构：** `{tenant_id}:ch:{channel_id}:mem:{key}`
+- **向后兼容：** `channel_id` 为空时行为与之前完全一致
+- **TenantConfig 新字段：** `memory_channel_isolation`
+
+#### Cron Agent 定时任务
+- **位置：** `app/services/cron_agent.py` + `app/tools/cron_agent_ops.py`
+- **理念：** 借鉴 NanoClaw Scheduled Tasks —— 定时运行完整 Agent（不只是提醒）
+- **5 个工具：** create_cron_agent, list_cron_agents, delete_cron_agent, toggle_cron_agent, get_cron_agent_log
+- **Cron 表达式：** 标准 5 字段（分 时 日 月 星期），支持 `*/N`、`N-M`、`N,M`
+- **TenantConfig 新字段：** `cron_agent_enabled`
+- **Redis 存储：** `cron_agents:{tenant_id}` + `cron_log:{tenant_id}`
+
+#### 新增 TenantConfig 字段汇总
+```json
+{
+  "plugin_groups_enabled": [],          // 启用的工具组，空=全部
+  "plugin_lazy_loading": true,          // 按需加载工具
+  "container_sandbox_enabled": false,   // Docker 容器级沙箱
+  "memory_channel_isolation": false,    // 频道级记忆隔离
+  "cron_agent_enabled": false           // 定时 Agent 任务
+}
+```
