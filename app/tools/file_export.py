@@ -283,20 +283,30 @@ def _is_html_content(content: str) -> bool:
 
 
 def _html_to_pdf(html: str) -> bytes | None:
-    """用 weasyprint 将 HTML 转为 PDF。返回 None 表示 weasyprint 不可用。"""
+    """用 weasyprint 将 HTML 转为 PDF。返回 None 表示 weasyprint 不可用或超时。"""
     try:
         from weasyprint import HTML, CSS
     except ImportError:
         logger.info("weasyprint not installed, falling back to fpdf2")
         return None
 
+    import concurrent.futures
     try:
-        # 注入基础 CSS（LLM 的内联 CSS 优先级更高，会覆盖基础样式）
-        result = HTML(string=html).write_pdf(
-            stylesheets=[CSS(string=_BASE_PDF_CSS)]
-        )
+        # weasyprint 渲染复杂表格可能卡 10 分钟+，加 60 秒超时保护
+        def _render():
+            return HTML(string=html).write_pdf(
+                stylesheets=[CSS(string=_BASE_PDF_CSS)]
+            )
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(_render)
+            result = future.result(timeout=60)
+
         logger.info("weasyprint: HTML→PDF OK (%dKB)", len(result) // 1024)
         return bytes(result)
+    except concurrent.futures.TimeoutError:
+        logger.warning("weasyprint: render timed out (>60s), falling back to fpdf2")
+        return None
     except Exception:
         logger.warning("weasyprint render failed", exc_info=True)
         return None
