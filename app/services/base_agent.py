@@ -22,7 +22,66 @@ import os
 import random
 import re
 import time
+import contextvars
 from typing import Callable, Awaitable
+
+# ── 超时智能消息：跟踪 agent 进度，超时时提供有信息量的提示 ──
+# handler 层在 TimeoutError 时读取此变量，构造上下文相关的超时消息。
+_agent_progress: contextvars.ContextVar[list[str]] = contextvars.ContextVar(
+    "_agent_progress", default=[],
+)
+
+
+def record_agent_progress(tool_name: str) -> None:
+    """记录 agent 调用了哪个工具（供超时消息使用）。"""
+    try:
+        progress = _agent_progress.get()
+        progress.append(tool_name)
+    except LookupError:
+        _agent_progress.set([tool_name])
+
+
+def build_timeout_message() -> str:
+    """根据 agent 已完成的工具调用，构造友好的超时消息。
+
+    面向普通用户（不懂技术），语气要自然亲切。
+    """
+    try:
+        progress = _agent_progress.get()
+    except LookupError:
+        progress = []
+
+    if not progress:
+        return "抱歉，这条消息处理时间太长了~ 你可以换个方式再说一遍，或者把问题拆小一点试试？"
+
+    # 根据工具类型构造用户能理解的说明
+    tool_set = set(progress)
+    parts = []
+
+    if tool_set & {"web_search", "fetch_url", "browser_open", "search_social_media",
+                   "xhs_search", "xhs_playwright_search"}:
+        parts.append("资料已经帮你查好了")
+    if tool_set & {"export_file"}:
+        parts.append("文件正在生成中，但花的时间比预期长")
+    if tool_set & {"create_calendar_event", "update_calendar_event"}:
+        n = progress.count("create_calendar_event") + progress.count("update_calendar_event")
+        parts.append(f"已经帮你安排了 {n} 个日程")
+    if tool_set & {"create_feishu_task"}:
+        n = progress.count("create_feishu_task")
+        parts.append(f"已经帮你创建了 {n} 个任务")
+    if tool_set & {"send_feishu_message", "send_message_to_user", "reply_feishu_message"}:
+        parts.append("消息已经发出去了")
+
+    if parts:
+        summary = "，".join(parts)
+        return f"抱歉没能一口气做完~ 不过{summary}。你发个「继续」我接着帮你搞定剩下的！"
+    else:
+        return f"抱歉，处理时间太长了，但我已经做了一部分工作。你发个「继续」我接着帮你做~"
+
+
+def reset_agent_progress() -> None:
+    """重置进度跟踪（每个请求开始时调用）。"""
+    _agent_progress.set([])
 
 from app.config import settings
 from app.tools.file_ops import (

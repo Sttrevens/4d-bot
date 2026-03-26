@@ -251,9 +251,10 @@ async def _process_and_reply(
             logger.error("qq: processing timed out for sender=%s", sender_id)
             record_error("timeout", f"QQ 消息处理超时 sender={sender_id} text={user_text[:200]}")
             try:
+                from app.services.base_agent import build_timeout_message
                 await qq_api.reply_text(
                     qq_chat_id, qq_msg_id,
-                    f"处理超时（超过 {_PROCESS_TIMEOUT} 秒），请简化消息后重试。",
+                    build_timeout_message(),
                     is_group=is_group,
                 )
             except Exception:
@@ -265,7 +266,7 @@ async def _process_and_reply(
             try:
                 await qq_api.reply_text(
                     qq_chat_id, qq_msg_id,
-                    "处理消息时出错，请稍后再试。",
+                    "不好意思出了点小状况~ 你再发一遍试试？",
                     is_group=is_group,
                 )
             except Exception:

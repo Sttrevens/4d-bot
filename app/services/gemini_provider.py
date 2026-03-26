@@ -51,6 +51,9 @@ from app.services.base_agent import (
     extract_urls,
     check_url_provenance,
     check_write_intent,
+    record_agent_progress,
+    reset_agent_progress,
+    build_timeout_message,
 )
 from app.tools.tool_result import ToolResult
 from app.services.error_log import record_error
@@ -96,17 +99,23 @@ User message:
 
 
 def _classify_intent_keywords(user_text: str) -> dict:
-    """关键词 fallback 分类器 —— 当 LLM 分类失败时使用，保证总能返回有效结果。"""
+    """关键词 fallback 分类器 —— 当 LLM 分类失败时使用，保证总能返回有效结果。
+
+    P3 改进：CF Worker 代理不传 response_mime_type 导致 LLM 分类几乎每次都 fallback
+    到这里。因此这个分类器必须足够智能，不能只返回 core 组导致工具不全。
+
+    核心原则：宁可多加组（多几个工具 LLM 可以忽略）也不要少加（缺工具 LLM 无法完成任务）。
+    """
     t = user_text.lower()
     groups = ["core"]
     task_type = "normal"
 
     # 研究/调研
-    if re.search(r"(调研|竞品|分析.*市场|行业报告|research|competitor|社媒|数据.*收集)", t):
+    if re.search(r"(调研|竞品|分析.*市场|行业报告|research|competitor|社媒|数据.*收集|搜[一搜索]|查[一查找]|帮我[找查搜看])", t):
         task_type = "research"
         groups.append("research")
     # 日历/文档/任务 → feishu_collab
-    if re.search(r"(日历|日程|日历|会议|calendar|任务|文档|多维表格|bitable)", t):
+    if re.search(r"(日历|日程|会议|calendar|任务|文档|多维表格|bitable|表格|飞书|doc|sheet)", t):
         groups.append("feishu_collab")
     # 代码/部署
     if re.search(r"(代码|bug|fix|deploy|部署|git|pr|分支|commit|push)", t):
@@ -123,6 +132,12 @@ def _classify_intent_keywords(user_text: str) -> dict:
         task_type = "provision"
         groups.append("admin")
 
+    # P3 核心改进：如果没匹配到任何特定组，给一个宽泛的默认组合
+    # 避免只有 core 组导致 agent 缺工具。
+    # 普通对话（如"我给你发了什么"）通常需要 feishu_collab 来查历史记录。
+    if len(groups) == 1:  # 只有 core
+        groups.append("feishu_collab")  # 默认加飞书协作组（查历史、看消息等）
+
     return {"type": task_type, "groups": list(dict.fromkeys(groups))}
 
 
@@ -132,8 +147,14 @@ async def _classify_intent_llm(
     user_text: str,
 ) -> dict | None:
     """Use LLM to classify user intent. Returns {"type": ..., "groups": [...]} or None on failure."""
-    # 快速消息跳过 LLM 调用
+    # 语音消息跳过 LLM 意图分类 —— 分类器只看文本（"[语音消息]..."），
+    # 看不到实际音频内容，LLM 分类必然错误。直接返回通用类型让主 agent 理解语音。
     text_stripped = user_text.strip()
+    if "[语音消息]" in text_stripped or "[音频]" in text_stripped:
+        logger.info("LLM intent classification: voice message detected, skipping classification")
+        return {"type": "normal", "groups": ["core", "research"]}
+
+    # 快速消息跳过 LLM 调用
     if len(text_stripped) < 5:
         return {"type": "quick", "groups": ["core"]}
     text_lower = text_stripped.lower()
@@ -144,9 +165,11 @@ async def _classify_intent_llm(
     try:
         # 截断长消息（分类只需要前 200 字）
         truncated = text_stripped[:200]
+        # 在 prompt 尾部追加 JSON 强制指令，防止 CF Worker 代理不传递 response_mime_type
+        classification_input = _CLASSIFY_PROMPT + truncated + "\n\nReply ONLY with valid JSON, no other text."
         resp = await client.aio.models.generate_content(
             model=model_name,
-            contents=_CLASSIFY_PROMPT + truncated,
+            contents=classification_input,
             config=types.GenerateContentConfig(
                 temperature=0.0,
                 max_output_tokens=100,
@@ -162,7 +185,7 @@ async def _classify_intent_llm(
             return _classify_intent_keywords(user_text)
         # response_mime_type="application/json" 保证输出是纯 JSON
         # 但 CF Worker 代理可能不传递 mime_type，模型返回非 JSON（如 "Here is"）
-        # 多层防御：code block → regex JSON 提取 → 直接 parse
+        # 多层防御：code block → regex JSON 提取 → 直接 parse → keyword fallback
         if "```" in raw:
             raw = raw.split("```")[1]
             if raw.startswith("json"):
@@ -173,12 +196,11 @@ async def _classify_intent_llm(
             return _classify_intent_keywords(user_text)
         # 如果 raw 不是以 { 开头，尝试从中提取 JSON 对象
         if not raw.startswith("{"):
-            import re as _re_local
-            m = _re_local.search(r'\{[^}]+\}', raw)
+            m = re.search(r'\{[^}]+\}', raw)
             if m:
                 raw = m.group(0)
             else:
-                logger.warning("LLM intent classification: no JSON found in raw=%r", raw[:100])
+                logger.warning("LLM intent classification: no JSON found in raw=%r, using keyword fallback", raw[:100])
                 return _classify_intent_keywords(user_text)
         result = json.loads(raw)
         task_type = result.get("type", "normal")
@@ -195,10 +217,10 @@ async def _classify_intent_llm(
         logger.info("LLM intent classification: type=%s, groups=%s", task_type, groups)
         return {"type": task_type, "groups": groups}
     except json.JSONDecodeError as e:
-        logger.warning("LLM intent classification: invalid JSON (%s), raw=%r, falling back to keywords", e, raw[:100] if raw else "(empty)")
+        logger.warning("LLM intent classification: invalid JSON (%s), raw=%r, using keyword fallback", e, raw[:100] if raw else "(empty)")
         return _classify_intent_keywords(user_text)
     except Exception as e:
-        logger.warning("LLM intent classification failed (%s), falling back to keywords", e)
+        logger.warning("LLM intent classification failed (%s), using keyword fallback", e)
         return _classify_intent_keywords(user_text)
 
 
@@ -774,6 +796,7 @@ async def _run_sub_agent(
                 return f"[ERROR] 工具 '{name}' 不存在"
             try:
                 result = handler(args) if not asyncio.iscoroutinefunction(handler) else await handler(args)
+                record_agent_progress(name)
                 if isinstance(result, ToolResult):
                     return result.content
                 return str(result) if result is not None else "OK"
@@ -946,6 +969,7 @@ async def handle_message(
     """
     from app.tenant.context import get_current_tenant, set_current_sender
     from app.tools.source_registry import reset as _reset_source_registry
+    reset_agent_progress()  # 每个请求开始时重置进度跟踪
     tenant = get_current_tenant()
 
     # 设置发送者上下文（供工具层权限检查读取）
@@ -1248,7 +1272,7 @@ async def handle_message(
                                     inbox_texts.append(t)
                             logger.info(
                                 "sub-agent done but inbox has %d messages, "
-                                "falling through to main loop with sub-agent context: %s",
+                                "falling through to main loop: %s",
                                 len(pending),
                                 "; ".join(t[:40] for t in inbox_texts),
                             )
@@ -1257,7 +1281,7 @@ async def handle_message(
                                 f"[前置任务已完成]\n{sub_result}\n\n"
                                 f"[用户新消息]\n" + "\n".join(inbox_texts)
                             )
-                            # 继续到主 loop 处理（不触发 insufficient result 警告）
+                            # 继续到主 loop 处理
                         else:
                             _trigger_memory(
                                 sender_id, sender_name, user_text, sub_result,
@@ -1270,13 +1294,12 @@ async def handle_message(
                             [],
                         )
                         return sub_result
-                else:
-                    # 子 agent 结果太短/为空 → fallback 到主 loop
-                    logger.warning(
-                        "sub-agent [%s] returned insufficient result (%d chars), "
-                        "falling back to main loop",
-                        _sub_agent_type, len(sub_result) if sub_result else 0,
-                    )
+                # 子 agent 结果太短/为空 → fallback 到主 loop
+                logger.warning(
+                    "sub-agent [%s] returned insufficient result (%d chars), "
+                    "falling back to main loop",
+                    _sub_agent_type, len(sub_result) if sub_result else 0,
+                )
             except Exception:
                 logger.warning(
                     "sub-agent [%s] failed, falling back to main loop",
@@ -1952,6 +1975,9 @@ async def handle_message(
                         record_error("tool_exception", f"{func_name} 异常", exc=exc,
                                      tool_name=func_name, tool_args=func_args)
 
+            # 记录工具执行进度（用于超时时构造智能消息）
+            record_agent_progress(func_name)
+
             # 统一处理结果
             if isinstance(result, ToolResult):
                 if not result.ok:
@@ -2058,7 +2084,7 @@ async def handle_message(
                 contents.append(types.Content(
                     role="user",
                     parts=[types.Part(text=(
-                        "\u26a0\ufe0f 你已连续多次创建/测试自定义工具但都失败了。停下来换个思路：\n"
+                        "⚠️ 你已连续多次创建/测试自定义工具但都失败了。停下来换个思路：\n"
                         "1. 先用 fetch_chat_history 查看用户原始消息，确认需求\n"
                         "2. 检查已有工具列表，看有没有直接能用的（如 search_logs、export_file）\n"
                         "3. 如果之前某个工具报错，分析错误消息而不是重写一个新工具\n"

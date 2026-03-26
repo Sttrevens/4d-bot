@@ -1052,11 +1052,12 @@ async def _process_and_reply(
         except asyncio.TimeoutError:
             logger.error("wecom_kf: processing timeout for user=%s", external_userid)
             record_error("timeout", f"wecom_kf timeout user={external_userid}")
-            await _safe_send(external_userid, "处理超时了，请简化一下消息再试~", hit_send_limit)
+            from app.services.base_agent import build_timeout_message
+            await _safe_send(external_userid, build_timeout_message(), hit_send_limit)
         except Exception as exc:
             logger.exception("wecom_kf: process error for user=%s", external_userid)
             record_error("unhandled", f"wecom_kf process error user={external_userid}", exc=exc)
-            await _safe_send(external_userid, "出了点问题，请稍后再试~", hit_send_limit)
+            await _safe_send(external_userid, "不好意思出了点小状况~ 你再发一遍试试？", hit_send_limit)
         finally:
             _state.deactivate(external_userid)
 

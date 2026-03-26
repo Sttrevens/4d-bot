@@ -40,7 +40,7 @@ _state = UserStateManager()
 _PROCESS_TIMEOUT = DEFAULT_PROCESS_TIMEOUT
 _MAX_USER_TEXT_LEN = DEFAULT_MAX_USER_TEXT_LEN
 _MAX_REPLY_LEN = 2000
-_MAX_REPLY_BYTES = 3800  # 企微 API text 字段字节限制（~4096 减去 JSON 包装开销）
+_MAX_REPLY_BYTES = 3800  # 企微 send_msg text 字节限制
 
 
 # ── 路由 ──
@@ -256,6 +256,7 @@ async def _process_and_reply(userid: str, text: str) -> None:
                 timeout=_PROCESS_TIMEOUT,
             )
 
+            # 企微不渲染 markdown，发送前清洗
             display_reply = strip_markdown(reply) if reply else reply
             for chunk in split_reply(display_reply, _MAX_REPLY_LEN, max_bytes=_MAX_REPLY_BYTES):
                 await wecom_client.reply_text(userid, chunk)
@@ -263,11 +264,12 @@ async def _process_and_reply(userid: str, text: str) -> None:
         except asyncio.TimeoutError:
             logger.error("wecom: processing timeout for user=%s", userid)
             record_error("timeout", f"wecom message timeout user={userid}")
-            await wecom_client.reply_text(userid, "处理超时，请简化消息后重试。")
+            from app.services.base_agent import build_timeout_message
+            await wecom_client.reply_text(userid, build_timeout_message())
         except Exception as exc:
             logger.exception("wecom: process error for user=%s", userid)
             record_error("unhandled", f"wecom process error user={userid}", exc=exc)
-            await wecom_client.reply_text(userid, "处理消息时出错，请稍后重试。")
+            await wecom_client.reply_text(userid, "不好意思出了点小状况~ 你再发一遍试试？")
 
 
 async def _do_agent_work(userid: str, text: str) -> str:

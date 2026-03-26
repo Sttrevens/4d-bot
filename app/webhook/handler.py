@@ -117,7 +117,7 @@ def _is_mention_at_bot_by_name(mentions: list, tenant) -> bool:
     """当 bot_open_id 未知时，通过名字匹配 @mention。
 
     匹配到后自动学习 open_id，下次就不用走名字匹配了。
-    飞书 mention 结构: {"key": "@_user_1", "id": {"open_id": "ou_xxx"}, "name": "BotName"}
+    飞书 mention 结构: {"key": "@_user_1", "id": {"open_id": "ou_xxx"}, "name": "高梦"}
 
     匹配候选：tenant.name + tenant.bot_aliases（飞书应用显示名可能和 tenant.name 不同）
     """
@@ -695,7 +695,7 @@ async def _dispatch_message(
         logger.exception("_dispatch_message unhandled error (msg_type=%s)", msg_type)
         record_error("unhandled", f"_dispatch_message 异常 msg_type={msg_type}", exc=exc)
         try:
-            await feishu_client.reply_text(message_id, "处理消息时出错，请稍后再试。")
+            await feishu_client.reply_text(message_id, "不好意思出了点小状况~ 你再发一遍试试？")
         except Exception:
             logger.exception("fallback reply also failed")
     finally:
@@ -1483,10 +1483,8 @@ async def _process_and_reply_inner(
                 f"消息处理超时 ({_PROCESS_TIMEOUT}s) sender={sender_id} text={user_text[:200]}",
             )
             try:
-                await feishu_client.reply_text(
-                    message_id,
-                    f"处理超时（超过 {_PROCESS_TIMEOUT} 秒），请尝试简化消息后重试。",
-                )
+                from app.services.base_agent import build_timeout_message
+                await feishu_client.reply_text(message_id, build_timeout_message())
             except Exception:
                 logger.exception("timeout reply failed")
         except Exception as exc:
@@ -1498,7 +1496,7 @@ async def _process_and_reply_inner(
             )
             try:
                 await feishu_client.reply_text(
-                    message_id, "处理消息时出错，请稍后再试。"
+                    message_id, "不好意思出了点小状况~ 你再发一遍试试？"
                 )
             except Exception:
                 logger.exception("error reply failed")
