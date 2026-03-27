@@ -109,7 +109,7 @@ def check_trial(tenant_id: str, user_id: str, duration_hours: int = 48,
         return True, "trial_active"
 
     except Exception:
-        logger.debug("trial check failed", exc_info=True)
+        logger.warning("trial check failed", exc_info=True)
         return True, ""  # fail-open
 
 
@@ -217,7 +217,7 @@ def check_user_token_quota(
         return True, ""
 
     except Exception:
-        logger.debug("token quota check failed", exc_info=True)
+        logger.warning("token quota check failed", exc_info=True)
         return True, ""  # fail-open
 
 
@@ -240,7 +240,7 @@ def record_user_tokens(
             ["EXPIRE", key, str(_6H_SECONDS + 60)],
         ])
     except Exception:
-        logger.debug("record_user_tokens failed", exc_info=True)
+        logger.warning("record_user_tokens failed", exc_info=True)
 
 
 def _format_tokens(n: int) -> str:
@@ -398,7 +398,7 @@ def list_trial_users(tenant_id: str) -> list[dict]:
         return users
 
     except Exception:
-        logger.debug("list_trial_users failed", exc_info=True)
+        logger.warning("list_trial_users failed", exc_info=True)
         return []
 
 

@@ -81,7 +81,7 @@ def record_tool_call(
         # 清除缓存
         _stats_cache.pop(key, None)
     except Exception:
-        logger.debug("tool_tracker: record failed", exc_info=True)
+        logger.warning("tool_tracker: record failed", exc_info=True)
 
 
 def _track_consecutive_failures(
@@ -160,7 +160,7 @@ def record_lesson(
         execute("LTRIM", key, 0, 49)  # 最多保留 50 条
         execute("EXPIRE", key, 2592000)
     except Exception:
-        logger.debug("tool_tracker: record_lesson failed", exc_info=True)
+        logger.warning("tool_tracker: record_lesson failed", exc_info=True)
 
 
 def get_tool_stats(tenant_id: str, tool_name: str) -> dict[str, Any]:
@@ -184,7 +184,7 @@ def get_tool_stats(tenant_id: str, tool_name: str) -> dict[str, Any]:
         _stats_cache[key] = (time.time(), stats)
         return stats
     except Exception:
-        logger.debug("tool_tracker: get_stats failed", exc_info=True)
+        logger.warning("tool_tracker: get_stats failed", exc_info=True)
         return {}
 
 
@@ -206,7 +206,7 @@ def get_recent_lessons(tenant_id: str, limit: int = 10) -> list[dict]:
                 continue
         return lessons
     except Exception:
-        logger.debug("tool_tracker: get_lessons failed", exc_info=True)
+        logger.warning("tool_tracker: get_lessons failed", exc_info=True)
         return []
 
 
@@ -251,7 +251,7 @@ def _bulk_get_tool_stats(tenant_id: str, tool_names: set[str]) -> dict[str, dict
             if stats:
                 result[name] = stats
     except Exception:
-        logger.debug("tool_tracker: bulk_get_stats failed", exc_info=True)
+        logger.warning("tool_tracker: bulk_get_stats failed", exc_info=True)
 
     return result
 
@@ -327,7 +327,7 @@ def flush_session_sequence(tenant_id: str) -> None:
             execute("HINCRBY", key, combo, 1)
         execute("EXPIRE", key, 2592000)  # 30 天
     except Exception:
-        logger.debug("tool_tracker: flush_sequence failed", exc_info=True)
+        logger.warning("tool_tracker: flush_sequence failed", exc_info=True)
 
 
 def get_frequent_combos(tenant_id: str, min_freq: int = 0) -> list[tuple[str, int]]:
@@ -353,7 +353,7 @@ def get_frequent_combos(tenant_id: str, min_freq: int = 0) -> list[tuple[str, in
         combos.sort(key=lambda x: x[1], reverse=True)
         return combos[:20]
     except Exception:
-        logger.debug("tool_tracker: get_combos failed", exc_info=True)
+        logger.warning("tool_tracker: get_combos failed", exc_info=True)
         return []
 
 
@@ -451,5 +451,5 @@ def get_all_tool_stats_summary(tenant_id: str) -> list[dict[str, Any]]:
         summaries.sort(key=lambda x: x["calls"], reverse=True)
         return summaries
     except Exception:
-        logger.debug("tool_tracker: get_all_stats_summary failed", exc_info=True)
+        logger.warning("tool_tracker: get_all_stats_summary failed", exc_info=True)
         return []

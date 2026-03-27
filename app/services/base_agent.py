@@ -1819,7 +1819,7 @@ async def _build_system_prompt(
             if plans_ctx:
                 prompt += f"\n\n{plans_ctx}"
         except Exception:
-            logger.debug("memory context injection failed", exc_info=True)
+            logger.warning("memory context injection failed", exc_info=True)
 
     # 跨平台身份上下文：让 LLM 知道当前用户的跨 channel 身份
     try:
@@ -1841,7 +1841,7 @@ async def _build_system_prompt(
                 f"\n如果用户提到自己在其他平台也和你聊过，你可以用 search_known_user 搜索并发起验证。"
             )
     except Exception:
-        logger.debug("identity context injection failed", exc_info=True)
+        logger.warning("identity context injection failed", exc_info=True)
 
     # 超管身份：注入待审批请求提醒 + 权限标识
     try:
@@ -1852,7 +1852,7 @@ async def _build_system_prompt(
         elif tenant.deploy_free_quota > 0:
             prompt += _build_deploy_quota_context(tenant, sender_ctx.sender_id)
     except Exception:
-        logger.debug("admin context injection failed", exc_info=True)
+        logger.warning("admin context injection failed", exc_info=True)
 
     return prompt
 

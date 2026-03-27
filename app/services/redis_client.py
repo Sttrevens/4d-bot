@@ -110,7 +110,7 @@ def execute(*args: str | int) -> Any:
         logger.warning("Redis not configured, command skipped: %s", args[0] if args else "?")
         return None
     if _cb_is_open():
-        logger.debug("Redis command skipped (circuit breaker open): %s", args[0] if args else "?")
+        logger.warning("Redis command skipped (circuit breaker open): %s", args[0] if args else "?")
         return None
 
     try:

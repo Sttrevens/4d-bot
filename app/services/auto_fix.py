@@ -924,7 +924,7 @@ def maybe_trigger_fix(error_category: str = "") -> None:
             return
     except Exception:
         # 无法确定租户上下文，安全起见不触发修复
-        logger.debug("auto_fix: skipped (tenant context unavailable)")
+        logger.warning("auto_fix: skipped (tenant context unavailable)")
         return
     # 服务别的 repo 时：确定的 bug 类别直接通过，待分类的让 _debounced_fix 处理
     if _is_serving_other_repo() and error_category not in _CODE_BUG_CATEGORIES and error_category not in _CLASSIFY_CATEGORIES:

@@ -57,7 +57,7 @@ def _get_removed_tenants() -> set[str]:
             if isinstance(members, list):
                 return set(members)
     except Exception:
-        pass
+        logger.warning("_get_removed_tenants failed", exc_info=True)
     return set()
 
 
@@ -67,7 +67,7 @@ def _mark_tenant_removed(tenant_id: str) -> None:
         if redis.available():
             redis.execute("SADD", _REMOVED_TENANTS_KEY, tenant_id)
     except Exception:
-        logger.debug("Failed to mark tenant %s as removed", tenant_id, exc_info=True)
+        logger.warning("Failed to mark tenant %s as removed", tenant_id, exc_info=True)
 
 
 def publish_tenant_meta() -> int:
@@ -223,7 +223,7 @@ def _resolve_tenant(tenant_id: str):
             })
             return t
         except Exception:
-            logger.debug("_resolve_tenant: failed to construct from tenant_cfg:%s", tenant_id, exc_info=True)
+            logger.warning("_resolve_tenant: failed to construct from tenant_cfg:%s", tenant_id, exc_info=True)
 
     # 3) Redis admin:tenant: (metadata only — minimal config)
     raw = redis.execute("GET", f"admin:tenant:{tenant_id}")
@@ -238,7 +238,7 @@ def _resolve_tenant(tenant_id: str):
             )
             return t
         except Exception:
-            logger.debug("_resolve_tenant: failed to construct from admin:tenant:%s", tenant_id, exc_info=True)
+            logger.warning("_resolve_tenant: failed to construct from admin:tenant:%s", tenant_id, exc_info=True)
 
     return None
 
@@ -316,9 +316,9 @@ async def api_tenants(_token: str = Depends(_verify_token)):
                     if t_id and t_id != tid:
                         co_host_map[t_id] = tid
             except Exception:
-                pass
+                logger.warning("Failed to parse co-tenant config for %s", tid, exc_info=True)
     except Exception:
-        pass
+        logger.warning("Failed to build co-host map from provisioner", exc_info=True)
 
     for t in tenants:
         tid = t.get("tenant_id", "")

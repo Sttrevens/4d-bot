@@ -395,6 +395,32 @@ async def health_diagnostics():
     except Exception:
         checks["checks"]["recent_errors"] = {"status": "unavailable"}
 
+    # 6) 静默降级检测（从最近日志中扫描已知的 fail-open 模式）
+    degraded_systems = []
+    try:
+        recent_lines = list(LOG_BUFFER)[-2000:]
+        _DEGRADED_PATTERNS = {
+            "intent_fallback": ("keyword fallback", "意图分类 100% 走关键词，LLM JSON 输出不可用"),
+            "exit_review_fallback": ("cannot parse scores", "Exit review 形同虚设，质量检查不工作"),
+            "trial_fail_open": ("trial check failed", "试用期检查失败，过期用户可能放行"),
+            "quota_fail_open": ("quota check failed", "配额检查失败，可能超额使用"),
+            "redis_circuit_breaker": ("circuit breaker open", "Redis 断路器打开，所有 Redis 功能降级"),
+            "metering_failed": ("metering record failed", "计量记录失败，用量数据不准确"),
+            "token_quota_fail": ("token quota check failed", "Token 配额检查失败"),
+        }
+        for key, (pattern, desc) in _DEGRADED_PATTERNS.items():
+            count = sum(1 for line in recent_lines if pattern in line)
+            if count > 0:
+                degraded_systems.append({"system": key, "description": desc, "occurrences": count})
+        if degraded_systems:
+            checks["status"] = "degraded"
+        checks["checks"]["degraded_systems"] = {
+            "count": len(degraded_systems),
+            "systems": degraded_systems,
+        }
+    except Exception:
+        checks["checks"]["degraded_systems"] = {"status": "unavailable"}
+
     return checks
 
 

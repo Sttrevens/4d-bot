@@ -91,7 +91,7 @@ def check_deploy_quota(tenant_id: str, user_id: str, free_deploys: int = 1) -> d
             "deploys": deploys,
         }
     except Exception:
-        logger.debug("deploy_quota: check failed, fail-open", exc_info=True)
+        logger.warning("deploy_quota: check failed, fail-open", exc_info=True)
         return {"allowed": True, "remaining": free_deploys, "used": 0, "total": free_deploys, "deploys": []}
 
 
@@ -181,7 +181,7 @@ def init_user_quota(tenant_id: str, user_id: str, free_deploys: int = 1) -> bool
         ])
         return True
     except Exception:
-        logger.debug("deploy_quota: init failed", exc_info=True)
+        logger.warning("deploy_quota: init failed", exc_info=True)
         return False
 
 
@@ -291,5 +291,5 @@ def list_all_quotas(tenant_id: str) -> list[dict]:
                 break
         results.sort(key=lambda x: x.get("first_request", ""), reverse=True)
     except Exception:
-        logger.debug("deploy_quota: list failed", exc_info=True)
+        logger.warning("deploy_quota: list failed", exc_info=True)
     return results

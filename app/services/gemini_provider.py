@@ -525,7 +525,7 @@ def _maybe_record_watchdog(
             recorded_at=_t.time(),
         ))
     except Exception:
-        logger.debug("watchdog record failed", exc_info=True)
+        logger.warning("watchdog record failed", exc_info=True)
 
 
 def _record_sub_agent_metrics(
@@ -541,7 +541,7 @@ def _record_sub_agent_metrics(
             elapsed_s, result_len, outcome, tools_used,
         )
     except Exception:
-        logger.debug("sub-agent metrics record failed", exc_info=True)
+        logger.warning("sub-agent metrics record failed", exc_info=True)
 
 
 async def _run_sub_agent(
