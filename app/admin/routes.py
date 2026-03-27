@@ -332,7 +332,7 @@ async def api_tenants(_token: str = Depends(_verify_token)):
 
 # 可通过 dashboard 安全编辑的字段（不含密钥/凭证）
 _EDITABLE_FIELDS = (
-    "name", "llm_system_prompt", "custom_persona",
+    "name", "llm_system_prompt", "custom_persona", "greeting_message",
     "trial_enabled", "trial_duration_hours", "approval_duration_days",
     "quota_user_tokens_6h", "quota_monthly_api_calls", "quota_monthly_tokens",
     "rate_limit_rpm", "rate_limit_user_rpm", "deploy_free_quota",

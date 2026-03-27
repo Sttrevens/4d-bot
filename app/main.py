@@ -317,6 +317,87 @@ async def health():
     return {"status": "ok"}
 
 
+@app.get("/health/diagnostics")
+async def health_diagnostics():
+    """深度健康检查：Redis 连通性 + LLM 代理 + 租户状态 + 错误统计。
+
+    用于系统性排查 bot 宕机/不回复/出问题 的根因。
+    """
+    import time as _time
+    from app.tenant.registry import tenant_registry
+
+    checks = {"timestamp": _time.time(), "status": "ok", "checks": {}}
+
+    # 1) Redis 连通性
+    try:
+        from app.services.redis_client import redis
+        if redis.available():
+            pong = redis.execute("PING")
+            checks["checks"]["redis"] = {"status": "ok", "response": str(pong)}
+        else:
+            checks["checks"]["redis"] = {"status": "unavailable", "response": "redis not configured"}
+    except Exception as e:
+        checks["checks"]["redis"] = {"status": "error", "error": str(e)}
+        checks["status"] = "degraded"
+
+    # 2) LLM 代理（CF Worker）连通性
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=3.0, read=5.0)) as client:
+            # 尝试访问 CF Worker 的 health 或根路径
+            tenants = list(tenant_registry.all_tenants().values())
+            base_url = ""
+            for t in tenants:
+                if t.llm_base_url:
+                    base_url = t.llm_base_url
+                    break
+            if base_url:
+                resp = await client.get(base_url.rstrip("/") + "/")
+                checks["checks"]["llm_proxy"] = {
+                    "status": "ok" if resp.status_code < 500 else "error",
+                    "base_url": base_url,
+                    "status_code": resp.status_code,
+                }
+            else:
+                checks["checks"]["llm_proxy"] = {"status": "skip", "reason": "no llm_base_url configured"}
+    except Exception as e:
+        checks["checks"]["llm_proxy"] = {"status": "error", "error": str(e)[:200]}
+        checks["status"] = "degraded"
+
+    # 3) 租户列表
+    tenants_info = []
+    for tid, t in tenant_registry.all_tenants().items():
+        tenants_info.append({
+            "tenant_id": tid,
+            "name": t.name,
+            "platform": t.platform,
+            "trial_enabled": t.trial_enabled,
+            "has_greeting": bool(getattr(t, "greeting_message", "")),
+        })
+    checks["checks"]["tenants"] = {"count": len(tenants_info), "list": tenants_info}
+
+    # 4) LOG_BUFFER 大小
+    try:
+        checks["checks"]["log_buffer"] = {"size": len(LOG_BUFFER), "max": LOG_BUFFER.maxlen}
+    except Exception:
+        checks["checks"]["log_buffer"] = {"status": "unavailable"}
+
+    # 5) 最近错误（从 LOG_BUFFER 中扫描 ERROR/WARNING）
+    recent_errors = []
+    try:
+        for line in list(LOG_BUFFER)[-500:]:
+            if "[ERROR]" in line or "[WARNING]" in line:
+                recent_errors.append(line[:200])
+        checks["checks"]["recent_errors"] = {
+            "count": len(recent_errors),
+            "last_5": recent_errors[-5:] if recent_errors else [],
+        }
+    except Exception:
+        checks["checks"]["recent_errors"] = {"status": "unavailable"}
+
+    return checks
+
+
 def _verify_internal_token(request: Request):
     """验证 /_internal/* 接口的认证 token（复用 ADMIN_TOKEN）"""
     import os

@@ -2349,12 +2349,21 @@ async def llm_exit_review(
         resp = await asyncio.wait_for(
             gemini_client.aio.models.generate_content(
                 model="gemini-3-flash-preview",
-                contents=prompt,
+                contents=prompt + "\n\nReply ONLY with valid JSON. Example: {\"relevance\": 8, \"factual\": 8, \"behavioral\": 8}",
                 config=_t.GenerateContentConfig(
                     temperature=0.0,
-                    max_output_tokens=50,
+                    max_output_tokens=80,
                     thinking_config=_t.ThinkingConfig(include_thoughts=False),
                     response_mime_type="application/json",
+                    response_schema={
+                        "type": "object",
+                        "properties": {
+                            "relevance": {"type": "integer"},
+                            "factual": {"type": "integer"},
+                            "behavioral": {"type": "integer"}
+                        },
+                        "required": ["relevance", "factual", "behavioral"]
+                    },
                 ),
             ),
             timeout=5.0,
@@ -2368,7 +2377,11 @@ async def llm_exit_review(
             # JSON 解析失败，尝试 regex 提取
             m = _re.search(r'\{[^}]+\}', raw)
             if m:
-                scores = json.loads(m.group(0))
+                try:
+                    scores = json.loads(m.group(0))
+                except (json.JSONDecodeError, ValueError):
+                    logger.info("exit review: cannot parse scores from %r, pass", raw[:60])
+                    return "pass"
             else:
                 logger.info("exit review: cannot parse scores from %r, pass", raw[:60])
                 return "pass"

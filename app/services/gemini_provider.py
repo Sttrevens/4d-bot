@@ -166,17 +166,26 @@ async def _classify_intent_llm(
         # 截断长消息（分类只需要前 200 字）
         truncated = text_stripped[:200]
         # 在 prompt 尾部追加 JSON 强制指令，防止 CF Worker 代理不传递 response_mime_type
-        classification_input = _CLASSIFY_PROMPT + truncated + "\n\nReply ONLY with valid JSON, no other text."
+        classification_input = _CLASSIFY_PROMPT + truncated + "\n\nReply ONLY with valid JSON, no other text. Example: {\"type\": \"normal\", \"groups\": [\"core\"]}"
         resp = await client.aio.models.generate_content(
             model=model_name,
             contents=classification_input,
             config=types.GenerateContentConfig(
                 temperature=0.0,
-                max_output_tokens=100,
+                max_output_tokens=150,
                 # 禁止 thinking，否则输出可能被 thinking 消耗导致 text 为空
                 thinking_config=types.ThinkingConfig(include_thoughts=False),
-                # 强制 JSON 输出
+                # 强制 JSON 输出（CF Worker 代理可能不传递此参数，靠 prompt 兜底）
                 response_mime_type="application/json",
+                # 定义精确的 response schema，增强 JSON 输出的可靠性
+                response_schema={
+                    "type": "object",
+                    "properties": {
+                        "type": {"type": "string", "enum": ["quick", "normal", "research", "deep", "provision"]},
+                        "groups": {"type": "array", "items": {"type": "string"}}
+                    },
+                    "required": ["type", "groups"]
+                },
             ),
         )
         raw = (resp.text or "").strip()
