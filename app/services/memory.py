@@ -766,6 +766,13 @@ async def write_diary(
     except Exception:
         logger.debug("write_diary: remember failed", exc_info=True)
 
+    # 累加 dream 会话计数器
+    try:
+        from app.services.dream import increment_session_counter
+        increment_session_counter()
+    except Exception:
+        pass
+
     # 偏好写入用户画像
     if prefs:
         try:
@@ -1141,8 +1148,8 @@ async def _llm_recall_decision(user_text: str) -> dict | None:
     return await _llm_json_call(_RECALL_PROMPT, user_text[:200])
 
 
-async def _llm_json_call(system_prompt: str, user_content: str) -> dict | None:
-    """通用轻量 LLM 调用，返回 JSON dict。"""
+async def _llm_json_call(system_prompt: str, user_content: str) -> dict | list | None:
+    """通用轻量 LLM 调用，返回 JSON dict 或 list。"""
     from openai import AsyncOpenAI
     from app.config import settings
 
@@ -1162,7 +1169,11 @@ async def _llm_json_call(system_prompt: str, user_content: str) -> dict | None:
         )
         answer = resp.choices[0].message.content.strip()
         # 尝试提取 JSON（兼容 LLM 输出前后有多余文本）
+        # 优先尝试 object {...}，再尝试 array [...]
         m = re.search(r"\{.*\}", answer, re.DOTALL)
+        if m:
+            return json.loads(m.group())
+        m = re.search(r"\[.*\]", answer, re.DOTALL)
         if m:
             return json.loads(m.group())
         return None

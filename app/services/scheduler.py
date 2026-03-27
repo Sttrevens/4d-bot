@@ -363,6 +363,40 @@ _DISTILL_INTERVAL = 3600 * 6  # 6 小时检查一次
 _last_distill_ts: float = 0
 
 
+async def _maybe_dream() -> None:
+    """空闲时触发记忆整合（Dream）。
+
+    条件：工作时间内 + 距上次 dream ≥24h + 累计 ≥5 次 write_diary。
+    遍历所有租户，逐个执行。
+    """
+    if not _in_work_hours():
+        return
+
+    try:
+        from app.tenant.registry import tenant_registry
+        from app.tenant.context import set_current_tenant
+        from app.services.dream import should_dream, run_dream
+
+        for tid, tenant in tenant_registry.all_tenants().items():
+            if not getattr(tenant, "memory_dream_enabled", True):
+                continue
+            if not getattr(tenant, "memory_diary_enabled", True):
+                continue
+            try:
+                set_current_tenant(tenant)
+                if not should_dream():
+                    continue
+                result = await asyncio.wait_for(run_dream(), timeout=60)
+                if result and not result.get("skipped"):
+                    logger.info("scheduler: dream completed for %s — %s", tid, result)
+            except asyncio.TimeoutError:
+                logger.debug("scheduler: dream timeout for %s", tid)
+            except Exception:
+                logger.debug("scheduler: dream failed for %s", tid, exc_info=True)
+    except Exception:
+        logger.debug("scheduler: dream check failed", exc_info=True)
+
+
 async def _maybe_distill_memory() -> None:
     """空闲时触发记忆蒸馏（GenericAgent 式自组织）。
 
@@ -609,13 +643,18 @@ async def _scheduler_loop() -> None:
         except Exception:
             logger.exception("scheduler: loop iteration failed")
 
-        # 每 10 个循环（~10 分钟）检查一次是否需要蒸馏
+        # 每 10 个循环（~20 分钟）检查一次是否需要蒸馏或 dream
         _cycle += 1
         if _cycle % 10 == 0:
             try:
                 await _maybe_distill_memory()
             except Exception:
                 logger.debug("scheduler: distill check failed", exc_info=True)
+
+            try:
+                await _maybe_dream()
+            except Exception:
+                logger.debug("scheduler: dream check failed", exc_info=True)
 
         await asyncio.sleep(_CHECK_INTERVAL)
 

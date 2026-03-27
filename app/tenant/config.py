@@ -170,6 +170,7 @@ class TenantConfig:
     memory_chat_ttl: int = 3600
     memory_context_enabled: bool = True
     memory_org_recall_enabled: bool = False
+    memory_dream_enabled: bool = True
 
     # ── AGENT.md 项目上下文 ──
     # 类似 Claude Code 的 CLAUDE.md：从 GitHub 仓库加载项目级上下文，
