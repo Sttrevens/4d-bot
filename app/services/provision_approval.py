@@ -56,7 +56,7 @@ def _fire_and_forget_notify(request_data: dict):
             )
             await notify_super_admin(msg)
         except Exception:
-            logger.debug("provision notify failed", exc_info=True)
+            logger.warning("provision notify failed", exc_info=True)
 
     try:
         loop = asyncio.get_running_loop()
@@ -178,7 +178,7 @@ def list_pending() -> list[dict]:
                 pending.append(req)
         return pending
     except Exception:
-        logger.debug("provision_approval: list_pending failed", exc_info=True)
+        logger.warning("provision_approval: list_pending failed", exc_info=True)
         return []
 
 
@@ -263,7 +263,7 @@ def approve_request(request_id: str, approved_by: str = "admin") -> dict | None:
                         port=provision_result.get("port", 0),
                     )
                 except Exception:
-                    logger.debug("auto bind_customer failed", exc_info=True)
+                    logger.warning("auto bind_customer failed", exc_info=True)
 
                 # 消耗部署配额（仅成功才扣）
                 try:
@@ -278,7 +278,7 @@ def approve_request(request_id: str, approved_by: str = "admin") -> dict | None:
                             req["tenant_id"], free_q,
                         )
                 except Exception:
-                    logger.debug("deploy_quota consume failed", exc_info=True)
+                    logger.warning("deploy_quota consume failed", exc_info=True)
 
         except Exception as e:
             logger.warning("provision_approval: auto-provision failed: %s", e)

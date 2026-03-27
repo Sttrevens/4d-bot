@@ -180,6 +180,9 @@ class TenantConfig:
     # ── 试用期 ──
     trial_enabled: bool = False
     trial_duration_hours: int = 48
+    # 欢迎语：enter_session 时自动发送（空字符串=不发送）
+    # 解决试用 bot 扫码进入后空白页面"闪退"问题
+    greeting_message: str = ""
     approval_duration_days: int = 30
     quota_user_tokens_6h: int = 0
 

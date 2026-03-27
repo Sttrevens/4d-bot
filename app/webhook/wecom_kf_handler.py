@@ -973,9 +973,22 @@ async def _handle_event(external_userid: str, event_type: str, msg: dict) -> Non
                     "改为「智能助手接待」而非「人工接待」，否则 bot 无法回复消息。",
                     state_info.get("servicer_userid", "?"), external_userid[:12])
 
-        # 不主动打招呼 — 用户打开聊天窗口不等于想说话，等用户先开口
-        logger.info("wecom_kf: enter_session accepted for user=%s (state→1, no greeting)",
-                    external_userid[:12])
+        # ── 欢迎语：解决试用 bot 扫码进入后空白"闪退"问题 ──
+        # 如果租户配置了 greeting_message，发送欢迎语让用户知道 bot 在线。
+        # 没配置则不打招呼（等用户先开口）。
+        tenant = get_current_tenant()
+        greeting = getattr(tenant, "greeting_message", "") if tenant else ""
+        if greeting:
+            try:
+                await _safe_send(external_userid, greeting)
+                logger.info("wecom_kf: enter_session accepted for user=%s (state→1, greeting sent)",
+                            external_userid[:12])
+            except Exception as exc:
+                logger.warning("wecom_kf: enter_session greeting failed for user=%s: %s",
+                               external_userid[:12], exc)
+        else:
+            logger.info("wecom_kf: enter_session accepted for user=%s (state→1, no greeting)",
+                        external_userid[:12])
 
     elif event_type == "msg_send_fail":
         logger.warning("wecom_kf: msg send failed for user=%s, event=%s",

@@ -96,7 +96,7 @@ def record_usage(rec: UsageRecord) -> None:
         redis.pipeline(commands)
 
     except Exception:
-        logger.debug("metering record failed", exc_info=True)
+        logger.warning("metering record failed", exc_info=True)
 
 
 def record_sub_agent_run(
@@ -150,7 +150,7 @@ def record_sub_agent_run(
 
         redis.pipeline(commands)
     except Exception:
-        logger.debug("sub-agent metering failed", exc_info=True)
+        logger.warning("sub-agent metering failed", exc_info=True)
 
 
 def check_quota(tenant_id: str) -> tuple[bool, str]:
@@ -199,7 +199,7 @@ def check_quota(tenant_id: str) -> tuple[bool, str]:
         return True, ""
 
     except Exception:
-        logger.debug("quota check failed", exc_info=True)
+        logger.warning("quota check failed", exc_info=True)
         return True, ""  # fail-open
 
 
@@ -238,7 +238,7 @@ def get_usage_summary(tenant_id: str, month: str = "") -> dict:
         return result
 
     except Exception:
-        logger.debug("get_usage_summary failed", exc_info=True)
+        logger.warning("get_usage_summary failed", exc_info=True)
         return {}
 
 
@@ -281,5 +281,5 @@ def get_daily_breakdown(tenant_id: str, month: str = "") -> dict[str, dict]:
         return result
 
     except Exception:
-        logger.debug("get_daily_breakdown failed", exc_info=True)
+        logger.warning("get_daily_breakdown failed", exc_info=True)
         return {}
