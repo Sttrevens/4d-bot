@@ -46,11 +46,20 @@ export default {
     headers.delete("x-real-ip");
     headers.delete("X-Proxy-Token");
 
+    // ⚠️ 关键修复：将 ReadableStream body 缓冲为 ArrayBuffer 再转发。
+    // Cloudflare Workers 直接传 request.body (ReadableStream) 时，
+    // 可能不设置正确的 Content-Length，导致 Google Gemini API
+    // 无法正确解析 generationConfig.responseMimeType 等字段。
+    // 缓冲后 fetch() 会自动计算并设置正确的 Content-Length。
+    const body = request.method !== "GET" && request.method !== "HEAD"
+      ? await request.arrayBuffer()
+      : null;
+
     // 转发请求
     const response = await fetch(url.toString(), {
       method: request.method,
       headers,
-      body: request.body,
+      body,
     });
 
     // 返回响应，添加 CORS 头（可选）
