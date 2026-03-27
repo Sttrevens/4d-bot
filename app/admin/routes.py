@@ -431,7 +431,7 @@ async def api_update_tenant_config(
         tenant_registry.register_from_dict(full_config)
         logger.info("Updated tenant %s config in local registry: %s", tenant_id, list(updates.keys()))
     except Exception as e:
-        logger.debug("register_from_dict for %s: %s (may be cross-container)", tenant_id, e)
+        logger.warning("register_from_dict for %s: %s (may be cross-container)", tenant_id, e)
 
     # 4) 写入本地 tenants.json（只写 updates，不覆盖 ${VAR}；:ro 挂载下会静默失败）
     _update_local_tenants_json(tenant_id, updates)
@@ -444,7 +444,7 @@ async def api_update_tenant_config(
     try:
         publish_tenant_meta()
     except Exception:
-        pass
+        logger.warning("publish_tenant_meta failed after config update for %s", tenant_id, exc_info=True)
 
     return {
         "ok": True, "tenant_id": tenant_id,
@@ -609,7 +609,7 @@ async def api_approve_user(
         body = await request.json()
         duration_days = int(body.get("duration_days", 0))
     except Exception:
-        pass  # no body or invalid → permanent
+        logger.warning("Failed to parse approve request body for %s/%s", tenant_id, user_id, exc_info=True)
     ok = approve_user(tenant_id, user_id, approved_by="admin_dashboard",
                       duration_days=duration_days)
     if not ok:
@@ -801,6 +801,7 @@ async def api_self_logs(
         from app.main import LOG_BUFFER
         log_lines = list(LOG_BUFFER)[-lines:]
     except Exception:
+        logger.warning("Failed to read LOG_BUFFER from app.main", exc_info=True)
         log_lines = []
 
     # ── 方案2（fallback）：读日志文件 ──
@@ -812,7 +813,7 @@ async def api_self_logs(
                     log_lines = all_lines[-lines:]
                     log_source = "file"
                 except Exception:
-                    pass
+                    logger.warning("Failed to read log file %s", candidate, exc_info=True)
                 break
 
     if not log_lines:
@@ -961,7 +962,7 @@ async def api_instance_logs(
                         headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"},
                     )
     except Exception:
-        pass  # Redis 读取失败，fallback 到 provisioner
+        logger.warning("Redis log cache read failed for %s, falling back to provisioner", tenant_id, exc_info=True)
 
     # ── Fallback：走 provisioner 三层获取（HTTP 代理 → 文件 → docker logs）──
     from app.services.provisioner import get_instance_logs
@@ -1139,13 +1140,13 @@ async def api_add_co_tenant(
     try:
         tenant_registry.register_from_dict(new_config)
     except Exception:
-        pass
+        logger.warning("Failed to register co-tenant %s in local registry", tenant_id, exc_info=True)
 
     # 同步到根 tenants.json（CI/CD source of truth，如果可访问）
     try:
         _cohost_tenant(info, new_config)
     except Exception as e:
-        logger.debug("_cohost_tenant fallback: %s (expected if INSTANCES_DIR missing)", e)
+        logger.warning("_cohost_tenant fallback: %s (expected if INSTANCES_DIR missing)", e)
 
     return {
         "ok": True,
@@ -1717,7 +1718,7 @@ def _persist_channels(tenant_id: str, channels: list):
                 logger.info("Persisted channels for %s to Redis tenant_cfg", tenant_id)
                 written = True
             except Exception:
-                pass
+                logger.warning("Failed to persist channels to Redis tenant_cfg for %s", tenant_id, exc_info=True)
         if not written:
             # tenant_cfg 不存在：更新或创建 admin:tenant 元数据
             meta_key = f"admin:tenant:{tenant_id}"
@@ -1740,7 +1741,7 @@ def _persist_channels(tenant_id: str, channels: list):
     try:
         publish_tenant_meta()
     except Exception:
-        pass
+        logger.warning("publish_tenant_meta failed after channel persist for %s", tenant_id, exc_info=True)
 
 
 @router.post("/api/tenants/{tenant_id}/channels")
