@@ -28,7 +28,7 @@ from app.services.user_registry import register as register_user, register_p2p_c
 from app.services.oauth_store import build_auth_url, is_authorized, get_token_info, clear_user_token
 from app.services.error_log import record_error
 from app.tools.message_ops import fetch_chat_history
-from app.tenant.context import get_current_tenant, set_current_tenant, set_current_channel
+from app.tenant.context import get_current_tenant, set_current_tenant, set_current_channel, set_current_chat_id
 from app.tenant.registry import tenant_registry
 from app.webhook.base import (
     MessageDedup, UserStateManager, tuk,
@@ -410,6 +410,7 @@ async def _handle_event_inner(request: Request) -> dict[str, Any]:
     _tenant = tenant
     async def _dispatch_with_tenant():
         set_current_tenant(_tenant)
+        set_current_chat_id(chat_id)
         try:
             await _dispatch_message(msg_type, message, message_id, sender_id, chat_id, chat_type)
         except Exception:

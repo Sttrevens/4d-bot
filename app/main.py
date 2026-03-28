@@ -12,6 +12,7 @@ from fastapi.responses import HTMLResponse
 
 from app.config import settings
 from app.webhook.handler import router as webhook_router
+from app.webhook.cc_bridge import router as cc_bridge_router
 from app.webhook.wecom_handler import router as wecom_router
 from app.webhook.wecom_kf_handler import router as wecom_kf_router
 from app.webhook.qq_handler import router as qq_router
@@ -120,6 +121,7 @@ app = FastAPI(title="Feishu Code Bot", version="0.1.0")
 # 跟踪所有后台任务，shutdown 时统一取消
 _bg_tasks: list[asyncio.Task] = []
 app.include_router(webhook_router)
+app.include_router(cc_bridge_router)
 app.include_router(wecom_router)
 app.include_router(wecom_kf_router)
 app.include_router(qq_router)

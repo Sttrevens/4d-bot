@@ -577,6 +577,7 @@ async def _run_sub_agent(
         tenant,
         user_text=user_text,
         override_groups=agent_cfg.get("tool_groups"),
+        extra_tools=agent_cfg.get("extra_tools"),
     )
 
     # 构建子 agent 的 Gemini config

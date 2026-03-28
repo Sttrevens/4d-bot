@@ -221,6 +221,10 @@ from app.tools.cron_agent_ops import (
     TOOL_DEFINITIONS as CRON_AGENT_TOOLS,
     TOOL_MAP as CRON_AGENT_TOOL_MAP,
 )
+from app.tools.remote_dev_ops import (
+    TOOL_DEFINITIONS as REMOTE_DEV_TOOLS,
+    TOOL_MAP as REMOTE_DEV_TOOL_MAP,
+)
 from app.services import user_registry
 from app.services import memory as bot_memory
 from app.services import planner as bot_planner
@@ -281,6 +285,7 @@ ALL_TOOL_MAP = {
     **IMAGE_TOOL_MAP,
     **SKILL_MGMT_TOOL_MAP,
     **CRON_AGENT_TOOL_MAP,
+    **REMOTE_DEV_TOOL_MAP,
 }
 
 # 自我迭代相关工具名（客户租户禁用）
@@ -333,6 +338,7 @@ _ALL_TOOL_DEFS = (
     + IMAGE_TOOLS
     + SKILL_MGMT_TOOLS
     + CRON_AGENT_TOOLS
+    + REMOTE_DEV_TOOLS
 )
 
 
@@ -653,6 +659,7 @@ _TOOL_GROUPS: dict[str, frozenset[str]] = {
     "code_dev": (
         frozenset(FILE_TOOL_MAP) | frozenset(GIT_TOOL_MAP) | frozenset(GITHUB_TOOL_MAP)
         | frozenset(REPO_SEARCH_TOOL_MAP) | frozenset(ISSUE_TOOL_MAP)
+        | frozenset(REMOTE_DEV_TOOL_MAP)
     ),
     "devops": frozenset(SELF_TOOL_MAP) | frozenset(SERVER_TOOL_MAP),
     "research": frozenset(SOCIAL_MEDIA_TOOL_MAP) | frozenset(XHS_TOOL_MAP) | frozenset(BROWSER_TOOL_MAP),
@@ -676,6 +683,7 @@ _GROUP_KEYWORDS: dict[str, list[str]] = {
     "code_dev": [
         "代码", "code", "PR", "pull request", "分支", "branch",
         "git", "bug", "issue", "仓库", "repo", "commit", "merge",
+        "脚本", "script", "工程", "改代码", "修复",
     ],
     "devops": [
         "部署", "deploy", "服务器", "server", "日志", "log", "重启", "restart",
@@ -707,7 +715,7 @@ _GROUP_KEYWORDS: dict[str, list[str]] = {
 # 工具组描述（供 request_more_tools 展示给 LLM）
 _GROUP_DESCRIPTIONS: dict[str, str] = {
     "feishu_collab": "飞书办公：日历/文档/任务/消息/多维表格/邮件",
-    "code_dev": "代码开发：文件读写/Git/GitHub/Issue",
+    "code_dev": "代码开发：文件读写/Git/GitHub/Issue/远程工程操作",
     "devops": "运维部署：服务器操作/自修复/日志",
     "research": "调研搜索：社媒/小红书/抖音/浏览器自动化",
     "content": "内容输出：视频分析/文件导出",
@@ -903,6 +911,7 @@ def _get_tenant_tools(
     user_text: str = "",
     override_groups: set[str] | None = None,
     suggested_groups: set[str] | None = None,
+    extra_tools: set[str] | None = None,
 ) -> tuple[list[dict], dict]:
     """获取当前租户可用的工具集（OpenAI 格式定义 + 处理函数 map）
 
@@ -967,6 +976,9 @@ def _get_tenant_tools(
         # 子 agent 模式：精确加载声明的工具组，不加 request_more_tools
         active_groups = override_groups
         active_tool_names = _get_group_tool_names(active_groups)
+        # extra_tools: 子 agent 声明的额外单个工具（不用引入整个 core 组）
+        if extra_tools:
+            active_tool_names |= extra_tools
         tool_defs = [t for t in tool_defs if t["name"] in active_tool_names]
         # 子 agent 的 tool_map 也过滤（不需要动态扩展能力）
         tool_map = {k: v for k, v in tool_map.items() if k in active_tool_names}
@@ -1531,12 +1543,18 @@ SUB_AGENT_TYPES = {
         "system_suffix": "\n\n[内容生成模式]\n你的任务是根据提供的数据和要求生成文件。\n必须调用 export_file 工具实际生成文件，不要只用文字描述内容。",
     },
     "code": {
-        "description": "代码操作子代理：读代码、改代码、创建 PR",
+        "description": "代码操作子代理：读代码、改代码、创建 PR、远程工程操作",
         "max_rounds": 15,
         "budget_seconds": 150,
         "stall_multiplier": 1.0,
-        "tool_groups": {"core", "code_dev", "devops"},
-        "system_suffix": "\n\n[代码操作模式]\n修改代码后必须验证：读取修改结果确认变更正确。",
+        "tool_groups": {"code_dev"},
+        "extra_tools": {"think", "export_file"},
+        "system_suffix": (
+            "\n\n[代码操作模式]"
+            "\n修改已有文件用 edit_file（精确替换），不要用 write_file 重写整个文件。"
+            "\n改多个文件用 commit_batch 原子提交。"
+            "\n修改代码后必须验证：读取修改结果确认变更正确。"
+        ),
     },
     "feishu": {
         "description": "飞书协作子代理：日历、文档、任务、表格、消息、邮件等飞书工作流",
@@ -1595,7 +1613,8 @@ def should_delegate_to_sub_agent(task_type: str, user_text: str, suggested_group
                   "群", "群消息", "发消息", "send_message", "加日程", "创建日程",
                   "会议", "meeting", "审批", "approval", "提醒", "remind"}
     _code_kw = {"代码", "code", "bug", "重构", "refactor", "debug", "issue",
-                "pr", "pull request", "分支", "branch", "commit", "git"}
+                "pr", "pull request", "分支", "branch", "commit", "git",
+                "脚本", "script", "工程", "改代码", "改一下", "修复"}
     _research_kw = {"调研", "研究", "竞品", "分析", "小红书", "xhs", "抖音", "douyin",
                     "tiktok", "博主", "粉丝", "社媒", "搜索", "search", "市场"}
     _admin_kw = {"开通", "租户", "provision", "新bot", "创建bot", "部署bot",

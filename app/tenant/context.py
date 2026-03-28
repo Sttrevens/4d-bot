@@ -42,6 +42,11 @@ _current_sender: contextvars.ContextVar[SenderContext | None] = contextvars.Cont
     "_current_sender", default=None
 )
 
+# 当前请求的 chat_id（由 webhook handler 设置，工具层读取）
+_current_chat_id: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "_current_chat_id", default=""
+)
+
 
 def set_current_tenant(tenant: TenantConfig) -> None:
     """设置当前请求的租户上下文"""
@@ -123,3 +128,13 @@ def get_current_sender() -> SenderContext:
     """获取当前发送者上下文。未设置时返回空 SenderContext。"""
     ctx = _current_sender.get()
     return ctx if ctx is not None else SenderContext()
+
+
+def set_current_chat_id(chat_id: str) -> None:
+    """设置当前请求的 chat_id（由 webhook handler 调用）"""
+    _current_chat_id.set(chat_id)
+
+
+def get_current_chat_id() -> str:
+    """获取当前请求的 chat_id"""
+    return _current_chat_id.get()

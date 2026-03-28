@@ -1,40 +1,40 @@
-"""文件读写工具（通过 GitHub Contents API，无需本地 clone）
+"""文件读写工具（通过 GitHub Contents API + Git Trees API）
 
-- read_file: 通过 API 读取仓库中的文件
-- write_file: 通过 API 创建或更新文件（自动 commit）
+- read_file: 读取仓库中的文件
+- edit_file: 精确替换文件中的文本片段（不用重写整个文件）
+- write_file: 创建或完整覆写文件（保留向后兼容）
+- commit_batch: 原子提交多个文件变更（一次 commit 改多个文件）
 """
 
 from __future__ import annotations
 
 import base64
 import logging
+import re
 
-from app.tools.github_api import gh_get, gh_put
+from app.tools.github_api import gh_get, gh_put, gh_post
 from app.tools.tool_result import ToolResult
 
 logger = logging.getLogger(__name__)
 
-# GitHub Contents API 文件大小限制（1MB）
-_MAX_FILE_SIZE = 1_000_000
+_MAX_FILE_SIZE = 1_000_000  # GitHub Contents API 1MB limit
 
+
+# ── read_file ──
 
 def read_file(path: str, branch: str = "main") -> ToolResult:
     """通过 GitHub API 读取文件内容"""
     data = gh_get(f"/contents/{path}", params={"ref": branch})
     if isinstance(data, str):
         return ToolResult.api_error(data)
-    # 如果是目录
     if isinstance(data, list):
         items = [f"{'dir' if f['type'] == 'dir' else 'file'}: {f['name']}" for f in data]
         return ToolResult.success("\n".join(items))
 
     file_size = data.get("size", 0)
-    # 文件过大时提前警告
     if file_size > _MAX_FILE_SIZE:
         return ToolResult.error(
-            f"文件 {path} 大小为 {file_size:,} 字节（{file_size // 1024}KB），"
-            f"超过 GitHub API 限制（1MB），无法通过 API 读取完整内容。"
-            f"建议：告诉用户需要在本地编辑此文件。",
+            f"文件 {path} 大小 {file_size // 1024}KB，超过 GitHub API 限制（1MB）。需要在本地编辑。",
             code="blocked",
         )
 
@@ -45,16 +45,80 @@ def read_file(path: str, branch: str = "main") -> ToolResult:
         return ToolResult.error("failed to decode file content (might be binary)")
 
     line_count = content.count("\n") + 1
-    # 给模型一个文件大小提示
     if line_count > 300:
-        header = f"[INFO] 文件 {path} 共 {line_count} 行（{file_size:,} 字节）。如需修改，建议只描述改动点，不要重写整个文件。\n\n"
+        header = f"[INFO] {path}: {line_count} 行, {file_size:,} 字节。修改时用 edit_file 做精确替换，不要用 write_file 重写整个文件。\n\n"
         return ToolResult.success(header + content)
 
     return ToolResult.success(content)
 
 
+# ── edit_file（精确替换，不用重写整个文件） ──
+
+def edit_file(path: str, old_string: str, new_string: str, branch: str = "", message: str = "") -> ToolResult:
+    """在文件中精确替换一段文本。比 write_file 高效：只需提供要替换的片段。"""
+    if not branch:
+        branch = "main"
+    if not old_string:
+        return ToolResult.invalid_param("old_string 不能为空")
+    if old_string == new_string:
+        return ToolResult.invalid_param("old_string 和 new_string 相同，没有变更")
+
+    # 读取当前文件
+    data = gh_get(f"/contents/{path}", params={"ref": branch})
+    if isinstance(data, str):
+        return ToolResult.api_error(f"读取失败: {data}")
+    if isinstance(data, list):
+        return ToolResult.error(f"{path} 是目录不是文件")
+
+    sha = data.get("sha", "")
+    try:
+        content = base64.b64decode(data.get("content", "")).decode("utf-8")
+    except Exception:
+        return ToolResult.error("无法解码文件内容（可能是二进制文件）")
+
+    # 检查 old_string 是否存在且唯一
+    count = content.count(old_string)
+    if count == 0:
+        # 给出上下文帮助定位
+        lines = content.splitlines()
+        preview = "\n".join(lines[:20]) if len(lines) > 20 else content[:500]
+        return ToolResult.error(
+            f"在 {path} 中找不到要替换的文本。文件开头预览:\n{preview}",
+            retry_hint="确认 old_string 与文件中的文本完全一致（包括空格和缩进）",
+        )
+    if count > 1:
+        return ToolResult.error(
+            f"old_string 在文件中出现 {count} 次，无法确定替换哪一个。请提供更长的上下文使其唯一。",
+            retry_hint="在 old_string 前后多包含几行代码",
+        )
+
+    # 执行替换
+    new_content = content.replace(old_string, new_string, 1)
+    if not message:
+        message = f"bot: edit {path}"
+
+    payload = {
+        "message": message,
+        "content": base64.b64encode(new_content.encode("utf-8")).decode("ascii"),
+        "branch": branch,
+        "sha": sha,
+    }
+    result = gh_put(f"/contents/{path}", json=payload)
+    if isinstance(result, str):
+        return ToolResult.api_error(result)
+
+    # 变更审查：检查是否有关联引用需要同步修改
+    hints = _diff_review_hints(content, new_content, path)
+    msg = f"已替换 {path} (branch: {branch})"
+    if hints:
+        msg += "\n\n" + hints
+    return ToolResult.success(msg)
+
+
+# ── write_file（完整覆写，保留兼容） ──
+
 def write_file(path: str, content: str, branch: str = "", message: str = "") -> ToolResult:
-    """通过 GitHub API 创建或更新文件"""
+    """通过 GitHub API 创建或覆写文件。大文件修改建议用 edit_file 代替。"""
     if not branch:
         branch = "main"
     if not message:
@@ -62,14 +126,8 @@ def write_file(path: str, content: str, branch: str = "", message: str = "") -> 
 
     content_bytes = content.encode("utf-8")
     if len(content_bytes) > _MAX_FILE_SIZE:
-        return ToolResult.error(
-            f"要写入的内容为 {len(content_bytes):,} 字节，"
-            f"超过 GitHub API 限制（1MB）。"
-            f"无法通过 API 写入此文件。请告诉用户需要在本地编辑。",
-            code="blocked",
-        )
+        return ToolResult.error(f"内容 {len(content_bytes) // 1024}KB 超过 1MB 限制", code="blocked")
 
-    # 先检查文件是否已存在（需要 sha 来更新）
     existing = gh_get(f"/contents/{path}", params={"ref": branch})
     sha = None
     if isinstance(existing, dict) and "sha" in existing:
@@ -88,25 +146,90 @@ def write_file(path: str, content: str, branch: str = "", message: str = "") -> 
         return ToolResult.api_error(result)
 
     msg = f"wrote {len(content)} chars to {path} on branch {branch}"
-
-    # ── 变更审查提醒：提取新增/修改的标识符，提醒模型搜索关联引用 ──
     if sha and isinstance(existing, dict):
-        # 文件是更新（非新建），分析变更
         try:
             old_content = base64.b64decode(existing.get("content", "")).decode("utf-8")
             hints = _diff_review_hints(old_content, content, path)
             if hints:
                 msg += "\n\n" + hints
         except Exception:
-            pass  # diff 分析失败不影响写入结果
-
+            pass
     return ToolResult.success(msg)
 
 
-def _diff_review_hints(old: str, new: str, path: str) -> str:
-    """分析新旧文件差异，提取可能需要搜索关联引用的标识符。"""
-    import re
+# ── commit_batch（原子多文件提交） ──
 
+def commit_batch(changes: list[dict], branch: str = "", message: str = "") -> ToolResult:
+    """用 Git Trees API 原子提交多个文件变更。一次 commit 改多个文件。
+
+    changes: [{"path": "src/foo.cs", "content": "..."}, ...]
+    """
+    if not changes:
+        return ToolResult.invalid_param("changes 不能为空")
+    if not branch:
+        branch = "main"
+    if not message:
+        paths = [c["path"] for c in changes[:3]]
+        message = f"bot: batch update {', '.join(paths)}" + (" ..." if len(changes) > 3 else "")
+
+    # 1. 获取 branch 最新 commit SHA
+    ref_data = gh_get(f"/git/ref/heads/{branch}")
+    if isinstance(ref_data, str):
+        return ToolResult.api_error(f"获取分支失败: {ref_data}")
+    base_commit_sha = ref_data["object"]["sha"]
+
+    # 2. 获取 base tree SHA
+    commit_data = gh_get(f"/git/commits/{base_commit_sha}")
+    if isinstance(commit_data, str):
+        return ToolResult.api_error(f"获取 commit 失败: {commit_data}")
+    base_tree_sha = commit_data["tree"]["sha"]
+
+    # 3. 构建 tree 对象
+    tree_items = []
+    for change in changes:
+        path = change.get("path", "")
+        content = change.get("content", "")
+        if not path:
+            continue
+        tree_items.append({
+            "path": path,
+            "mode": "100644",
+            "type": "blob",
+            "content": content,
+        })
+
+    tree_result = gh_post("/git/trees", json={"base_tree": base_tree_sha, "tree": tree_items})
+    if isinstance(tree_result, str):
+        return ToolResult.api_error(f"创建 tree 失败: {tree_result}")
+    new_tree_sha = tree_result["sha"]
+
+    # 4. 创建 commit
+    commit_result = gh_post("/git/commits", json={
+        "message": message,
+        "tree": new_tree_sha,
+        "parents": [base_commit_sha],
+    })
+    if isinstance(commit_result, str):
+        return ToolResult.api_error(f"创建 commit 失败: {commit_result}")
+    new_commit_sha = commit_result["sha"]
+
+    # 5. 更新 ref
+    from app.tools.github_api import gh_patch
+    ref_result = gh_patch(f"/git/refs/heads/{branch}", json={"sha": new_commit_sha})
+    if isinstance(ref_result, str):
+        return ToolResult.api_error(f"更新分支失败: {ref_result}")
+
+    return ToolResult.success(
+        f"原子提交成功: {len(changes)} 个文件 → {branch}\n"
+        f"commit: {new_commit_sha[:10]}\n"
+        f"文件: {', '.join(c['path'] for c in changes)}"
+    )
+
+
+# ── 变更审查提醒 ──
+
+def _diff_review_hints(old: str, new: str, path: str) -> str:
+    """分析差异，提取可能需要搜索关联引用的标识符。"""
     old_lines = set(old.splitlines())
     new_lines = set(new.splitlines())
     added_lines = new_lines - old_lines
@@ -114,21 +237,16 @@ def _diff_review_hints(old: str, new: str, path: str) -> str:
     if not added_lines:
         return ""
 
-    # 提取新增行中的标识符（变量名、方法名等）
-    # 匹配常见编程语言的标识符模式
     identifiers: set[str] = set()
     for line in added_lines:
         line = line.strip()
         if not line or line.startswith("//") or line.startswith("#") or line.startswith("*"):
             continue
-        # 提取 GetComponent<XXX>、typeof(XXX) 等类型引用
         for m in re.finditer(r'GetComponent(?:InChildren)?<(\w+)>', line):
             identifiers.add(m.group(1))
-        # 提取字段/变量引用（如 moveUIList、pushTaskUI）
         for m in re.finditer(r'\b([a-z][a-zA-Z0-9]{4,}(?:List\d*|Array|Map|Dict)?)\b', line):
             identifiers.add(m.group(1))
 
-    # 过滤掉语言关键词
     _KEYWORDS = {
         "public", "private", "protected", "static", "void", "class", "struct",
         "return", "break", "continue", "false", "true", "null", "this",
@@ -138,21 +256,18 @@ def _diff_review_hints(old: str, new: str, path: str) -> str:
     }
     identifiers -= _KEYWORDS
 
-    if not identifiers:
-        return ""
-
-    # 只保留在原文件中出现过的标识符（过滤掉新定义的局部变量）
     relevant = [name for name in identifiers if name in old]
     if not relevant:
         return ""
 
     names = ", ".join(sorted(relevant)[:8])
     return (
-        f"⚠️ 变更审查提醒：你的修改涉及 {names}。\n"
-        f"请用 search_code 搜索这些标识符，确认仓库中没有其他地方也需要同步修改。\n"
-        f"特别注意：名字相似的变量（如 listA 和 listB）通常需要一起改。"
+        f"⚠️ 变更涉及 {names}。"
+        f"用 search_code 搜索这些标识符，确认没有其他地方需要同步修改。"
     )
 
+
+# ── 工具定义 ──
 
 TOOL_DEFINITIONS = [
     {
@@ -161,51 +276,83 @@ TOOL_DEFINITIONS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "文件相对路径，如 src/main.py",
-                },
-                "branch": {
-                    "type": "string",
-                    "description": "分支名，默认 main",
-                    "default": "main",
-                },
+                "path": {"type": "string", "description": "文件相对路径，如 Assets/Scripts/Foo.cs"},
+                "branch": {"type": "string", "description": "分支名，默认 main", "default": "main"},
             },
             "required": ["path"],
         },
     },
     {
-        "name": "write_file",
-        "description": "在仓库中创建或更新文件。会自动创建 commit。应在 feature 分支上操作，不要直接写 main。文件过大（>1MB）时会失败。",
+        "name": "edit_file",
+        "description": (
+            "精确替换文件中的一段文本。比 write_file 高效——只需提供要替换的旧文本和新文本，"
+            "不用输出整个文件。old_string 必须在文件中唯一匹配。修改大文件时优先用这个。"
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "文件相对路径",
-                },
-                "content": {
-                    "type": "string",
-                    "description": "要写入的完整文件内容",
-                },
-                "branch": {
-                    "type": "string",
-                    "description": "写入哪个分支，应使用 feature 分支",
-                },
-                "message": {
-                    "type": "string",
-                    "description": "commit message，留空自动生成",
-                    "default": "",
-                },
+                "path": {"type": "string", "description": "文件相对路径"},
+                "old_string": {"type": "string", "description": "要替换的原始文本（必须在文件中唯一出现）"},
+                "new_string": {"type": "string", "description": "替换后的新文本"},
+                "branch": {"type": "string", "description": "分支名，默认 main"},
+                "message": {"type": "string", "description": "commit message，留空自动生成"},
+            },
+            "required": ["path", "old_string", "new_string"],
+        },
+    },
+    {
+        "name": "write_file",
+        "description": "创建新文件或完整覆写文件内容。修改已有文件时优先用 edit_file 代替。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "文件相对路径"},
+                "content": {"type": "string", "description": "完整文件内容"},
+                "branch": {"type": "string", "description": "分支名"},
+                "message": {"type": "string", "description": "commit message"},
             },
             "required": ["path", "content", "branch"],
+        },
+    },
+    {
+        "name": "commit_batch",
+        "description": (
+            "原子提交多个文件变更（一次 commit 改多个文件）。"
+            "适用于重构、重命名等需要同时改多个文件的场景。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "changes": {
+                    "type": "array",
+                    "description": "文件变更列表",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string", "description": "文件相对路径"},
+                            "content": {"type": "string", "description": "完整文件内容"},
+                        },
+                        "required": ["path", "content"],
+                    },
+                },
+                "branch": {"type": "string", "description": "分支名"},
+                "message": {"type": "string", "description": "commit message"},
+            },
+            "required": ["changes", "branch"],
         },
     },
 ]
 
 TOOL_MAP = {
     "read_file": lambda args: read_file(args["path"], args.get("branch", "main")),
+    "edit_file": lambda args: edit_file(
+        args["path"], args["old_string"], args["new_string"],
+        args.get("branch", ""), args.get("message", ""),
+    ),
     "write_file": lambda args: write_file(
-        args["path"], args["content"], args.get("branch", ""), args.get("message", "")
+        args["path"], args["content"], args.get("branch", ""), args.get("message", ""),
+    ),
+    "commit_batch": lambda args: commit_batch(
+        args["changes"], args.get("branch", ""), args.get("message", ""),
     ),
 }
