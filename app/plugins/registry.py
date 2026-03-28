@@ -89,6 +89,7 @@ _DEFAULT_MANIFESTS: dict[str, dict] = {
     "message_ops":      {"group": "feishu_collab", "platforms": ["feishu"]},
     "bitable_ops":      {"group": "feishu_collab", "platforms": ["feishu"]},
     "mail_ops":         {"group": "feishu_collab", "platforms": ["feishu"]},
+    "openapi_ops":      {"group": "feishu_collab", "platforms": ["feishu"]},
     "file_ops":         {"group": "code_dev"},
     "git_ops":          {"group": "code_dev"},
     "github_ops":       {"group": "code_dev"},
