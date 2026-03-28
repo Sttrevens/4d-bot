@@ -1765,6 +1765,15 @@ async def _build_system_prompt(
     _current_plat = _ch.platform if _ch else tenant.platform
     if _current_plat == "feishu":
         prompt += _FEISHU_INSTRUCTIONS
+        # 动态注入飞书 API 域提示（仅当 call_feishu_api 工具可用时）
+        if actual_tool_names and "call_feishu_api" in actual_tool_names and user_text:
+            try:
+                from app.knowledge.feishu_api_hints import get_domain_hints
+                _api_hints = get_domain_hints(user_text)
+                if _api_hints:
+                    prompt += _api_hints
+            except Exception:
+                pass  # 提示注入失败不影响核心功能
 
     # 自我迭代指令仅对开启该能力的租户注入（从知识库文件动态加载）
     if tenant.self_iteration_enabled:
