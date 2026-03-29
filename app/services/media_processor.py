@@ -253,6 +253,23 @@ def detect_media_mime(data: bytes, fallback: str = "application/octet-stream") -
         return "image/gif"
     if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
         return "image/webp"
+    # PDF
+    if data[:5] == b"%PDF-":
+        return "application/pdf"
+    # Office 2007+ (ZIP-based: xlsx/docx/pptx) — 需要检查 ZIP 内容区分类型
+    if data[:4] == b"PK\x03\x04":
+        # 快速检查 ZIP 内的文件名前缀来区分 Office 文件类型
+        content = data[:2000]  # 只看前 2KB
+        if b"xl/" in content or b"xl\\" in content:
+            return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        if b"word/" in content or b"word\\" in content:
+            return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        if b"ppt/" in content or b"ppt\\" in content:
+            return "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    # Office 97-2003 (OLE2: xls/doc/ppt)
+    if data[:8] == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1":
+        # OLE2 格式无法简单区分 xls/doc/ppt，默认 Excel（最常见的场景）
+        return "application/vnd.ms-excel"
     return fallback
 
 
