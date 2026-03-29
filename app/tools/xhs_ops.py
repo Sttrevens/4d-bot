@@ -50,7 +50,7 @@ _SESSION_TIMEOUT = 600  # 10 分钟不活动自动关闭（比通用 browser 长
 _COOKIE_REDIS_PREFIX = "xhs:cookies:"
 _COOKIE_TTL = 86400 * 30  # Cookie 缓存 30 天（参考 xiaohongshu-mcp，cookie 实际有效期较长）
 _MAX_TEXT = 5000  # 页面文本最大提取长度
-_SEARCH_TIMEOUT = 60  # xhs_search 整体超时（秒），防止吃掉 agent 全部时间预算
+_SEARCH_TIMEOUT = 180  # xhs_search 整体超时（秒），支持自动登录流程
 
 # 登录轮询参数
 _LOGIN_POLL_INTERVAL = 4  # 每 4 秒检查一次
@@ -254,14 +254,14 @@ async def _analyze_screenshot(screenshot: bytes, prompt: str) -> str:
 # ── 发送二维码图片给用户 ──
 
 
-def _get_wecom_token(corpid: str, secret: str, cache_key: str = "") -> str:
-    """同步获取企微 access_token（带缓存）"""
+async def _get_wecom_token(corpid: str, secret: str, cache_key: str = "") -> str:
+    """异步获取企微 access_token（带缓存）"""
     ck = cache_key or corpid
     cached = _wecom_token_cache.get(ck)
     if cached and time.time() < cached[1]:
         return cached[0]
-    with httpx.Client(timeout=10, trust_env=False) as client:
-        resp = client.get(_WECOM_TOKEN_URL, params={"corpid": corpid, "corpsecret": secret})
+    async with httpx.AsyncClient(timeout=10, trust_env=False) as client:
+        resp = await client.get(_WECOM_TOKEN_URL, params={"corpid": corpid, "corpsecret": secret})
         data = resp.json()
     if data.get("errcode", -1) != 0:
         raise RuntimeError(f"wecom token error: {data}")
@@ -271,7 +271,7 @@ def _get_wecom_token(corpid: str, secret: str, cache_key: str = "") -> str:
     return token
 
 
-def _send_qr_image_to_user(screenshot_png: bytes) -> bool:
+async def _send_qr_image_to_user(screenshot_png: bytes) -> bool:
     """将二维码截图作为图片消息发送给当前用户。
 
     支持企微客服(wecom_kf)和企微内部应用(wecom)。
@@ -294,17 +294,17 @@ def _send_qr_image_to_user(screenshot_png: bytes) -> bool:
 
         # 获取 token
         if platform == "wecom":
-            token = _get_wecom_token(tenant.wecom_corpid, tenant.wecom_corpsecret)
+            token = await _get_wecom_token(tenant.wecom_corpid, tenant.wecom_corpsecret)
         else:
-            token = _get_wecom_token(
+            token = await _get_wecom_token(
                 tenant.wecom_corpid,
                 tenant.wecom_kf_secret,
                 cache_key=f"{tenant.wecom_corpid}:kf",
             )
 
         # 上传图片为临时素材（type=image）
-        with httpx.Client(timeout=30, trust_env=False) as client:
-            resp = client.post(
+        async with httpx.AsyncClient(timeout=30, trust_env=False) as client:
+            resp = await client.post(
                 _WECOM_UPLOAD_URL,
                 params={"access_token": token, "type": "image"},
                 files={"media": ("xhs_qr.png", io.BytesIO(screenshot_png), "image/png")},
@@ -337,8 +337,8 @@ def _send_qr_image_to_user(screenshot_png: bytes) -> bool:
             }
             send_url = _WECOM_KF_SEND_URL
 
-        with httpx.Client(timeout=10, trust_env=False) as client:
-            resp = client.post(send_url, params={"access_token": token}, json=body)
+        async with httpx.AsyncClient(timeout=10, trust_env=False) as client:
+            resp = await client.post(send_url, params={"access_token": token}, json=body)
             result = resp.json()
 
         if result.get("errcode", -1) != 0:
@@ -353,7 +353,7 @@ def _send_qr_image_to_user(screenshot_png: bytes) -> bool:
         return False
 
 
-def _send_text_to_user(text: str) -> bool:
+async def _send_text_to_user(text: str) -> bool:
     """发送文本消息给当前用户（企微客服/企微内部应用）。"""
     try:
         from app.tenant.context import get_current_tenant
@@ -370,9 +370,9 @@ def _send_text_to_user(text: str) -> bool:
             return False
 
         if platform == "wecom":
-            token = _get_wecom_token(tenant.wecom_corpid, tenant.wecom_corpsecret)
+            token = await _get_wecom_token(tenant.wecom_corpid, tenant.wecom_corpsecret)
         else:
-            token = _get_wecom_token(
+            token = await _get_wecom_token(
                 tenant.wecom_corpid,
                 tenant.wecom_kf_secret,
                 cache_key=f"{tenant.wecom_corpid}:kf",
@@ -395,8 +395,8 @@ def _send_text_to_user(text: str) -> bool:
             }
             send_url = _WECOM_KF_SEND_URL
 
-        with httpx.Client(timeout=10, trust_env=False) as client:
-            resp = client.post(send_url, params={"access_token": token}, json=body)
+        async with httpx.AsyncClient(timeout=10, trust_env=False) as client:
+            resp = await client.post(send_url, params={"access_token": token}, json=body)
             result = resp.json()
 
         if result.get("errcode", -1) != 0:
@@ -1596,16 +1596,50 @@ async def _handle_xhs_check_login(args: dict) -> ToolResult:
 
 async def _handle_xhs_search(args: dict) -> ToolResult:
     """搜索小红书笔记/用户"""
-    err = _check_playwright()
-    if err:
-        return ToolResult.error(err)
-
     keyword = args.get("keyword", "").strip()
     if not keyword:
         return ToolResult.invalid_param("keyword 不能为空")
 
     search_type = args.get("search_type", "note")  # note / user
-    sort = args.get("sort", "general")  # general / time_descending / popularity_descending
+    sort = args.get("sort", "general")
+
+    # ── TikHub API 快速通道（2-3 秒，优先于 Playwright 180 秒）──
+    if not args.get("_retry_after_login", False):
+        try:
+            from app.tenant.context import get_current_tenant
+            tenant = get_current_tenant()
+            api_key = getattr(tenant, "social_media_api_key", "")
+            api_provider = getattr(tenant, "social_media_api_provider", "")
+            if api_provider == "tikhub" and api_key:
+                from app.tools.social_media_ops import _search_tikhub
+                tikhub_type = "kol" if search_type == "user" else "content"
+                tikhub_result = _search_tikhub("xiaohongshu", keyword, tikhub_type, 10, api_key)
+                if tikhub_result and tikhub_result.get("results"):
+                    results = tikhub_result["results"]
+                    lines = [f"小红书搜索「{keyword}」（TikHub API，{len(results)} 条结果）：\n"]
+                    for i, r in enumerate(results, 1):
+                        line = f"{i}. {r.get('title', '')}"
+                        if r.get("href"):
+                            line += f"\n   链接: {r['href']}"
+                        metrics = r.get("metrics", {})
+                        if metrics:
+                            metric_parts = [f"{k}: {v}" for k, v in metrics.items() if v]
+                            if metric_parts:
+                                line += f"\n   {' | '.join(metric_parts)}"
+                        if r.get("body"):
+                            line += f"\n   {r['body'][:150]}"
+                        lines.append(line)
+                    lines.append("\n⚠️ 不要自己编造或猜测小红书链接和账号 ID，只使用上面返回的真实链接。")
+                    logger.info("xhs_search: TikHub API hit for '%s' (%d results)", keyword, len(results))
+                    return ToolResult.success("\n".join(lines))
+                logger.info("xhs_search: TikHub returned no results for '%s', falling back to Playwright", keyword)
+        except Exception as e:
+            logger.info("xhs_search: TikHub fast path failed (%s), falling back to Playwright", e)
+
+    # ── Playwright 浏览器搜索（慢路径）──
+    err = _check_playwright()
+    if err:
+        return ToolResult.error(err)
     is_retry = args.get("_retry_after_login", False)
 
     tenant_id = _get_tenant_id()

@@ -577,7 +577,6 @@ async def _run_sub_agent(
         tenant,
         user_text=user_text,
         override_groups=agent_cfg.get("tool_groups"),
-        extra_tools=agent_cfg.get("extra_tools"),
     )
 
     # 构建子 agent 的 Gemini config
@@ -1420,6 +1419,11 @@ async def handle_message(
                 if _attempt < _max_retries:
                     _attempt += 1
                     continue
+                if tool_names_called:
+                    return _build_factual_summary(
+                        tool_names_called, action_outcomes,
+                        "AI 服务响应超时，但之前的操作已完成：",
+                    )
                 return "AI 服务响应超时，请稍后再试。"
             except (ConnectionError, OSError) as exc:
                 if _attempt < _max_retries:
@@ -1441,7 +1445,11 @@ async def handle_message(
                     continue
                 logger.exception("Gemini API call failed after %d attempts (round %d)",
                                  _max_retries + 1, round_num + 1)
-                # 连接错误通常是网络问题
+                if tool_names_called:
+                    return _build_factual_summary(
+                        tool_names_called, action_outcomes,
+                        "AI 服务连接失败，但之前的操作已完成：",
+                    )
                 return "AI 服务连接失败（可能是网络问题或 Gemini API 暂时不可用），请稍后再试。"
             except Exception as exc:
                 exc_msg = str(exc).lower()
@@ -1492,7 +1500,17 @@ async def handle_message(
                                  round_num + 1, exc)
                     # 区分超时和其他服务端错误
                     if "timeout" in exc_msg or "timed out" in exc_msg or "gateway" in exc_msg or "cancelled" in exc_msg:
+                        if tool_names_called:
+                            return _build_factual_summary(
+                                tool_names_called, action_outcomes,
+                                "AI 服务响应超时，但之前的操作已完成：",
+                            )
                         return "AI 服务响应超时（可能是网络波动或 Gemini 服务繁忙），请稍后再试。"
+                    if tool_names_called:
+                        return _build_factual_summary(
+                            tool_names_called, action_outcomes,
+                            "AI 服务暂时不可用，但之前的操作已完成：",
+                        )
                     return "AI 服务暂时不可用，请稍后再试。"
                 logger.exception("Gemini API call failed (round %d)", round_num + 1)
                 # 不向用户暴露原始错误细节
