@@ -150,7 +150,7 @@ _TEXT_FILE_EXTS = {
     ".sql", ".graphql", ".proto", ".dockerfile",
 }
 
-# Gemini 多模态可直接理解的富文档/音频格式——下载后转 data URL 传给 LLM
+# Gemini 多模态可直接理解的富文档/音频/图片/视频格式——下载后转 data URL 传给 LLM
 _RICH_FILE_EXTS = {
     ".pdf": "application/pdf",
     ".doc": "application/msword",
@@ -164,6 +164,19 @@ _RICH_FILE_EXTS = {
     ".wav": "audio/wav",
     ".ogg": "audio/ogg",
     ".flac": "audio/flac",
+    # 图片（用户可能把图片当文件发送，msgtype=file 而非 image）
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+    ".heic": "image/heic",
+    # 视频（用户可能把视频当文件发送，msgtype=file 而非 video）
+    ".mp4": "video/mp4",
+    ".mov": "video/quicktime",
+    ".avi": "video/x-msvideo",
+    ".webm": "video/webm",
 }
 
 
