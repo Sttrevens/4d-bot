@@ -1,0 +1,65 @@
+name: sanity
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sanity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONPATH: .
+      ADMIN_TOKEN: dummy-admin-token
+      BOT_LOG_FILE: /tmp/bot.log
+      GITHUB_TOKEN: dummy-github-token
+      GITHUB_REPO_OWNER: sanity-owner
+      GITHUB_REPO_NAME: sanity-repo
+      SELF_REPO_OWNER: sanity-owner
+      SELF_REPO_NAME: sanity-repo
+      KIMI_API_KEY: dummy-kimi-key
+      GEMINI_API_KEY: dummy-gemini-key
+      GOOGLE_GEMINI_BASE_URL: https://example.com
+      FEISHU_APP_ID: dummy-feishu-app-id
+      FEISHU_APP_SECRET: dummy-feishu-app-secret
+      FEISHU_VERIFICATION_TOKEN: dummy-verification-token
+      FEISHU_ENCRYPT_KEY: dummy-encrypt-key
+      ANTHROPIC_API_KEY: dummy-anthropic-key
+      TENANTS_CONFIG_PATH: tenants.example.json
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Bytecode compile app
+        run: |
+          python -m compileall -q app
+
+      - name: Import critical startup chain
+        run: |
+          python - <<'PY'
+          from app.harness import PLAN_ACTIVE_STATUSES, advance_next_step
+          from app.services import planner
+          from app.router.intent import route_message
+          from app.main import app
+
+          assert PLAN_ACTIVE_STATUSES
+          assert callable(advance_next_step)
+          assert callable(route_message)
+          assert app is not None
+          assert hasattr(planner, 'create_plan')
+          print('Sanity import chain OK')
+          PY
