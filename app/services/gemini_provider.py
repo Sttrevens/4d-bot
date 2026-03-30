@@ -19,6 +19,7 @@ from typing import Callable, Awaitable
 from google import genai
 from google.genai import types
 
+from app.harness import compress_gemini_function_results, normalize_inbox_item, should_compact_history, should_nudge_unmatched_reads
 from app.services.base_agent import (
     _build_system_prompt,
     _strip_degenerate_repetition,
@@ -455,31 +456,8 @@ def _compress_old_gemini_results(
     contents: list[types.Content],
     keep_recent: int = _COMPRESS_KEEP_RECENT,
 ) -> None:
-    """压缩 Gemini contents 中旧轮次的 function_response 结果。
-
-    保留最近 keep_recent 条 function_response 原文，更早的截断为 200 字符。
-    """
-    fr_locations: list[tuple[int, int]] = []
-    for ci, c in enumerate(contents):
-        if c.parts:
-            for pi, p in enumerate(c.parts):
-                if p.function_response:
-                    fr_locations.append((ci, pi))
-    if len(fr_locations) <= keep_recent:
-        return
-    compressed = 0
-    for ci, pi in fr_locations[:-keep_recent]:
-        try:
-            resp = contents[ci].parts[pi].function_response.response
-            if isinstance(resp, dict):
-                val = resp.get("result", "")
-                if isinstance(val, str) and len(val) > 200:
-                    resp["result"] = val[:200] + "\n...[已压缩]"
-                    compressed += 1
-        except Exception:
-            pass
-    if compressed:
-        logger.debug("compressed %d old gemini function results", compressed)
+    """压缩 Gemini contents 中旧轮次的 function_response 结果。"""
+    compress_gemini_function_results(contents, keep_recent=keep_recent, logger=logger)
 
 
 def _clean_error_msg(raw: str, max_len: int = 120) -> str:
@@ -1612,16 +1590,7 @@ async def handle_message(
                 if pending:
                     inbox_parts = []
                     for inbox_item in pending:
-                        msg_text = (
-                            inbox_item.get("text", "")
-                            if isinstance(inbox_item, dict)
-                            else str(inbox_item)
-                        )
-                        msg_images = (
-                            inbox_item.get("images")
-                            if isinstance(inbox_item, dict)
-                            else None
-                        )
+                        msg_text, msg_images = normalize_inbox_item(inbox_item)
                         logger.info(
                             "inbox drain before exit: %s (images=%d)",
                             msg_text[:60], len(msg_images) if msg_images else 0,
@@ -1652,10 +1621,14 @@ async def handle_message(
                 {"test_custom_tool", "assess_capability"} & set(tool_names_called)
             )
             if (
-                not _nudged
-                and round_num >= 1
-                and not _vision_analysis_in_progress
-                and _has_unmatched_reads(tool_names_called, user_text)
+                not _vision_analysis_in_progress
+                and should_nudge_unmatched_reads(
+                    round_num=round_num,
+                    already_nudged=_nudged,
+                    tool_names_called=tool_names_called,
+                    user_text=user_text,
+                    has_unmatched_reads=_has_unmatched_reads,
+                )
             ):
                 _nudged = True
                 logger.info(
@@ -2069,16 +2042,7 @@ async def handle_message(
         # ── 检查信箱：处理过程中用户发的新消息 ──
         if inbox is not None:
             for inbox_item in _drain_inbox(inbox):
-                msg_text = (
-                    inbox_item.get("text", "")
-                    if isinstance(inbox_item, dict)
-                    else str(inbox_item)
-                )
-                msg_images = (
-                    inbox_item.get("images")
-                    if isinstance(inbox_item, dict)
-                    else None
-                )
+                msg_text, msg_images = normalize_inbox_item(inbox_item)
                 logger.info(
                     "inbox inject: %s (images=%d)",
                     msg_text[:60], len(msg_images) if msg_images else 0,
@@ -2133,7 +2097,7 @@ async def handle_message(
                 )
 
         # 压缩旧工具结果，防止 context 膨胀
-        if round_num >= _COMPRESS_AFTER_ROUND:
+        if should_compact_history(round_num, _COMPRESS_AFTER_ROUND):
             _compress_old_gemini_results(contents)
 
     # 轮次耗尽（安全网：_MAX_ROUNDS=50）→ 事实性总结，不问 LLM

@@ -25,6 +25,8 @@ import time
 import contextvars
 from typing import Callable, Awaitable
 
+from app.harness import DEFAULT_COMPACTION_AFTER_ROUND, DEFAULT_COMPACTION_KEEP_RECENT, compress_openai_tool_results
+
 # ── 超时智能消息：跟踪 agent 进度，超时时提供有信息量的提示 ──
 # handler 层在 TimeoutError 时读取此变量，构造上下文相关的超时消息。
 _agent_progress: contextvars.ContextVar[list[str]] = contextvars.ContextVar(
@@ -350,8 +352,8 @@ _MAX_ROUNDS = 50  # 宽松安全网，让模型自己决定何时完成
 # 导致 LLM 幻觉编造 URL。数据完整性比省 token 重要。
 _MAX_TOOL_RESULT_LEN = 16000
 # 压缩旧工具结果的阈值：保留最近 N 条工具结果原文，更早的截断为 200 字符
-_COMPRESS_KEEP_RECENT = 8
-_COMPRESS_AFTER_ROUND = 6
+_COMPRESS_KEEP_RECENT = DEFAULT_COMPACTION_KEEP_RECENT
+_COMPRESS_AFTER_ROUND = DEFAULT_COMPACTION_AFTER_ROUND
 
 # 中间消息回调类型：async def callback(text: str) -> None
 ProgressCallback = Callable[[str], Awaitable[None]]
@@ -3075,19 +3077,5 @@ def _compress_old_tool_results(
     messages: list[dict],
     keep_recent: int = _COMPRESS_KEEP_RECENT,
 ) -> None:
-    """压缩旧轮次的工具结果，节省 context token。
-
-    保留最近 keep_recent 条 tool 消息原文不动，
-    更早的 tool 消息截断为前 200 字符 + 标记。
-    """
-    tool_indices = [i for i, m in enumerate(messages) if m.get("role") == "tool"]
-    if len(tool_indices) <= keep_recent:
-        return
-    compressed = 0
-    for idx in tool_indices[:-keep_recent]:
-        content = messages[idx].get("content", "")
-        if len(content) > 200:
-            messages[idx]["content"] = content[:200] + "\n...[已压缩]"
-            compressed += 1
-    if compressed:
-        logger.debug("compressed %d old tool results", compressed)
+    """压缩旧轮次的工具结果，节省 context token。"""
+    compress_openai_tool_results(messages, keep_recent=keep_recent, logger=logger)

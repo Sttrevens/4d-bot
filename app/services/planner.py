@@ -18,6 +18,14 @@ import logging
 import time
 from datetime import datetime, timezone
 
+from app.harness import (
+    PLAN_ACTIVE_STATUSES,
+    advance_next_step,
+    build_active_plan_context,
+    format_plan_text,
+    normalize_steps,
+    prune_invalid_dependencies,
+)
 from app.services import memory_store
 
 logger = logging.getLogger(__name__)
@@ -48,27 +56,16 @@ def create_plan(
     plan_id = _gen_plan_id()
 
     # 标准化 steps
-    normalized_steps = []
-    for i, s in enumerate(steps):
-        normalized_steps.append({
-            "id": f"step_{i + 1}",
-            "title": s.get("title", f"步骤 {i + 1}"),
-            "description": s.get("description", ""),
-            "status": "pending",
-            "depends_on": s.get("depends_on", []),
-            "outcome": "",
-            "started_at": "",
-            "completed_at": "",
-        })
+    normalized_steps = normalize_steps(steps, force_pending=True)
 
     # 校验依赖：确保 depends_on 引用的 step_id 都存在
-    valid_ids = {s["id"] for s in normalized_steps}
-    for s in normalized_steps:
-        bad_deps = [d for d in s["depends_on"] if d not in valid_ids]
-        if bad_deps:
-            logger.warning("plan '%s' step %s has invalid depends_on: %s (removed)",
-                           title, s["id"], bad_deps)
-            s["depends_on"] = [d for d in s["depends_on"] if d in valid_ids]
+    for step_id, bad_deps in prune_invalid_dependencies(normalized_steps):
+        logger.warning(
+            "plan '%s' step %s has invalid depends_on: %s (removed)",
+            title,
+            step_id,
+            bad_deps,
+        )
 
     plan = {
         "plan_id": plan_id,
@@ -177,7 +174,7 @@ def list_active_plans(user_id: str = "") -> list[dict]:
 
     plans = []
     for entry in index:
-        if entry.get("status") not in ("active", "draft"):
+        if entry.get("status") not in PLAN_ACTIVE_STATUSES:
             continue
         if user_id and entry.get("created_by_id", "")[:12] != user_id[:12]:
             continue
@@ -188,24 +185,7 @@ def list_active_plans(user_id: str = "") -> list[dict]:
 def get_active_plans_context(user_id: str = "") -> str:
     """获取活跃计划的摘要，用于注入 system prompt。"""
     plans = list_active_plans(user_id)
-    if not plans:
-        return ""
-
-    lines = ["你有以下进行中的计划："]
-    for p in plans[:3]:  # 最多 3 个
-        plan = get_plan(p["plan_id"])
-        if not plan:
-            continue
-        steps = plan.get("steps", [])
-        done = sum(1 for s in steps if s["status"] == "completed")
-        total = len(steps)
-        lines.append(
-            f"\n计划: {plan['title']} ({done}/{total} 步完成)"
-            f"\n  状态: {plan['status']}"
-            f"\n  下一步: {plan.get('next_action', '?')}"
-            f"\n  plan_id: {plan['plan_id']}"
-        )
-    return "\n".join(lines)
+    return build_active_plan_context(plans, get_plan)
 
 
 # ── 格式化 ──
@@ -213,31 +193,7 @@ def get_active_plans_context(user_id: str = "") -> str:
 
 def format_plan(plan: dict) -> str:
     """将 plan 格式化为人类可读的文本。"""
-    lines = [
-        f"计划: {plan['title']}",
-        f"状态: {plan['status']}",
-        f"创建者: {plan.get('created_by', '?')}",
-    ]
-    if plan.get("summary"):
-        lines.append(f"概要: {plan['summary']}")
-    if plan.get("estimated_days"):
-        lines.append(f"预计天数: {plan['estimated_days']}")
-
-    lines.append(f"\n步骤:")
-    for step in plan.get("steps", []):
-        icon = {"pending": "○", "in_progress": "◉", "completed": "●", "blocked": "✕"}.get(
-            step["status"], "?"
-        )
-        line = f"  {icon} {step['id']}: {step['title']}"
-        if step.get("outcome"):
-            line += f"\n      → {step['outcome']}"
-        lines.append(line)
-
-    if plan.get("next_action"):
-        lines.append(f"\n下一步: {plan['next_action']}")
-
-    lines.append(f"\nplan_id: {plan['plan_id']}")
-    return "\n".join(lines)
+    return format_plan_text(plan)
 
 
 # ── 内部辅助 ──
@@ -245,20 +201,7 @@ def format_plan(plan: dict) -> str:
 
 def _auto_advance(plan: dict) -> None:
     """自动将下一个可执行的步骤设为 in_progress。"""
-    completed_ids = {s["id"] for s in plan["steps"] if s["status"] == "completed"}
-
-    for step in plan["steps"]:
-        if step["status"] != "pending":
-            continue
-        # 检查依赖是否都完成了
-        deps = step.get("depends_on", [])
-        if all(d in completed_ids for d in deps):
-            step["status"] = "in_progress"
-            step["started_at"] = _now_iso()
-            plan["next_action"] = step["title"]
-            return
-    # 没有可推进的步骤
-    plan["next_action"] = ""
+    advance_next_step(plan, _now_iso())
 
 
 def _save_plan(plan: dict) -> bool:

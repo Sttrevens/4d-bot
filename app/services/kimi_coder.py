@@ -24,6 +24,7 @@ from app.services.kimi import _is_k2_model, _extra_body
 from app.services.error_log import record_error
 
 # ── 从 base_agent 导入共享基础设施 ──
+from app.harness import append_openai_inbox_messages, should_compact_history, should_nudge_unmatched_reads
 from app.services.base_agent import (
     # 工具注册表
     ALL_TOOL_MAP,
@@ -244,26 +245,22 @@ async def handle_message(
                 pending = _drain_inbox(inbox)
                 if pending:
                     messages.append({"role": "assistant", "content": reply_text})
-                    for inbox_item in pending:
-                        msg_text = inbox_item.get("text", "") if isinstance(inbox_item, dict) else str(inbox_item)
-                        msg_images = inbox_item.get("images") if isinstance(inbox_item, dict) else None
-                        logger.info("inbox drain before exit: %s (images=%d)",
-                                    msg_text[:60], len(msg_images) if msg_images else 0)
-                        if msg_images:
-                            parts: list[dict] = [{"type": "text", "text": msg_text}] if msg_text else []
-                            for url in msg_images:
-                                parts.append({"type": "image_url", "image_url": {"url": url}})
-                            messages.append({"role": "user", "content": parts})
-                        else:
-                            messages.append({"role": "user", "content": msg_text})
+                    append_openai_inbox_messages(
+                        messages,
+                        pending,
+                        logger=logger,
+                        log_label="inbox drain before exit",
+                    )
                     logger.info("continuing loop: %d inbox messages pending", len(pending))
                     continue
 
             # ── 退出前检查 2: 读了数据但没写回 ──
-            if (
-                not _nudged
-                and round_num >= 1
-                and _has_unmatched_reads(tool_names_called, user_text)
+            if should_nudge_unmatched_reads(
+                round_num=round_num,
+                already_nudged=_nudged,
+                tool_names_called=tool_names_called,
+                user_text=user_text,
+                has_unmatched_reads=_has_unmatched_reads,
             ):
                 _nudged = True
                 logger.info(
@@ -428,20 +425,15 @@ async def handle_message(
         # ── 检查信箱：用户是否在执行过程中发了新消息 ──
         # 直接作为 user message 注入，模型从对话结构自然理解这是中途插入
         if inbox is not None:
-            for inbox_item in _drain_inbox(inbox):
-                msg_text = inbox_item.get("text", "") if isinstance(inbox_item, dict) else str(inbox_item)
-                msg_images = inbox_item.get("images") if isinstance(inbox_item, dict) else None
-                logger.info("inbox inject: %s (images=%d)", msg_text[:60], len(msg_images) if msg_images else 0)
-                if msg_images:
-                    parts: list[dict] = [{"type": "text", "text": msg_text}] if msg_text else []
-                    for url in msg_images:
-                        parts.append({"type": "image_url", "image_url": {"url": url}})
-                    messages.append({"role": "user", "content": parts})
-                else:
-                    messages.append({"role": "user", "content": msg_text})
+            append_openai_inbox_messages(
+                messages,
+                _drain_inbox(inbox),
+                logger=logger,
+                log_label="inbox inject",
+            )
 
         # 压缩旧工具结果，防止 context 膨胀
-        if round_num >= _COMPRESS_AFTER_ROUND:
+        if should_compact_history(round_num, _COMPRESS_AFTER_ROUND):
             _compress_old_tool_results(messages)
 
     # 轮次耗尽
