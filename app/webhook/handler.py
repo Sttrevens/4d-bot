@@ -1316,7 +1316,12 @@ async def _send_as_bubbles(reply: str, message_id: str, chat_id: str) -> None:
     if not bubbles:
         return
 
-    logger.info("feishu: reply to %s: %s", chat_id[:15] if chat_id else message_id[:15], reply[:200])
+    logger.info(
+        "feishu: reply to %s (len=%d): %s",
+        chat_id[:15] if chat_id else message_id[:15],
+        len(reply),
+        reply,
+    )
 
     # 只有一条 or 没有 chat_id → 传统方式
     if len(bubbles) == 1 or not chat_id:

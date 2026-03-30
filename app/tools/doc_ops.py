@@ -369,6 +369,12 @@ def read_document(document_id: str) -> ToolResult:
         # blocks 失败，fallback 到 raw_content
         logger.info("read_document: blocks failed, falling back to raw_content (doc=%s)", doc_id)
         data = feishu_get(f"/docx/v1/documents/{doc_id}/raw_content")
+        if isinstance(data, str) and _current_user_open_id.get(""):
+            logger.info("read_document: raw_content failed with tenant token, retrying user token (doc=%s)", doc_id)
+            data = feishu_get(
+                f"/docx/v1/documents/{doc_id}/raw_content",
+                use_user_token=True,
+            )
         if isinstance(data, str):
             return ToolResult.api_error(data)
         content = data.get("data", {}).get("content", "")

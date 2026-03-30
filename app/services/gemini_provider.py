@@ -99,6 +99,59 @@ User message:
 """
 
 
+_FEISHU_CONTEXT_HINT_RE = re.compile(
+    r"(飞书|日历|日程|会议|calendar|任务|task|tasklist|文档|document|纪要|minutes|"
+    r"多维表格|bitable|邮件|mail|群消息|聊天记录|刚才|刚刚|上条|上一条|"
+    r"我发了什么|我刚发|发给你|消息记录|chat history)",
+    re.IGNORECASE,
+)
+
+
+def _extract_first_json_object(raw: str) -> str | None:
+    """Extract the first balanced JSON object from model output."""
+    if not raw:
+        return None
+    text = raw.strip()
+    if "```" in text:
+        parts = text.split("```")
+        for part in parts:
+            candidate = part.strip()
+            if candidate.startswith("json"):
+                candidate = candidate[4:].strip()
+            if candidate.startswith("{") and candidate.endswith("}"):
+                text = candidate
+                break
+    start = text.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    in_str = False
+    escaped = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:i + 1]
+    return None
+
+
+def _needs_feishu_collab_context(user_text: str) -> bool:
+    return bool(_FEISHU_CONTEXT_HINT_RE.search(user_text or ""))
+
+
 def _classify_intent_keywords(user_text: str) -> dict:
     """关键词 fallback 分类器 —— 当 LLM 分类失败时使用，保证总能返回有效结果。
 
@@ -133,11 +186,10 @@ def _classify_intent_keywords(user_text: str) -> dict:
         task_type = "provision"
         groups.append("admin")
 
-    # P3 核心改进：如果没匹配到任何特定组，给一个宽泛的默认组合
-    # 避免只有 core 组导致 agent 缺工具。
-    # 普通对话（如"我给你发了什么"）通常需要 feishu_collab 来查历史记录。
-    if len(groups) == 1:  # 只有 core
-        groups.append("feishu_collab")  # 默认加飞书协作组（查历史、看消息等）
+    # 只有明确涉及飞书协作上下文时，才默认补 feishu_collab。
+    # 避免普通职业/战略聊天被误导成飞书子代理任务。
+    if len(groups) == 1 and _needs_feishu_collab_context(user_text):
+        groups.append("feishu_collab")
 
     return {"type": task_type, "groups": list(dict.fromkeys(groups))}
 
@@ -196,22 +248,13 @@ async def _classify_intent_llm(
         # response_mime_type="application/json" 保证输出是纯 JSON
         # 但 CF Worker 代理可能不传递 mime_type，模型返回非 JSON（如 "Here is"）
         # 多层防御：code block → regex JSON 提取 → 直接 parse → keyword fallback
-        if "```" in raw:
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-            raw = raw.strip()
+        raw = _extract_first_json_object(raw) or raw
         if not raw:
             logger.warning("LLM intent classification returned empty JSON after stripping code block")
             return _classify_intent_keywords(user_text)
-        # 如果 raw 不是以 { 开头，尝试从中提取 JSON 对象
         if not raw.startswith("{"):
-            m = re.search(r'\{[^}]+\}', raw)
-            if m:
-                raw = m.group(0)
-            else:
-                logger.warning("LLM intent classification: no JSON found in raw=%r, using keyword fallback", raw[:100])
-                return _classify_intent_keywords(user_text)
+            logger.warning("LLM intent classification: no JSON found in raw=%r, using keyword fallback", raw[:100])
+            return _classify_intent_keywords(user_text)
         result = json.loads(raw)
         task_type = result.get("type", "normal")
         groups = result.get("groups", ["core"])

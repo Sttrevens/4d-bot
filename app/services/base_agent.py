@@ -233,6 +233,57 @@ from app.services import planner as bot_planner
 
 logger = logging.getLogger(__name__)
 
+_FEISHU_CONTEXT_HINT_RE = re.compile(
+    r"(飞书|日历|日程|会议|calendar|任务|task|tasklist|文档|document|纪要|minutes|"
+    r"多维表格|bitable|邮件|mail|群消息|聊天记录|刚才|刚刚|上条|上一条|"
+    r"我发了什么|我刚发|发给你|消息记录|chat history)",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_feishu_collab_request(user_text: str) -> bool:
+    return bool(_FEISHU_CONTEXT_HINT_RE.search(user_text or ""))
+
+
+def _extract_first_json_object(raw: str) -> str | None:
+    if not raw:
+        return None
+    text = raw.strip()
+    if "```" in text:
+        parts = text.split("```")
+        for part in parts:
+            candidate = part.strip()
+            if candidate.startswith("json"):
+                candidate = candidate[4:].strip()
+            if candidate.startswith("{") and candidate.endswith("}"):
+                text = candidate
+                break
+    start = text.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    in_str = False
+    escaped = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:i + 1]
+    return None
+
 # ── think 工具：让模型按需"想一想"再行动，零额外 API 调用 ──
 _THINK_TOOL_DEF = {
     "name": "think",
@@ -991,7 +1042,7 @@ def _get_tenant_tools(
     elif suggested_groups:
         # LLM 意图分类建议的工具组（替代关键词匹配，保留 request_more_tools）
         active_groups = suggested_groups
-        if current_platform == "feishu":
+        if current_platform == "feishu" and _looks_like_feishu_collab_request(user_text):
             active_groups.add("feishu_collab")
     elif user_text:
         active_groups = _select_tool_groups(user_text, current_platform)
@@ -1637,13 +1688,15 @@ def should_delegate_to_sub_agent(task_type: str, user_text: str, suggested_group
     # 也参考 LLM 意图分类的建议分组
     if suggested_groups:
         _group_to_domain = {
-            "feishu_collab": "feishu", "code_dev": "code",
+            "code_dev": "code",
             "research": "research", "admin": "admin", "content": "content",
         }
         for g in suggested_groups:
             if g in _group_to_domain:
                 d = _group_to_domain[g]
                 matches[d] = matches.get(d, 0) + 1
+        if "feishu_collab" in suggested_groups and _looks_like_feishu_collab_request(user_text):
+            matches["feishu"] = matches.get("feishu", 0) + 1
 
     if not matches:
         return None
@@ -2400,21 +2453,13 @@ async def llm_exit_review(
         )
 
         raw = (resp.text or "").strip()
+        raw = _extract_first_json_object(raw) or raw
         # 解析 JSON 分数
         try:
             scores = json.loads(raw)
         except (json.JSONDecodeError, ValueError):
-            # JSON 解析失败，尝试 regex 提取
-            m = _re.search(r'\{[^}]+\}', raw)
-            if m:
-                try:
-                    scores = json.loads(m.group(0))
-                except (json.JSONDecodeError, ValueError):
-                    logger.info("exit review: cannot parse scores from %r, pass", raw[:60])
-                    return "pass"
-            else:
-                logger.info("exit review: cannot parse scores from %r, pass", raw[:60])
-                return "pass"
+            logger.info("exit review: cannot parse scores from %r, pass", raw[:60])
+            return "pass"
 
         relevance = scores.get("relevance", 8)
         factual = scores.get("factual", 8)
