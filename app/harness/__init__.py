@@ -18,6 +18,14 @@ from app.harness.orchestrator import (
     should_compact_history,
     should_nudge_unmatched_reads,
 )
+from app.harness.task_board import (
+    PLAN_ACTIVE_STATUSES,
+    advance_next_step,
+    build_active_plan_context,
+    format_plan_text,
+    normalize_steps,
+    prune_invalid_dependencies,
+)
 
 __all__ = [
     "DEFAULT_COMPACTION_AFTER_ROUND",
@@ -28,4 +36,10 @@ __all__ = [
     "normalize_inbox_item",
     "should_compact_history",
     "should_nudge_unmatched_reads",
+    "PLAN_ACTIVE_STATUSES",
+    "advance_next_step",
+    "build_active_plan_context",
+    "format_plan_text",
+    "normalize_steps",
+    "prune_invalid_dependencies",
 ]
