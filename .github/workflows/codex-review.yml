@@ -57,17 +57,40 @@ jobs:
           prompt: |
             You are reviewing PR #${{ github.event.pull_request.number }} for ${{ github.repository }}.
 
-            Review ONLY the changes introduced by this pull request.
-            Focus on:
+            Review ONLY the changes introduced by this pull request, but do not review it in isolation.
+            First inspect the repository context and use it in your judgment, especially:
+            - CLAUDE.md
+            - README.md
+            - docs/add-tenant.md
+            - docs/eval-autonomous-self-repair.md
+            - docs/research-xiaohongshu-mcp.md
+
+            This repository is the open-source trunk of a multi-tenant AI bot platform.
+            Prioritize whether the PR preserves these project goals:
+            - stable multi-tenant isolation and tenant-scoped state
+            - reliable agent harness behavior across providers and tools
+            - safe auto-fix boundaries and infrastructure safety gates
+            - SaaS-oriented control-plane direction, not one-off hacks
+            - open-source maintainability and coherent architecture
+
+            Be especially alert for:
+            - new tools that are added incompletely (tool definitions, maps, filtering, tenant whitelist exposure)
+            - changes that weaken allowlists, tenant isolation, container boundaries, or safety checks
+            - provider-specific patches that bypass shared harness/runtime policy
+            - regressions in planner, memory, context compaction, inbox handling, or long-running task control
+            - code that solves an internal case but hurts the open-source mainline design
+
+            Focus your review on:
             - correctness bugs and regressions
             - security, privacy, and destructive behaviors
-            - breaking API, schema, or deployment changes
+            - breaking API, schema, deploy, or tenant-config changes
             - missing or weak tests for risky changes
+            - roadmap or architecture drift relative to the project docs above
 
             Keep the review concise and practical.
             Reply in Chinese.
             If there are actionable findings, rank them by severity and cite file paths.
-            If there are no blocking issues, say that explicitly and briefly mention any residual risks.
+            If there are no blocking issues, say that explicitly and briefly mention residual risks or missing validation.
 
             Pull request title:
             ${{ github.event.pull_request.title }}
