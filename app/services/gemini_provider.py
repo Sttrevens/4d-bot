@@ -23,7 +23,9 @@ from app.harness import (
     compress_gemini_function_results,
     infer_turn_mode,
     normalize_inbox_item,
+    sanitize_suggested_groups,
     should_compact_history,
+    should_run_code_preflight,
     should_nudge_unmatched_reads,
 )
 from app.services.base_agent import (
@@ -330,7 +332,9 @@ async def _code_preflight_context(
     async def _search_one(term: str) -> tuple[str, str]:
         try:
             result = await loop.run_in_executor(None, search_code, term)
-            return (term, result.data if result.ok else "")
+            if isinstance(result, ToolResult):
+                return (term, result.content if result.ok else "")
+            return (term, str(result or ""))
         except Exception as e:
             logger.warning("code preflight search failed for %r: %s", term, e)
             return (term, "")
@@ -1028,7 +1032,7 @@ async def handle_message(
     _llm_groups: set[str] | None = None
     if _intent:
         _task_type = _intent["type"]
-        _llm_groups = set(_intent["groups"])
+        _llm_groups = set(sanitize_suggested_groups(user_text, _intent["groups"]))
         # provision 映射到 deep 预算（多步骤流程）
         if _task_type == "provision":
             _task_type = "deep"
@@ -1099,7 +1103,7 @@ async def handle_message(
     # 用户消息中提到的标识符，把所有引用位置注入到上下文中。
     # 效果：模型在第一轮就看到完整的引用图谱，不需要自己去搜。
     _preflight_ctx: str | None = None
-    if _llm_groups and "code_dev" in _llm_groups:
+    if should_run_code_preflight(user_text, _llm_groups):
         try:
             _preflight_ctx = await _code_preflight_context(user_text, history)
         except Exception as e:

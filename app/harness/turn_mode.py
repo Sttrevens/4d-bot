@@ -23,12 +23,40 @@ _CODE_RE = re.compile(r"(代码|bug|fix|deploy|部署|git|pr|分支|commit|push|
 _DEVOPS_RE = re.compile(r"(服务器|日志|log|重启|restart|进程|docker|容器)")
 _CONTENT_RE = re.compile(r"(导出|pdf|ppt|export|视频|video|youtube|bilibili|报告)")
 _ADMIN_RE = re.compile(r"(创建.*bot|部署.*实例|开通|provision|租户|安装.*bot)")
+_PRODUCT_RE = re.compile(r"(codex|cursor|chatgpt|openai|claude\s*code|gemini)", re.IGNORECASE)
 _ACTION_RE = re.compile(
     r"(提醒我|帮我创建|帮我加|帮我发|帮我安排|帮我设置|"
     r"创建(一个|一下)?|添加(一个|一下)?|发送(一个|一下)?|"
     r"删除(一个|一下)?|修改(一个|一下)?|更新(一个|一下)?|"
     r"设个?提醒|安排一下|加个?日程|发个?消息|写入|导出一份)"
 )
+
+
+def has_explicit_code_intent(user_text: str) -> bool:
+    return bool(_CODE_RE.search((user_text or "").strip()))
+
+
+def is_product_pricing_turn(user_text: str) -> bool:
+    text = (user_text or "").strip()
+    if not text:
+        return False
+    return bool(_PRICING_RE.search(text) and _PRODUCT_RE.search(text))
+
+
+def sanitize_suggested_groups(user_text: str, suggested_groups: list[str] | set[str] | tuple[str, ...] | None) -> tuple[str, ...]:
+    groups = list(dict.fromkeys(suggested_groups or ("core",)))
+    if "core" not in groups:
+        groups.insert(0, "core")
+    if is_product_pricing_turn(user_text) and not has_explicit_code_intent(user_text):
+        groups = [g for g in groups if g not in {"code_dev", "devops"}]
+        if "research" not in groups:
+            groups.append("research")
+    return tuple(dict.fromkeys(groups))
+
+
+def should_run_code_preflight(user_text: str, suggested_groups: list[str] | set[str] | tuple[str, ...] | None) -> bool:
+    groups = sanitize_suggested_groups(user_text, suggested_groups)
+    return "code_dev" in groups and has_explicit_code_intent(user_text)
 
 
 @dataclass(frozen=True)

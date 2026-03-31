@@ -34,8 +34,12 @@ from app.harness.task_board import (
 )
 from app.harness.turn_mode import (
     TurnMode,
+    has_explicit_code_intent,
     infer_turn_mode,
     is_non_actionable_turn,
+    is_product_pricing_turn,
+    sanitize_suggested_groups,
+    should_run_code_preflight,
 )
 
 __all__ = [
@@ -58,6 +62,10 @@ __all__ = [
     "normalize_steps",
     "prune_invalid_dependencies",
     "TurnMode",
+    "has_explicit_code_intent",
     "infer_turn_mode",
     "is_non_actionable_turn",
+    "is_product_pricing_turn",
+    "sanitize_suggested_groups",
+    "should_run_code_preflight",
 ]

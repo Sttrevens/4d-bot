@@ -37,6 +37,7 @@ _FACTUAL_CLAIM_SIGNALS = re.compile(
     r"|根据(?:公开|工商|官方|最新|公开的).{0,8}(?:信息|资料|数据|披露|显示|记录)"
     r"|[\u4e00-\u9fff]{2,4}[、,，][\u4e00-\u9fff]{2,4}[、,，][\u4e00-\u9fff]{2,4}"
 )
+_FAKE_TOOL_TRACE_RE = re.compile(r"<(?:tools_used|execute_tool)>", re.IGNORECASE)
 
 
 def requires_external_grounding(user_text: str) -> bool:
@@ -68,17 +69,31 @@ def reply_contains_dense_factual_claims(reply_text: str) -> bool:
 
 def build_grounding_nudge(user_text: str, reply_text: str = "") -> str:
     text = (user_text or "").strip()
+    fake_tool_trace = bool(reply_text and _FAKE_TOOL_TRACE_RE.search(reply_text))
     if _PRICING_RE.search(text):
         if _CODEX_PRODUCT_RE.search(text):
-            return (
+            prefix = (
+                "⚠️ 你刚才只是口头描述自己搜了什么，或者输出了伪工具标签。"
+                "下一轮不要再解释，也不要输出 <tools_used>/<execute_tool>。"
+                "先真实调用 web_search，再回来回答。"
+                if fake_tool_trace
+                else ""
+            )
+            return prefix + (
                 "⚠️ 用户问的是当前 Codex 产品的价格/定价/套餐/额度。"
                 "先搜索当前的 OpenAI Codex 官方定价/pricing/help 页面，再回答。"
                 "不要把当前 Codex 产品和历史上的旧 Codex API 模型混为一谈。"
-                "优先搜索“OpenAI Codex pricing official”“OpenAI Codex help”这类查询，"
+                "优先搜索“site:openai.com Codex pricing”“site:openai.com/chatgpt Codex pricing”“site:help.openai.com Codex pricing”这类查询，"
+                "不要拿旧的 codex/completions/edit endpoints 下线公告来回答当前产品问题。"
                 "只引用与你当前问题直接相关的官方来源或可靠来源。"
                 "如果官方页面没写清楚，就明确说没查到，不要猜套餐关系、倍数或额度规则。"
             )
-        return (
+        prefix = (
+            "⚠️ 你刚才只是描述自己搜过，没有真实调用搜索工具。下一轮先真实调用 web_search，再回答。"
+            if fake_tool_trace
+            else ""
+        )
+        return prefix + (
             "⚠️ 用户问的是价格、套餐、额度或配额这类会变化的信息。"
             "请先用 web_search 查当前、可靠、最好是官方来源的定价/配额说明，再回答。"
             "只搜索当前问题本身，不要搜索无关人物、公司梗或内部玩笑。"

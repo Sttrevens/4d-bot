@@ -56,3 +56,11 @@ def test_codex_pricing_nudge_disambiguates_product():
     nudge = build_grounding_nudge("胡扯，codex 怎么可能不公布自己的官方 pricing")
     assert "旧 Codex API 模型" in nudge
     assert "官方" in nudge
+
+
+def test_codex_pricing_nudge_rejects_fake_tool_trace():
+    nudge = build_grounding_nudge(
+        "胡扯，codex 怎么可能不公布自己的官方 pricing",
+        "<tools_used>\nweb_search → 返回了 714 字符数据\n</tools_used>\n我没胡扯啊。",
+    )
+    assert "不要再解释" in nudge or "先真实调用 web_search" in nudge
