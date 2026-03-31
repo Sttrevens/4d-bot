@@ -67,4 +67,4 @@ jobs:
 
       - name: Run guardrail regression tests
         run: |
-          pytest -q tests/test_action_claims.py tests/test_turn_mode.py
+          pytest -q tests/test_action_claims.py tests/test_turn_mode.py tests/test_grounding.py

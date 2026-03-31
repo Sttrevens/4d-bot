@@ -14,6 +14,12 @@ from app.harness.context import (
     append_openai_inbox_messages,
     normalize_inbox_item,
 )
+from app.harness.grounding import (
+    build_grounding_nudge,
+    reply_contains_dense_factual_claims,
+    requires_external_grounding,
+    should_relax_fact_grounding,
+)
 from app.harness.orchestrator import (
     should_compact_history,
     should_nudge_unmatched_reads,
@@ -39,6 +45,10 @@ __all__ = [
     "compress_openai_tool_results",
     "append_openai_inbox_messages",
     "normalize_inbox_item",
+    "build_grounding_nudge",
+    "reply_contains_dense_factual_claims",
+    "requires_external_grounding",
+    "should_relax_fact_grounding",
     "should_compact_history",
     "should_nudge_unmatched_reads",
     "PLAN_ACTIVE_STATUSES",

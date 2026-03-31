@@ -28,9 +28,13 @@ from typing import Callable, Awaitable
 from app.harness import (
     DEFAULT_COMPACTION_AFTER_ROUND,
     DEFAULT_COMPACTION_KEEP_RECENT,
+    build_grounding_nudge,
     compress_openai_tool_results,
     infer_turn_mode,
     is_non_actionable_turn,
+    reply_contains_dense_factual_claims,
+    requires_external_grounding,
+    should_relax_fact_grounding,
 )
 
 # ── 超时智能消息：跟踪 agent 进度，超时时提供有信息量的提示 ──
@@ -2323,26 +2327,6 @@ _GROUNDING_TOOLS = frozenset({
     "recall_memory",
 })
 
-# 用户明确要求搜索/调研的意图关键词
-_RESEARCH_INTENT = _re.compile(
-    r"(搜[一搜索]|查[一查找询]|research|调研|调查|了解一下|看看|帮我[找查搜看]|"
-    r"谁是|有哪些|现在[是有]|最新的|目前|现状|什么情况|怎么样了|"
-    r"哪些人|成员|董事|高管|管理层|创始人|CEO|CTO|CFO)",
-    _re.IGNORECASE,
-)
-
-# 事实密度信号 —— 回复中含有这些模式说明在陈述具体事实
-_FACTUAL_CLAIM_SIGNALS = _re.compile(
-    # 具体职位+人名模式（如 "执行董事: 闫俊杰"、"CEO 张三"）
-    r"(?:执行董事|监事|总经理|董事长|CEO|CTO|CFO|COO|创始人|联合创始人|总裁|副总裁)"
-    r".{0,5}[\uff1a:].{0,5}[\u4e00-\u9fff]{2,4}"
-    # 或者 "根据公开信息/工商信息/官方资料"（LLM 编造出处的常见模式）
-    r"|根据(?:公开|工商|官方|最新|公开的).{0,8}(?:信息|资料|数据|披露|显示|记录)"
-    # 或者列举多个中文人名（3个以上 = 高度可能是编造的名单）
-    r"|[\u4e00-\u9fff]{2,4}[、,，][\u4e00-\u9fff]{2,4}[、,，][\u4e00-\u9fff]{2,4}",
-)
-
-
 def detect_ungrounded_claims(
     reply_text: str,
     user_text: str,
@@ -2361,32 +2345,24 @@ def detect_ungrounded_claims(
     if called & _GROUNDING_TOOLS:
         return None
 
-    # ── 层 1: 用户明确要求搜索/调研，但 bot 没搜就答了 ──
-    if _RESEARCH_INTENT.search(user_text):
-        # 回复够长（>50字）= 在实质性回答，不是在确认需求
-        if len(reply_text) > 50:
-            logger.info(
-                "grounding gate: user asked to research but no search tool called. "
-                "user=%s reply=%s",
-                user_text[:60], reply_text[:60],
-            )
-            return (
-                "⚠️ 你没有使用任何搜索工具就给出了回答。用户明确要求搜索/调研，"
-                "请先用 web_search 搜索最新信息，然后基于搜索结果回答。"
-                "不要依赖你的记忆，你的知识可能过时或错误。"
-            )
+    if should_relax_fact_grounding(user_text):
+        return None
+
+    # ── 层 1: 用户明确问的是价格/套餐/配额/当前事实，但 bot 没搜就答了 ──
+    if requires_external_grounding(user_text) and len(reply_text) > 50:
+        logger.info(
+            "grounding gate: external grounding required but no search tool called. user=%s reply=%s",
+            user_text[:60], reply_text[:60],
+        )
+        return build_grounding_nudge(user_text, reply_text)
 
     # ── 层 2: 回复含高密度事实声称（人名列表、职位信息、编造出处）──
-    if _FACTUAL_CLAIM_SIGNALS.search(reply_text):
+    if reply_contains_dense_factual_claims(reply_text):
         logger.info(
-            "grounding gate: factual claims detected without verification. "
-            "reply=%s",
+            "grounding gate: factual claims detected without verification. reply=%s",
             reply_text[:80],
         )
-        return (
-            "⚠️ 你的回复包含具体的人名、职位等事实信息，但你没有通过搜索工具验证。"
-            "这些信息可能是过时或错误的。请用 web_search 搜索验证后再回答。"
-        )
+        return build_grounding_nudge(user_text, reply_text)
 
     return None
 

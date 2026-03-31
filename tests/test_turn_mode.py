@@ -23,3 +23,9 @@ def test_code_turn_detected():
 def test_non_actionable_turn_helper():
     assert is_non_actionable_turn("他的宿命论具体是什么逻辑")
     assert not is_non_actionable_turn("今晚提醒我报销")
+
+
+def test_pricing_turn_detected_as_research():
+    mode = infer_turn_mode("我用 codex 两天用了 20 刀周额度的 60%，是开 200 刀套餐还是充 extra 额度？")
+    assert mode.mode == "research"
+    assert mode.task_type == "research"
