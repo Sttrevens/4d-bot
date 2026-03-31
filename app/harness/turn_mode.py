@@ -16,6 +16,10 @@ _RESEARCH_RE = re.compile(
     r"搜[一搜索]|查[一查找]|帮我[找查搜看]|最新|现状|什么情况|"
     r"价格|定价|报价|套餐|额度|配额|extra|充值|pricing|price|quota|subscription|plan)"
 )
+_PRICING_RE = re.compile(
+    r"(价格|定价|报价|套餐|额度|配额|extra|充值|pricing|price|quota|subscription|plan)",
+    re.IGNORECASE,
+)
 _COLLAB_RE = re.compile(
     r"(日历|日程|会议|calendar|任务|文档|多维表格|bitable|表格|飞书|doc|sheet|提醒|邮件|群消息|审批)"
 )
