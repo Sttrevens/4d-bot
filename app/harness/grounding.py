@@ -71,11 +71,11 @@ def build_grounding_nudge(user_text: str, reply_text: str = "") -> str:
     if _PRICING_RE.search(text):
         if _CODEX_PRODUCT_RE.search(text):
             return (
-                "⚠️ 用户问的是当前 Codex 产品的价格/套餐/额度。"
-                "先搜索当前的 OpenAI Codex 官方 pricing/help 页面，再回答。"
+                "⚠️ 用户问的是当前 Codex 产品的价格/定价/套餐/额度。"
+                "先搜索当前的 OpenAI Codex 官方定价/pricing/help 页面，再回答。"
                 "不要把当前 Codex 产品和历史上的旧 Codex API 模型混为一谈。"
                 "优先搜索“OpenAI Codex pricing official”“OpenAI Codex help”这类查询，"
-                "只引用与你当前问题直接相关的官方或可靠来源。"
+                "只引用与你当前问题直接相关的官方来源或可靠来源。"
                 "如果官方页面没写清楚，就明确说没查到，不要猜套餐关系、倍数或额度规则。"
             )
         return (
