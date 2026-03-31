@@ -23,7 +23,10 @@ _PRICING_RE = re.compile(
 _COLLAB_RE = re.compile(
     r"(日历|日程|会议|calendar|任务|文档|多维表格|bitable|表格|飞书|doc|sheet|提醒|邮件|群消息|审批)"
 )
-_CODE_RE = re.compile(r"(代码|bug|fix|deploy|部署|git|pr|分支|commit|push|脚本|工程|重构|debug)")
+_CODE_RE = re.compile(
+    r"(代码|部署|分支|脚本|工程|重构|\bbug\b|\bfix\b|\bdeploy\b|\bgit\b|\bpr\b|\bcommit\b|\bpush\b|\bdebug\b)",
+    re.IGNORECASE,
+)
 _DEVOPS_RE = re.compile(r"(服务器|日志|log|重启|restart|进程|docker|容器)")
 _CONTENT_RE = re.compile(r"(导出|pdf|ppt|export|视频|video|youtube|bilibili|报告)")
 _ADMIN_RE = re.compile(r"(创建.*bot|部署.*实例|开通|provision|租户|安装.*bot)")
