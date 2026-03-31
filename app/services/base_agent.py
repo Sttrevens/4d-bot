@@ -2349,7 +2349,7 @@ def detect_ungrounded_claims(
         return None
 
     # ── 层 1: 用户明确问的是价格/套餐/配额/当前事实，但 bot 没搜就答了 ──
-    if requires_external_grounding(user_text) and len(reply_text) > 50:
+    if requires_external_grounding(user_text) and len(reply_text.strip()) > 10:
         logger.info(
             "grounding gate: external grounding required but no search tool called. user=%s reply=%s",
             user_text[:60], reply_text[:60],
