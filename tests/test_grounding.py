@@ -50,3 +50,9 @@ def test_dense_factual_claims_still_trigger_on_public_facts():
 def test_pricing_nudge_discourages_guessing():
     nudge = build_grounding_nudge("codex 的 extra 额度怎么收费？200 刀是 20 刀的多少倍？")
     assert "不要猜" in nudge
+
+
+def test_codex_pricing_nudge_disambiguates_product():
+    nudge = build_grounding_nudge("胡扯，codex 怎么可能不公布自己的官方 pricing")
+    assert "旧 Codex API 模型" in nudge
+    assert "官方" in nudge

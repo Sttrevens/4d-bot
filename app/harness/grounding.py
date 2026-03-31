@@ -17,6 +17,7 @@ _PRICING_RE = re.compile(
     r"pricing|price|quota|usage|subscription|plan|tier)",
     re.IGNORECASE,
 )
+_CODEX_PRODUCT_RE = re.compile(r"codex|chatgpt\s*codex|openai\s*codex", re.IGNORECASE)
 
 _PUBLIC_ENTITY_FACT_RE = re.compile(
     r"(哪些人|成员|董事|高管|管理层|创始人|CEO|CTO|CFO|COO|执行董事|总经理|"
@@ -68,6 +69,15 @@ def reply_contains_dense_factual_claims(reply_text: str) -> bool:
 def build_grounding_nudge(user_text: str, reply_text: str = "") -> str:
     text = (user_text or "").strip()
     if _PRICING_RE.search(text):
+        if _CODEX_PRODUCT_RE.search(text):
+            return (
+                "⚠️ 用户问的是当前 Codex 产品的价格/套餐/额度。"
+                "先搜索当前的 OpenAI Codex 官方 pricing/help 页面，再回答。"
+                "不要把当前 Codex 产品和历史上的旧 Codex API 模型混为一谈。"
+                "优先搜索“OpenAI Codex pricing official”“OpenAI Codex help”这类查询，"
+                "只引用与你当前问题直接相关的官方或可靠来源。"
+                "如果官方页面没写清楚，就明确说没查到，不要猜套餐关系、倍数或额度规则。"
+            )
         return (
             "⚠️ 用户问的是价格、套餐、额度或配额这类会变化的信息。"
             "请先用 web_search 查当前、可靠、最好是官方来源的定价/配额说明，再回答。"
