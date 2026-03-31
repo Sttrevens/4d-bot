@@ -1713,7 +1713,7 @@ async def handle_message(
             # 涉及视觉分析/自定义工具调试时，放宽到 round 4+ 再检测（这类任务天然需要更多轮）
             _exit_gate_min_round = 4 if _vision_analysis_in_progress else 1
             if _exit_gate_nudge_count < _MAX_EXIT_GATE_NUDGES and reply_text and round_num >= _exit_gate_min_round:
-                if detect_action_claims(reply_text, tool_names_called):
+                if detect_action_claims(reply_text, tool_names_called, user_text=user_text):
                     _exit_gate_nudge_count += 1
                     logger.info(
                         "local action-claim detector nudge #%d at round %d (reply: %s)",
@@ -1724,7 +1724,9 @@ async def handle_message(
                         role="user",
                         parts=[types.Part(text=(
                             "⛔ 你的回复声称已经执行了操作，但实际上没有调用任何工具。"
-                            "请立即调用对应的工具完成操作。不要用文字描述你做了什么——直接调用工具去做。"
+                            "如果当前用户这轮明确是在要你执行某件事，请立即调用对应工具完成操作。"
+                            "如果当前用户这轮是在问解释、分析、总结、观点或资料，不要跳去执行旧任务，继续围绕当前问题回答。"
+                            "不要用文字描述你做了什么——只在当前问题确实要求行动时再调用工具。"
                             "如果之前的操作失败了，请重新尝试。"
                         ))],
                     ))

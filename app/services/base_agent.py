@@ -2232,8 +2232,28 @@ _CLAIM_FALSE_POSITIVE = _re.compile(
     r"|权限.{0,8}(修改|编辑)"            # "权限设置成了...修改" = 权限描述
 )
 
+# 当前用户这轮明显是在问解释/分析，而不是让 bot 执行动作。
+_NON_ACTIONABLE_USER_INTENT = _re.compile(
+    r"(为什么|怎么|如何|啥意思|什么逻辑|怎么看|觉得|是不是|对吗|对嘛|"
+    r"能不能看完|总结|介绍|解释|分析|详细|展开|具体|来源|链接|哲学|教义|"
+    r"宿命论|离散|视频|这个人|类似的观点)",
+    _re.IGNORECASE,
+)
 
-def detect_action_claims(reply_text: str, tool_names_called: list[str]) -> bool:
+# 这些回复措辞是在“给你解释/罗列内容”，不是声称已经执行了外部动作。
+_EXPLANATION_FRAMES = _re.compile(
+    r"(给你(讲|说|解释|分析|复述|展开|总结|梳理|罗列)|"
+    r"我来(讲|说|解释|分析|复述|展开|总结|梳理|罗列)|"
+    r"简单给你(讲|说|解释|分析|总结|梳理)|"
+    r"划个重点|复述一下|解释一下|展开说说|梳理一下)"
+)
+
+
+def detect_action_claims(
+    reply_text: str,
+    tool_names_called: list[str],
+    user_text: str = "",
+) -> bool:
     """快速检测回复中是否有未兑现的动作声称。
 
     返回 True = 发现空承诺，应该 nudge 模型继续执行。
@@ -2246,6 +2266,10 @@ def detect_action_claims(reply_text: str, tool_names_called: list[str]) -> bool:
 
     # 排除 false positive
     if _CLAIM_FALSE_POSITIVE.search(reply_text):
+        return False
+
+    # 当前轮是明显的解释/分析型问题时，不要把“我给你罗列/解释一下”误判成执行承诺。
+    if user_text and _NON_ACTIONABLE_USER_INTENT.search(user_text) and _EXPLANATION_FRAMES.search(reply_text):
         return False
 
     total_calls = len(tool_names_called)
