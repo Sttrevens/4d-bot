@@ -26,6 +26,11 @@ from app.harness.task_board import (
     normalize_steps,
     prune_invalid_dependencies,
 )
+from app.harness.turn_mode import (
+    TurnMode,
+    infer_turn_mode,
+    is_non_actionable_turn,
+)
 
 __all__ = [
     "DEFAULT_COMPACTION_AFTER_ROUND",
@@ -42,4 +47,7 @@ __all__ = [
     "format_plan_text",
     "normalize_steps",
     "prune_invalid_dependencies",
+    "TurnMode",
+    "infer_turn_mode",
+    "is_non_actionable_turn",
 ]

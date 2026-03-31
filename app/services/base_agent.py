@@ -25,7 +25,13 @@ import time
 import contextvars
 from typing import Callable, Awaitable
 
-from app.harness import DEFAULT_COMPACTION_AFTER_ROUND, DEFAULT_COMPACTION_KEEP_RECENT, compress_openai_tool_results
+from app.harness import (
+    DEFAULT_COMPACTION_AFTER_ROUND,
+    DEFAULT_COMPACTION_KEEP_RECENT,
+    compress_openai_tool_results,
+    infer_turn_mode,
+    is_non_actionable_turn,
+)
 
 # ── 超时智能消息：跟踪 agent 进度，超时时提供有信息量的提示 ──
 # handler 层在 TimeoutError 时读取此变量，构造上下文相关的超时消息。
@@ -1655,10 +1661,15 @@ def should_delegate_to_sub_agent(task_type: str, user_text: str, suggested_group
         return None
 
     text_lower = user_text.lower()
+    turn_mode = infer_turn_mode(user_text)
 
     # quick 类型不委托（简单问候/闲聊，主 agent 直接处理更快）
-    if task_type == "quick":
+    if task_type == "quick" or turn_mode.mode == "quick":
         return None
+
+    if turn_mode.mode == "analysis" and task_type != "research":
+        if not suggested_groups or set(suggested_groups) <= {"core", "content"}:
+            return None
 
     # ── 关键词集合（用于单域 vs 多域判定）──
     _feishu_kw = {"日历", "日程", "calendar", "文档", "document", "纪要", "minutes",
@@ -2269,7 +2280,7 @@ def detect_action_claims(
         return False
 
     # 当前轮是明显的解释/分析型问题时，不要把“我给你罗列/解释一下”误判成执行承诺。
-    if user_text and _NON_ACTIONABLE_USER_INTENT.search(user_text) and _EXPLANATION_FRAMES.search(reply_text):
+    if user_text and is_non_actionable_turn(user_text) and _EXPLANATION_FRAMES.search(reply_text):
         return False
 
     total_calls = len(tool_names_called)

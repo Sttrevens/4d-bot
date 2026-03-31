@@ -19,7 +19,13 @@ from typing import Callable, Awaitable
 from google import genai
 from google.genai import types
 
-from app.harness import compress_gemini_function_results, normalize_inbox_item, should_compact_history, should_nudge_unmatched_reads
+from app.harness import (
+    compress_gemini_function_results,
+    infer_turn_mode,
+    normalize_inbox_item,
+    should_compact_history,
+    should_nudge_unmatched_reads,
+)
 from app.services.base_agent import (
     _build_system_prompt,
     _strip_degenerate_repetition,
@@ -160,38 +166,11 @@ def _classify_intent_keywords(user_text: str) -> dict:
 
     核心原则：宁可多加组（多几个工具 LLM 可以忽略）也不要少加（缺工具 LLM 无法完成任务）。
     """
-    t = user_text.lower()
-    groups = ["core"]
-    task_type = "normal"
-
-    # 研究/调研
-    if re.search(r"(调研|竞品|分析.*市场|行业报告|research|competitor|社媒|数据.*收集|搜[一搜索]|查[一查找]|帮我[找查搜看])", t):
-        task_type = "research"
-        groups.append("research")
-    # 日历/文档/任务 → feishu_collab
-    if re.search(r"(日历|日程|会议|calendar|任务|文档|多维表格|bitable|表格|飞书|doc|sheet)", t):
-        groups.append("feishu_collab")
-    # 代码/部署
-    if re.search(r"(代码|bug|fix|deploy|部署|git|pr|分支|commit|push)", t):
-        task_type = "deep"
-        groups.append("code_dev")
-    # 服务器
-    if re.search(r"(服务器|日志|log|重启|restart|进程|docker)", t):
-        groups.append("devops")
-    # 导出/视频
-    if re.search(r"(导出|pdf|ppt|export|视频|video|youtube|bilibili)", t):
-        groups.append("content")
-    # provision
-    if re.search(r"(创建.*bot|部署.*实例|开通|provision)", t):
-        task_type = "provision"
-        groups.append("admin")
-
-    # 只有明确涉及飞书协作上下文时，才默认补 feishu_collab。
-    # 避免普通职业/战略聊天被误导成飞书子代理任务。
+    inferred = infer_turn_mode(user_text)
+    groups = list(inferred.groups)
     if len(groups) == 1 and _needs_feishu_collab_context(user_text):
         groups.append("feishu_collab")
-
-    return {"type": task_type, "groups": list(dict.fromkeys(groups))}
+    return {"type": inferred.task_type, "groups": list(dict.fromkeys(groups))}
 
 
 async def _classify_intent_llm(
