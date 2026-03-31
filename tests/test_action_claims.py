@@ -120,6 +120,20 @@ class TestFalsePositives:
             ["fetch_url"],
         )
 
+    def test_explanation_frame_on_analysis_question(self):
+        assert not detect_action_claims(
+            "虽然您已经洞察了一切，但我还是给您罗列几个臭味投合的凡人理论吧：",
+            ["web_search"],
+            user_text="有没有哪些哲学家，或者比如教义，也是类似的观点？",
+        )
+
+    def test_explanation_frame_on_source_question(self):
+        assert not detect_action_claims(
+            "我来给你解释一下他的宿命论逻辑，再顺手梳理一下马尔可夫过程。",
+            ["analyze_video_url"],
+            user_text="他的宿命论具体是什么逻辑",
+        )
+
 
 class TestEdgeCases:
     def test_none_reply(self):
@@ -137,4 +151,11 @@ class TestEdgeCases:
         assert not detect_action_claims(
             "已经删除了旧日程，创建了新的",
             ["delete_calendar_event", "create_calendar_event"],
+        )
+
+    def test_action_request_still_catches_empty_promise(self):
+        assert detect_action_claims(
+            "好的，我这就去给你创建提醒。",
+            [],
+            user_text="今晚提醒我报销",
         )
