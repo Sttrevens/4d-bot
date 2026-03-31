@@ -24,14 +24,16 @@ jobs:
     outputs:
       final_message: ${{ steps.run_codex.outputs.final-message }}
     steps:
-      - name: Check required secret
+      - name: Check Codex availability
+        id: codex_guard
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           if [ -z "$OPENAI_API_KEY" ]; then
-            echo "Missing OPENAI_API_KEY GitHub Actions secret." >&2
-            echo "Add it in: Settings -> Secrets and variables -> Actions -> New repository secret" >&2
-            exit 1
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "Codex review skipped: missing OPENAI_API_KEY secret."
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
           fi
 
       - uses: actions/checkout@v5
@@ -39,7 +41,7 @@ jobs:
           ref: ${{ github.event_name == 'pull_request' && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.ref }}
 
       - name: Pre-fetch base and head refs
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && steps.codex_guard.outputs.enabled == 'true'
         env:
           PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -50,6 +52,8 @@ jobs:
 
       - name: Run Codex review
         id: run_codex
+        if: steps.codex_guard.outputs.enabled == 'true'
+        continue-on-error: true
         uses: openai/codex-action@v1
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
@@ -120,6 +124,44 @@ jobs:
               comment.user?.type === 'Bot' && comment.body?.includes(marker)
             );
 
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number,
+                body,
+              });
+            }
+
+      - name: Report Codex review unavailable
+        if: github.event_name == 'pull_request' && (steps.codex_guard.outputs.enabled != 'true' || steps.run_codex.outcome == 'failure')
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const marker = '<!-- codex-review-unavailable -->';
+            const unavailableReason = '${{ steps.codex_guard.outputs.enabled }}' !== 'true'
+              ? '未配置 `OPENAI_API_KEY`，本次跳过自动 Codex 审查。'
+              : 'Codex 审查执行失败（常见原因包括地区限制或 OpenAI API 不可用），本次不阻塞 PR。';
+            const body = `${marker}\n## Codex 自动审查\n\n${unavailableReason}\n\n当前仍请以其他 CI 检查（如 \`sanity\`）为准。`;
+            const issue_number = context.payload.pull_request.number;
+            const { owner, repo } = context.repo;
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number,
+              per_page: 100,
+            });
+            const existing = comments.find((comment) =>
+              comment.user?.type === 'Bot' && comment.body?.includes(marker)
+            );
             if (existing) {
               await github.rest.issues.updateComment({
                 owner,
