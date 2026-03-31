@@ -44,3 +44,14 @@ def test_codex_pricing_turn_is_not_treated_as_code_task():
     assert "research" in groups
     assert "code_dev" not in groups
     assert not should_run_code_preflight(text, groups)
+
+
+from app.services.base_agent import should_delegate_to_sub_agent
+
+
+def test_codex_pricing_not_marked_multi_domain_by_subagent_router():
+    assert should_delegate_to_sub_agent(
+        "research",
+        "胡扯，codex怎么可能不公布自己的官方pricing",
+        ["core", "research"],
+    ) == "research"
