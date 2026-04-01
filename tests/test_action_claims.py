@@ -52,6 +52,20 @@ class TestSendClaims:
     def test_claimed_send_with_actual_tool(self):
         assert not detect_action_claims("已经发送了邮件", ["send_mail"])
 
+    def test_file_sent_claim_requires_confirmed_export_success(self):
+        assert detect_action_claims(
+            "文件已经发你了，记得看。",
+            ["export_file", "web_search", "think"],
+            action_outcomes=[("export_file", "→ 完成")],
+        )
+
+    def test_file_sent_claim_allows_confirmed_export_success(self):
+        assert not detect_action_claims(
+            "文件已经发你了，记得看。",
+            ["export_file"],
+            action_outcomes=[("export_file", "文件 食堂减脂指南.md 已发送给用户（1.2KB）。用户可在聊天中直接下载。")],
+        )
+
 
 class TestModifyClaims:
     """Bot claims it modified something but didn't call update tools."""
