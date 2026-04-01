@@ -1696,7 +1696,12 @@ async def handle_message(
             # 涉及视觉分析/自定义工具调试时，放宽到 round 4+ 再检测（这类任务天然需要更多轮）
             _exit_gate_min_round = 4 if _vision_analysis_in_progress else 1
             if _exit_gate_nudge_count < _MAX_EXIT_GATE_NUDGES and reply_text and round_num >= _exit_gate_min_round:
-                if detect_action_claims(reply_text, tool_names_called, user_text=user_text):
+                if detect_action_claims(
+                    reply_text,
+                    tool_names_called,
+                    user_text=user_text,
+                    action_outcomes=action_outcomes,
+                ):
                     _exit_gate_nudge_count += 1
                     logger.info(
                         "local action-claim detector nudge #%d at round %d (reply: %s)",

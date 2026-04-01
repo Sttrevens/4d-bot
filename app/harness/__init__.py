@@ -24,6 +24,13 @@ from app.harness.orchestrator import (
     should_compact_history,
     should_nudge_unmatched_reads,
 )
+from app.harness.session_facts import (
+    ContinuationContext,
+    build_continuation_context,
+    infer_turn_objective,
+    remember_visual_turn,
+    should_reuse_recent_visual,
+)
 from app.harness.task_board import (
     PLAN_ACTIVE_STATUSES,
     advance_next_step,
@@ -55,6 +62,11 @@ __all__ = [
     "should_relax_fact_grounding",
     "should_compact_history",
     "should_nudge_unmatched_reads",
+    "ContinuationContext",
+    "build_continuation_context",
+    "infer_turn_objective",
+    "remember_visual_turn",
+    "should_reuse_recent_visual",
     "PLAN_ACTIVE_STATUSES",
     "advance_next_step",
     "build_active_plan_context",

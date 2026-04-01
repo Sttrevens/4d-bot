@@ -2254,11 +2254,31 @@ _EXPLANATION_FRAMES = _re.compile(
     r"划个重点|复述一下|解释一下|展开说说|梳理一下)"
 )
 
+_FILE_SENT_CLAIM = _re.compile(
+    r"((文件|指南|报告|pdf|csv|ppt|html).{0,12}(已经|已|给你|发你|发给你).{0,8}(发|发送)"
+    r"|文件已经发你了|已经发你了|已经发给你了)",
+    _re.IGNORECASE,
+)
+
+
+def _export_file_sent_successfully(
+    action_outcomes: list[tuple[str, str]] | None,
+) -> bool:
+    if not action_outcomes:
+        return False
+    for func_name, outcome in action_outcomes:
+        if func_name != "export_file":
+            continue
+        if "已发送给用户" in outcome or "用户可在聊天中直接下载" in outcome:
+            return True
+    return False
+
 
 def detect_action_claims(
     reply_text: str,
     tool_names_called: list[str],
     user_text: str = "",
+    action_outcomes: list[tuple[str, str]] | None = None,
 ) -> bool:
     """快速检测回复中是否有未兑现的动作声称。
 
@@ -2280,6 +2300,11 @@ def detect_action_claims(
 
     total_calls = len(tool_names_called)
     called = set(tool_names_called)
+
+    # “文件已经发你了” 这种声称必须有 export_file 的成功结果支撑。
+    if _FILE_SENT_CLAIM.search(reply_text) and not _export_file_sent_successfully(action_outcomes):
+        logger.info("action claim detected (file-send claim without confirmed export success): %s", reply_text[:80])
+        return True
 
     # 如果模型已经在积极工作（≥3 次工具调用），跳过所有检测。
     # 模型在做了实际工作后的文本回复（中间汇报/结果报告/完成总结）
