@@ -2122,7 +2122,8 @@ _RESEARCH_TOOLS = frozenset({
 
 # 读后未写检测（read-without-write）
 _READ_WRITE_PAIRS: dict[str, frozenset[str]] = {
-    # 飞书文档/多维表格：读了通常是为了改，nudge 合理
+    # 飞书文档/多维表格：只有在用户明确要“改/写回”时才 nudge。
+    # 分析/调研/总结场景下，read_* 只是把文档/表格当资料源。
     "read_feishu_doc": frozenset({
         "write_feishu_doc", "update_feishu_doc", "edit_feishu_doc",
     }),
@@ -2137,18 +2138,40 @@ _READ_WRITE_PAIRS: dict[str, frozenset[str]] = {
     # 之前的 nudge 导致 bot 在用户只是问"这个代码对不对"时自作主张改代码。
 }
 
+_DOC_MODIFY_INTENT = re.compile(
+    r"(?:(?:改|修改|更新|重写|润色|补充|追加|写回|同步|覆写|替换|编辑|整理|填|录入|创建|新增)"
+    r".{0,12}?(?:文档|wiki|飞书文档|doc|纪要))"
+    r"|(?:(?:文档|wiki|飞书文档|doc|纪要).{0,12}?"
+    r"(?:改|修改|更新|重写|润色|补充|追加|写回|同步|覆写|替换|编辑|整理|填|录入|创建|新增))"
+)
+
+_BITABLE_MODIFY_INTENT = re.compile(
+    r"(?:(?:改|修改|更新|写回|同步|填写|录入|新增|创建|补充)"
+    r".{0,12}?(?:表格|多维表格|bitable|记录))"
+    r"|(?:(?:表格|多维表格|bitable|记录).{0,12}?"
+    r"(?:改|修改|更新|写回|同步|填写|录入|新增|创建|补充))"
+)
+
+_READ_WRITE_INTENT_PATTERNS: dict[str, re.Pattern[str]] = {
+    "read_feishu_doc": _DOC_MODIFY_INTENT,
+    "list_bitable_records": _BITABLE_MODIFY_INTENT,
+    "search_bitable_records": _BITABLE_MODIFY_INTENT,
+}
+
 
 def _has_unmatched_reads(tool_names: list[str], user_text: str = "") -> bool:
     """检测是否存在「读了但没写」的未完成操作。
 
-    对飞书文档/多维表格始终检测（读了通常是为了改）。
+    对飞书文档/多维表格，只在用户明确要求“修改/写回”时检测。
     对代码文件（read_file）只在用户消息明确包含修改意图时检测，
     避免用户只是问"这个代码对不对"时被误判。
     """
     called = set(tool_names)
-    # 1) 飞书文档/多维表格：始终检测
+    # 1) 飞书文档/多维表格：仅在用户消息明确要求写回时检测
     for read_tool, write_tools in _READ_WRITE_PAIRS.items():
-        if read_tool in called and not (called & write_tools):
+        intent_pattern = _READ_WRITE_INTENT_PATTERNS.get(read_tool)
+        has_write_intent = bool(user_text and intent_pattern and intent_pattern.search(user_text))
+        if read_tool in called and has_write_intent and not (called & write_tools):
             return True
     # 2) 代码文件：仅在用户消息有修改意图时检测
     if user_text and _CODE_MODIFY_INTENT.search(user_text):
