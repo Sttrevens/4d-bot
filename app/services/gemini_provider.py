@@ -1540,11 +1540,11 @@ async def handle_message(
                         continue
                 logger.info("empty candidates but %d tools were called, building factual summary",
                             len(tool_names_called))
-                reply = _build_factual_summary(tool_names_called, action_outcomes, "AI 返回了空结果。")
+                reply = _build_empty_model_reply(user_text, tool_names_called, action_outcomes)
                 _trigger_memory(sender_id, sender_name, user_text, reply, tool_names_called, call_log, action_outcomes)
                 _maybe_record_watchdog(user_text, tool_names_called, sender_id, sender_name, chat_id, chat_type, reply)
                 return reply
-            return "AI 返回了空结果，请稍后再试。"
+            return _build_empty_model_reply(user_text, tool_names_called, action_outcomes)
 
         candidate = response.candidates[0]
 
@@ -1591,11 +1591,21 @@ async def handle_message(
                 # 3 次空响应都没恢复 → 用事实性总结，不问 LLM（避免幻觉）
                 logger.info("empty content parts after %d retries (%d tools called), building factual summary",
                             _empty_content_retries, len(tool_names_called))
-                reply = _build_factual_summary(tool_names_called, action_outcomes, "AI 连续返回空响应。")
+                reply = _build_empty_model_reply(
+                    user_text,
+                    tool_names_called,
+                    action_outcomes,
+                    repeated=True,
+                )
                 _trigger_memory(sender_id, sender_name, user_text, reply, tool_names_called, call_log, action_outcomes)
                 _maybe_record_watchdog(user_text, tool_names_called, sender_id, sender_name, chat_id, chat_type, reply)
                 return reply
-            return "AI 返回了空结果，请稍后再试。"
+            return _build_empty_model_reply(
+                user_text,
+                tool_names_called,
+                action_outcomes,
+                repeated=True,
+            )
 
         # 分离 function_call 和文本（跳过 thinking parts，避免内心独白泄露）
         function_calls = []
@@ -2172,7 +2182,7 @@ def _build_factual_summary(
     用代码层面的已知事实拼总结，杜绝 LLM 幻觉。
     """
     if not tool_names_called and not action_outcomes:
-        return "抱歉，处理过程中遇到了问题，没能完成你的请求。可以再试一次~"
+        return "我刚刚这一下没顺利接住。你回我一句“继续”，或者把刚才那句再发一次，我马上接着处理。"
 
     parts: list[str] = []
     if reason:
@@ -2188,3 +2198,29 @@ def _build_factual_summary(
 
     parts.append('\n如果任务还没完成，你可以说"继续"让我接着做。')
     return "\n".join(parts)
+
+
+def _build_empty_model_reply(
+    user_text: str,
+    tool_names_called: list[str],
+    action_outcomes: list[tuple[str, str]],
+    *,
+    repeated: bool = False,
+) -> str:
+    """将模型空返回转换成自然、可继续的用户提示。"""
+    if tool_names_called or action_outcomes:
+        reason = "我刚刚查到一半，结果没正常吐出来。"
+        if repeated:
+            reason = "我刚刚连续试了几次，这轮结果还是没正常吐出来。"
+        return _build_factual_summary(tool_names_called, action_outcomes, reason)
+
+    if repeated:
+        return (
+            "我刚刚连续试了几次，这一轮还是没顺利组织出回复。"
+            "你回我一句“继续”，或者把刚才那句再发一次，我马上接着处理。"
+        )
+
+    if any(token in user_text for token in ("继续", "刚才", "怎么样了", "搜一下", "查一下")):
+        return "我刚刚这一下没接稳。你回我一句“继续”，我就按刚才那条接着做。"
+
+    return "我刚刚这一下没正常吐出结果。你把刚才那句再发一次，或者直接回我一句“继续”，我马上接着处理。"
