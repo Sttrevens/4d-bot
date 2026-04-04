@@ -801,6 +801,56 @@ async def _recover_missed_messages() -> None:
     except Exception:
         logger.warning("startup recovery: pending resume check failed", exc_info=True)
 
+    # ── 恢复被中断的 wecom_kf in-flight 请求：优先继续原任务 ──
+    try:
+        kf_in_flight_json = redis.execute("GET", "bot:kf_in_flight") if redis.available() else None
+        if kf_in_flight_json:
+            redis.execute("DEL", "bot:kf_in_flight")
+            kf_in_flight: dict = _json.loads(kf_in_flight_json)
+            if kf_in_flight:
+                logger.info("startup recovery: found %d interrupted wecom_kf in-flight requests", len(kf_in_flight))
+                from app.webhook import wecom_kf_handler as kf_wh
+                for req_id, info in kf_in_flight.items():
+                    tid = info.get("tenant_id", "")
+                    tenant = tenant_registry.get(tid)
+                    if not tenant or tenant.platform != "wecom_kf":
+                        continue
+                    set_current_tenant(tenant)
+                    ch = tenant.get_channel("wecom_kf")
+                    if ch:
+                        set_current_channel(ch)
+                    external_userid = info.get("external_userid", "")
+                    preview = info.get("text_preview", "")
+                    if not external_userid or not preview:
+                        continue
+                    resume_text = (
+                        "[系统消息：你刚刚在处理这个用户的请求时服务重启了，请用新代码继续完成同一个任务]\n"
+                        f"用户原始消息：{preview}"
+                    )
+                    try:
+                        await kf_wh._process_and_reply(
+                            external_userid,
+                            resume_text,
+                            request_id=req_id,
+                        )
+                        logger.info(
+                            "startup recovery: resumed wecom_kf task for user=%s preview=%s",
+                            external_userid[:12], preview[:30],
+                        )
+                    except Exception:
+                        logger.warning("startup recovery: wecom_kf resume failed for %s", req_id[:15], exc_info=True)
+                        try:
+                            await wecom_kf_client.reply_text(
+                                external_userid,
+                                "抱歉，你刚才的消息在处理过程中因服务更新被中断了，请重新发一下～"
+                                + (f"\n\n（你说的是：{preview}...）" if preview else ""),
+                            )
+                        except Exception:
+                            logger.warning("startup recovery: wecom_kf notify failed for %s", req_id[:15], exc_info=True)
+                    await asyncio.sleep(0.5)
+    except Exception:
+        logger.warning("startup recovery: wecom_kf in-flight check failed", exc_info=True)
+
     # ── 恢复被中断的 in-flight 请求：通知用户重发 ──
     # 跳过已经通过 inbox 或 pending_resume 恢复的消息
     _already_recovered = inbox_recovered_ids | resume_msg_ids
@@ -1217,6 +1267,17 @@ async def _shutdown():
                     "EX", "600",  # 10 分钟 TTL
                 )
                 logger.info("shutdown: saved %d in-flight requests to Redis", len(in_flight))
+
+            # 保存 wecom_kf 的 in-flight 请求，重启后优先尝试续跑
+            from app.webhook.wecom_kf_handler import get_in_flight_messages as get_kf_in_flight_messages
+            kf_in_flight = get_kf_in_flight_messages()
+            if kf_in_flight:
+                redis.execute(
+                    "SET", "bot:kf_in_flight",
+                    _json.dumps(kf_in_flight, ensure_ascii=False),
+                    "EX", "600",
+                )
+                logger.info("shutdown: saved %d wecom_kf in-flight requests to Redis", len(kf_in_flight))
 
             # 保存待处理的批量消息，重启后可恢复处理
             from app.webhook.handler import get_pending_batch_messages

@@ -132,12 +132,21 @@ _BATCH_WAIT = 1.5  # 秒，等新消息的窗口期
 _user_pending: dict[str, list[dict]] = {}   # tuk → 待处理消息列表
 _batch_timers: dict[str, asyncio.Task] = {}  # tuk → 定时器任务
 
+# ── In-flight 请求追踪（用于 shutdown 保存 + startup 恢复）──
+# request_id → {external_userid, tenant_id, text_preview, start_time}
+_in_flight: dict[str, dict] = {}
+
 _MSG_TYPE_LABELS = {
     "location": "位置",
     "link": "链接",
     "business_card": "名片",
     "miniprogram": "小程序",
 }
+
+
+def get_in_flight_messages() -> dict[str, dict]:
+    """返回所有 wecom_kf in-flight 请求的元数据。"""
+    return dict(_in_flight)
 
 # 可当文本读取的文件后缀
 _TEXT_FILE_EXTS = {
@@ -1028,6 +1037,7 @@ async def _process_and_reply(
     text: str,
     image_urls: list[str] | None = None,
     remaining_images: list[str] | None = None,
+    request_id: str | None = None,
 ) -> None:
     """agent 处理 + 发送回复（支持 inbox 消息注入）"""
     if len(text) > _MAX_USER_TEXT_LEN:
@@ -1043,6 +1053,14 @@ async def _process_and_reply(
     _state.cleanup_idle()
 
     async with _state.get_lock(external_userid):
+        inflight_id = request_id or f"kf:{get_current_tenant().tenant_id}:{external_userid}:{int(time.time() * 1000)}"
+        _in_flight[inflight_id] = {
+            "platform": "wecom_kf",
+            "tenant_id": get_current_tenant().tenant_id,
+            "external_userid": external_userid,
+            "text_preview": text[:100],
+            "start_time": time.time(),
+        }
         # 创建信箱，让 agent 循环能收到实时插入的消息
         inbox = _state.activate(external_userid)
 
@@ -1085,6 +1103,7 @@ async def _process_and_reply(
             record_error("unhandled", f"wecom_kf process error user={external_userid}", exc=exc)
             await _safe_send(external_userid, "不好意思出了点小状况~ 你再发一遍试试？", hit_send_limit)
         finally:
+            _in_flight.pop(inflight_id, None)
             _state.deactivate(external_userid)
 
 
