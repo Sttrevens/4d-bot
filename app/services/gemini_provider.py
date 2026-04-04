@@ -20,6 +20,7 @@ from google import genai
 from google.genai import types
 
 from app.harness import (
+    build_tool_settle_nudge,
     compress_gemini_function_results,
     infer_turn_mode,
     normalize_inbox_item,
@@ -1864,6 +1865,25 @@ async def handle_message(
                         logger.warning("on_progress callback failed", exc_info=True)
                 else:
                     logger.info("progress hint: LLM returned None (generation failed or text invalid)")
+
+        proposed_tool_names = [fc.function_call.name for fc in function_calls]
+        settle_nudge = build_tool_settle_nudge(
+            user_text,
+            proposed_tool_names,
+            action_outcomes,
+        )
+        if settle_nudge:
+            logger.info(
+                "tool escalation settle nudge at round %d (proposed=%s)",
+                round_num + 1,
+                proposed_tool_names,
+            )
+            contents.append(content_obj)
+            contents.append(types.Content(
+                role="user",
+                parts=[types.Part(text=settle_nudge)],
+            ))
+            continue
 
         # 将 model 响应加入 contents
         contents.append(content_obj)
