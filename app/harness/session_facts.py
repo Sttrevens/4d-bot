@@ -202,26 +202,23 @@ def build_continuation_context(
     user_text: str,
     image_urls: list[str] | None = None,
 ) -> ContinuationContext:
-    if not should_reuse_recent_visual(user_text, image_urls):
-        return ContinuationContext()
-    payload = _load_payload(sender_id)
-    if not payload or payload.get("kind") != "visual_turn":
-        payload = None
-
-    if payload:
-        reused_images = tuple(payload.get("image_urls") or ())
-        if reused_images:
-            objective = payload.get("objective") or "visual_analysis"
-            user_summary = payload.get("user_text", "")
-            reply_summary = payload.get("assistant_reply", "")
-            note = (
-                "[短期会话事实]\n"
-                f"- 你刚刚在处理同一轮{objective}，用户当时说：{user_summary}\n"
-                f"- 你上一轮对这张图/这顿饭的回复是：{reply_summary}\n"
-                "- 当前用户明显在追问“刚才那顿/这张图/这些”，请延续同一个对象回答。"
-                "优先基于这轮图片继续分析，不要退回泛化估算，也不要漂移去生成无关文件。"
-            )
-            return ContinuationContext(note=note, reused_images=reused_images)
+    payload = None
+    if should_reuse_recent_visual(user_text, image_urls):
+        payload = _load_payload(sender_id)
+        if payload and payload.get("kind") == "visual_turn":
+            reused_images = tuple(payload.get("image_urls") or ())
+            if reused_images:
+                objective = payload.get("objective") or "visual_analysis"
+                user_summary = payload.get("user_text", "")
+                reply_summary = payload.get("assistant_reply", "")
+                note = (
+                    "[短期会话事实]\n"
+                    f"- 你刚刚在处理同一轮{objective}，用户当时说：{user_summary}\n"
+                    f"- 你上一轮对这张图/这顿饭的回复是：{reply_summary}\n"
+                    "- 当前用户明显在追问“刚才那顿/这张图/这些”，请延续同一个对象回答。"
+                    "优先基于这轮图片继续分析，不要退回泛化估算，也不要漂移去生成无关文件。"
+                )
+                return ContinuationContext(note=note, reused_images=reused_images)
 
     if not should_reuse_recent_topic(user_text, image_urls):
         return ContinuationContext()
