@@ -22,6 +22,7 @@ import time
 
 from app.harness.session_facts import (
     build_continuation_context,
+    remember_recent_topic,
     remember_visual_turn,
 )
 from app.services.history import chat_history, last_tool_summary
@@ -225,6 +226,12 @@ async def route_message(
             image_urls=image_urls,
             assistant_reply=reply,
         )
+        remember_recent_topic(
+            sender_id=sender_id,
+            user_text=user_text,
+            image_urls=image_urls,
+            assistant_reply=reply,
+        )
         _record(tenant.tenant_id, sender_id, model_used, provider_used, t_start)
         return reply
 
@@ -245,6 +252,12 @@ async def route_message(
 
     chat_history.add_assistant(history_key, _enrich_reply(reply))
     remember_visual_turn(
+        sender_id=sender_id,
+        user_text=user_text,
+        image_urls=image_urls,
+        assistant_reply=reply,
+    )
+    remember_recent_topic(
         sender_id=sender_id,
         user_text=user_text,
         image_urls=image_urls,

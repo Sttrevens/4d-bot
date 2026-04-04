@@ -2,7 +2,9 @@ from types import SimpleNamespace
 
 from app.harness import (
     build_continuation_context,
+    remember_recent_topic,
     remember_visual_turn,
+    should_reuse_recent_topic,
     should_reuse_recent_visual,
 )
 from app.harness import session_facts
@@ -55,3 +57,53 @@ def test_non_followup_does_not_reuse_recent_visual(monkeypatch):
     assert continuation.note == ""
     assert should_reuse_recent_visual("我刚才那顿大概有多少卡？")
     assert not should_reuse_recent_visual("顺便给我讲讲减脂原理")
+
+
+def test_recent_topic_followup_reuses_previous_topic(monkeypatch):
+    monkeypatch.setattr(session_facts, "get_current_tenant", lambda: SimpleNamespace(tenant_id="tenant-a"))
+    monkeypatch.setattr(session_facts, "_get_redis_client", lambda: None)
+
+    remember_recent_topic(
+        sender_id="user-1",
+        user_text="妈妈要去灵隐寺啦 给妈妈个攻略吧？ 妈妈想给家人求健康，想给自己求财",
+        image_urls=None,
+        assistant_reply="先去药师殿求健康，再去北高峰财神庙求财。",
+    )
+
+    continuation = build_continuation_context(
+        sender_id="user-1",
+        user_text="来个速通版，来个一小时的",
+        image_urls=None,
+    )
+
+    assert continuation.reused_images == ()
+    assert "最近会话话题" in continuation.note
+    assert "灵隐寺" in continuation.note
+    assert "药师殿" in continuation.note
+    assert should_reuse_recent_topic("来个速通版，来个一小时的")
+
+
+def test_short_greeting_does_not_override_recent_topic(monkeypatch):
+    monkeypatch.setattr(session_facts, "get_current_tenant", lambda: SimpleNamespace(tenant_id="tenant-a"))
+    monkeypatch.setattr(session_facts, "_get_redis_client", lambda: None)
+
+    remember_recent_topic(
+        sender_id="user-1",
+        user_text="妈妈要去灵隐寺啦 给妈妈个攻略吧？",
+        image_urls=None,
+        assistant_reply="可以先礼佛，再去北高峰。",
+    )
+    remember_recent_topic(
+        sender_id="user-1",
+        user_text="宝宝",
+        image_urls=None,
+        assistant_reply="我在呢。",
+    )
+
+    continuation = build_continuation_context(
+        sender_id="user-1",
+        user_text="来个速通版",
+        image_urls=None,
+    )
+
+    assert "灵隐寺" in continuation.note

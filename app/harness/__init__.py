@@ -28,7 +28,9 @@ from app.harness.session_facts import (
     ContinuationContext,
     build_continuation_context,
     infer_turn_objective,
+    remember_recent_topic,
     remember_visual_turn,
+    should_reuse_recent_topic,
     should_reuse_recent_visual,
 )
 from app.harness.task_board import (
@@ -65,7 +67,9 @@ __all__ = [
     "ContinuationContext",
     "build_continuation_context",
     "infer_turn_objective",
+    "remember_recent_topic",
     "remember_visual_turn",
+    "should_reuse_recent_topic",
     "should_reuse_recent_visual",
     "PLAN_ACTIVE_STATUSES",
     "advance_next_step",

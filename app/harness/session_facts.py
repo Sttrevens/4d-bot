@@ -28,6 +28,18 @@ _MEAL_RE = re.compile(
     re.IGNORECASE,
 )
 
+_TOPIC_FOLLOWUP_RE = re.compile(
+    r"(按刚才那个|按刚才那个来|接着刚才|继续刚才|刚才那个|刚刚那个|上一个|上一条"
+    r"|来个速通|速通版|简版|精简版|一小时的|一小时版|压缩版|短版|浓缩版"
+    r"|就按这个|按这个来|那这个呢|那个呢|那这个怎么办|那这个|那个怎么办)",
+    re.IGNORECASE,
+)
+
+_TOPIC_NOISE_RE = re.compile(
+    r"^(宝宝|在吗|你好|哈喽|hello|hi|嗯|哦|好的|ok|收到|妈妈|宝贝|亲爱的)$",
+    re.IGNORECASE,
+)
+
 
 @dataclass(frozen=True)
 class ContinuationContext:
@@ -38,6 +50,11 @@ class ContinuationContext:
 def _key(sender_id: str) -> str:
     tenant = get_current_tenant()
     return f"session:facts:{tenant.tenant_id}:{sender_id}"
+
+
+def _topic_key(sender_id: str) -> str:
+    tenant = get_current_tenant()
+    return f"session:topic:{tenant.tenant_id}:{sender_id}"
 
 
 def _now() -> float:
@@ -52,8 +69,8 @@ def _get_redis_client():
         return None
 
 
-def _load_payload(sender_id: str) -> dict | None:
-    key = _key(sender_id)
+def _load_payload(sender_id: str, *, key_builder=_key) -> dict | None:
+    key = key_builder(sender_id)
     cached = _MEM_CACHE.get(key)
     now = _now()
     if cached and cached[0] > now:
@@ -78,8 +95,8 @@ def _load_payload(sender_id: str) -> dict | None:
     return None
 
 
-def _store_payload(sender_id: str, payload: dict) -> None:
-    key = _key(sender_id)
+def _store_payload(sender_id: str, payload: dict, *, key_builder=_key) -> None:
+    key = key_builder(sender_id)
     expires_at = _now() + _TTL_SECONDS
     payload = dict(payload)
     payload["expires_at"] = expires_at
@@ -123,11 +140,60 @@ def remember_visual_turn(
     _store_payload(sender_id, payload)
 
 
+def _normalize_topic_text(text: str) -> str:
+    compact = re.sub(r"\s+", " ", (text or "")).strip(" ，。！？?!.")
+    return compact[:120]
+
+
+def should_remember_recent_topic(user_text: str, assistant_reply: str, image_urls: list[str] | None = None) -> bool:
+    text = _normalize_topic_text(user_text)
+    if image_urls:
+        return False
+    if not text or len(text) < 6:
+        return False
+    if _TOPIC_NOISE_RE.search(text):
+        return False
+    if _TOPIC_FOLLOWUP_RE.search(text):
+        return False
+    return bool(assistant_reply and assistant_reply.strip())
+
+
+def remember_recent_topic(
+    *,
+    sender_id: str,
+    user_text: str,
+    assistant_reply: str,
+    image_urls: list[str] | None = None,
+) -> None:
+    if not should_remember_recent_topic(user_text, assistant_reply, image_urls):
+        return
+    payload = {
+        "kind": "recent_topic",
+        "topic_text": _normalize_topic_text(user_text),
+        "assistant_reply": (assistant_reply or "")[:1200],
+        "ts": int(_now()),
+    }
+    _store_payload(sender_id, payload, key_builder=_topic_key)
+
+
 def should_reuse_recent_visual(user_text: str, image_urls: list[str] | None = None) -> bool:
     if image_urls:
         return False
     text = user_text or ""
     return bool(_DEICTIC_VISUAL_RE.search(text) or ("刚才" in text and _MEAL_RE.search(text)))
+
+
+def should_reuse_recent_topic(user_text: str, image_urls: list[str] | None = None) -> bool:
+    if image_urls:
+        return False
+    text = _normalize_topic_text(user_text)
+    if not text:
+        return False
+    if _TOPIC_FOLLOWUP_RE.search(text):
+        return True
+    if len(text) <= 24 and ("那个" in text or "这个" in text or "刚才" in text):
+        return True
+    return False
 
 
 def build_continuation_context(
@@ -140,20 +206,40 @@ def build_continuation_context(
         return ContinuationContext()
     payload = _load_payload(sender_id)
     if not payload or payload.get("kind") != "visual_turn":
+        payload = None
+
+    if payload:
+        reused_images = tuple(payload.get("image_urls") or ())
+        if reused_images:
+            objective = payload.get("objective") or "visual_analysis"
+            user_summary = payload.get("user_text", "")
+            reply_summary = payload.get("assistant_reply", "")
+            note = (
+                "[短期会话事实]\n"
+                f"- 你刚刚在处理同一轮{objective}，用户当时说：{user_summary}\n"
+                f"- 你上一轮对这张图/这顿饭的回复是：{reply_summary}\n"
+                "- 当前用户明显在追问“刚才那顿/这张图/这些”，请延续同一个对象回答。"
+                "优先基于这轮图片继续分析，不要退回泛化估算，也不要漂移去生成无关文件。"
+            )
+            return ContinuationContext(note=note, reused_images=reused_images)
+
+    if not should_reuse_recent_topic(user_text, image_urls):
         return ContinuationContext()
 
-    reused_images = tuple(payload.get("image_urls") or ())
-    if not reused_images:
+    topic_payload = _load_payload(sender_id, key_builder=_topic_key)
+    if not topic_payload or topic_payload.get("kind") != "recent_topic":
         return ContinuationContext()
 
-    objective = payload.get("objective") or "visual_analysis"
-    user_summary = payload.get("user_text", "")
-    reply_summary = payload.get("assistant_reply", "")
+    topic_text = topic_payload.get("topic_text", "")
+    reply_summary = topic_payload.get("assistant_reply", "")
+    if not topic_text:
+        return ContinuationContext()
+
     note = (
-        "[短期会话事实]\n"
-        f"- 你刚刚在处理同一轮{objective}，用户当时说：{user_summary}\n"
-        f"- 你上一轮对这张图/这顿饭的回复是：{reply_summary}\n"
-        "- 当前用户明显在追问“刚才那顿/这张图/这些”，请延续同一个对象回答。"
-        "优先基于这轮图片继续分析，不要退回泛化估算，也不要漂移去生成无关文件。"
+        "[最近会话话题]\n"
+        f"- 你们上一段主要在聊：{topic_text}\n"
+        f"- 你上一轮对这个话题的回答是：{reply_summary}\n"
+        "- 当前用户这句明显是在承接上文，请默认继续这个最近话题。"
+        "先给出这个话题的速通版/简版/下一步，不要先跳去旧计划、长期记忆或无关业务。"
     )
-    return ContinuationContext(note=note, reused_images=reused_images)
+    return ContinuationContext(note=note, reused_images=())
