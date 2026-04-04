@@ -22,6 +22,7 @@ import time
 
 from app.harness.session_facts import (
     build_continuation_context,
+    remember_active_constraints,
     remember_recent_topic,
     remember_visual_turn,
 )
@@ -185,6 +186,11 @@ async def route_message(
     logger.info("sender=%s(%s) mode=%s text=%s", sender_name or "?", sender_id, mode, user_text[:80])
 
     set_current_user(sender_id)
+    remember_active_constraints(
+        sender_id=sender_id,
+        user_text=user_text,
+        image_urls=image_urls,
+    )
 
     t_start = time.monotonic()
 

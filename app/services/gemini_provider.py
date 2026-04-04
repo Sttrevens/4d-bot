@@ -24,6 +24,7 @@ from app.harness import (
     compress_gemini_function_results,
     infer_turn_mode,
     normalize_inbox_item,
+    remember_active_constraints,
     sanitize_suggested_groups,
     should_compact_history,
     should_run_code_preflight,
@@ -1633,6 +1634,12 @@ async def handle_message(
                             msg_text[:60], len(msg_images) if msg_images else 0,
                         )
                         if msg_text:
+                            remember_active_constraints(
+                                sender_id=sender_id,
+                                user_text=msg_text,
+                                image_urls=msg_images,
+                            )
+                        if msg_text:
                             inbox_parts.append(types.Part(text=f"[用户新消息] {msg_text}"))
                         if msg_images:
                             for url in msg_images:
@@ -2110,6 +2117,12 @@ async def handle_message(
                     "inbox inject: %s (images=%d)",
                     msg_text[:60], len(msg_images) if msg_images else 0,
                 )
+                if msg_text:
+                    remember_active_constraints(
+                        sender_id=sender_id,
+                        user_text=msg_text,
+                        image_urls=msg_images,
+                    )
                 if msg_text:
                     response_parts.append(
                         types.Part(text=f"[用户新消息] {msg_text}")

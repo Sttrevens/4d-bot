@@ -2,8 +2,10 @@ from types import SimpleNamespace
 
 from app.harness import (
     build_continuation_context,
+    remember_active_constraints,
     remember_recent_topic,
     remember_visual_turn,
+    should_reuse_active_constraints,
     should_reuse_recent_topic,
     should_reuse_recent_visual,
 )
@@ -107,3 +109,48 @@ def test_short_greeting_does_not_override_recent_topic(monkeypatch):
     )
 
     assert "灵隐寺" in continuation.note
+
+
+def test_active_constraints_followup_reuses_previous_constraints(monkeypatch):
+    monkeypatch.setattr(session_facts, "get_current_tenant", lambda: SimpleNamespace(tenant_id="tenant-a"))
+    monkeypatch.setattr(session_facts, "_get_redis_client", lambda: None)
+
+    remember_recent_topic(
+        sender_id="user-1",
+        user_text="帮我在小红书找一下桃桃",
+        image_urls=None,
+        assistant_reply="我先去搜搜这个人。",
+    )
+    remember_active_constraints(
+        sender_id="user-1",
+        user_text="是个coser",
+        image_urls=None,
+    )
+
+    continuation = build_continuation_context(
+        sender_id="user-1",
+        user_text="继续搜",
+        image_urls=None,
+    )
+
+    assert "最近会话话题" in continuation.note
+    assert "当前任务约束" in continuation.note
+    assert "是个coser" in continuation.note
+    assert should_reuse_active_constraints("继续搜")
+
+
+def test_multiple_constraints_are_merged_for_followup(monkeypatch):
+    monkeypatch.setattr(session_facts, "get_current_tenant", lambda: SimpleNamespace(tenant_id="tenant-a"))
+    monkeypatch.setattr(session_facts, "_get_redis_client", lambda: None)
+
+    remember_active_constraints(sender_id="user-1", user_text="是个coser", image_urls=None)
+    remember_active_constraints(sender_id="user-1", user_text="不是电影号", image_urls=None)
+
+    continuation = build_continuation_context(
+        sender_id="user-1",
+        user_text="搜的怎么样了",
+        image_urls=None,
+    )
+
+    assert "是个coser" in continuation.note
+    assert "不是电影号" in continuation.note

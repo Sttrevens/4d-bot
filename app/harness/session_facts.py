@@ -40,6 +40,18 @@ _TOPIC_NOISE_RE = re.compile(
     re.IGNORECASE,
 )
 
+_CONSTRAINT_HINT_RE = re.compile(
+    r"(coser|cos|博主|主播|影评|电影|旅行|美食|游戏|穿搭|摄影|舞蹈|汉服|二次元|"
+    r"老师|学生|女生|男生|女的|男的|杭州|上海|北京|广州|深圳|模特|配音|画师|"
+    r"不是那个|不是做|不是拍|不是电影号|不是影评|是个|应该是|好像是|做|搞|偏|主打)",
+    re.IGNORECASE,
+)
+
+_CONSTRAINT_FOLLOWUP_RE = re.compile(
+    r"(继续|接着|搜|查|找|进展|结果|怎么样了|搜的怎么样了|继续搜|继续查|继续找)",
+    re.IGNORECASE,
+)
+
 
 @dataclass(frozen=True)
 class ContinuationContext:
@@ -55,6 +67,11 @@ def _key(sender_id: str) -> str:
 def _topic_key(sender_id: str) -> str:
     tenant = get_current_tenant()
     return f"session:topic:{tenant.tenant_id}:{sender_id}"
+
+
+def _constraint_key(sender_id: str) -> str:
+    tenant = get_current_tenant()
+    return f"session:constraints:{tenant.tenant_id}:{sender_id}"
 
 
 def _now() -> float:
@@ -145,6 +162,11 @@ def _normalize_topic_text(text: str) -> str:
     return compact[:120]
 
 
+def _normalize_constraint_text(text: str) -> str:
+    compact = re.sub(r"\s+", " ", (text or "")).strip(" ，。！？?!.")
+    return compact[:40]
+
+
 def should_remember_recent_topic(user_text: str, assistant_reply: str, image_urls: list[str] | None = None) -> bool:
     text = _normalize_topic_text(user_text)
     if image_urls:
@@ -176,6 +198,43 @@ def remember_recent_topic(
     _store_payload(sender_id, payload, key_builder=_topic_key)
 
 
+def should_remember_active_constraints(user_text: str, image_urls: list[str] | None = None) -> bool:
+    if image_urls:
+        return False
+    text = _normalize_constraint_text(user_text)
+    if not text or len(text) < 2 or len(text) > 40:
+        return False
+    if _TOPIC_NOISE_RE.search(text):
+        return False
+    if "？" in text or "?" in text:
+        return False
+    return bool(_CONSTRAINT_HINT_RE.search(text))
+
+
+def remember_active_constraints(
+    *,
+    sender_id: str,
+    user_text: str,
+    image_urls: list[str] | None = None,
+) -> None:
+    if not should_remember_active_constraints(user_text, image_urls):
+        return
+    text = _normalize_constraint_text(user_text)
+    payload = _load_payload(sender_id, key_builder=_constraint_key)
+    constraints: list[str] = []
+    if payload and payload.get("kind") == "active_constraints":
+        constraints = [str(c) for c in payload.get("constraints") or [] if isinstance(c, str)]
+    if text in constraints:
+        constraints.remove(text)
+    constraints.append(text)
+    payload = {
+        "kind": "active_constraints",
+        "constraints": constraints[-6:],
+        "ts": int(_now()),
+    }
+    _store_payload(sender_id, payload, key_builder=_constraint_key)
+
+
 def should_reuse_recent_visual(user_text: str, image_urls: list[str] | None = None) -> bool:
     if image_urls:
         return False
@@ -190,6 +249,21 @@ def should_reuse_recent_topic(user_text: str, image_urls: list[str] | None = Non
     if not text:
         return False
     if _TOPIC_FOLLOWUP_RE.search(text):
+        return True
+    if len(text) <= 24 and ("那个" in text or "这个" in text or "刚才" in text):
+        return True
+    return False
+
+
+def should_reuse_active_constraints(user_text: str, image_urls: list[str] | None = None) -> bool:
+    if image_urls:
+        return False
+    text = _normalize_topic_text(user_text)
+    if not text:
+        return False
+    if _TOPIC_FOLLOWUP_RE.search(text):
+        return True
+    if _CONSTRAINT_FOLLOWUP_RE.search(text):
         return True
     if len(text) <= 24 and ("那个" in text or "这个" in text or "刚才" in text):
         return True
@@ -220,23 +294,35 @@ def build_continuation_context(
                 )
                 return ContinuationContext(note=note, reused_images=reused_images)
 
-    if not should_reuse_recent_topic(user_text, image_urls):
-        return ContinuationContext()
+    note_parts: list[str] = []
 
-    topic_payload = _load_payload(sender_id, key_builder=_topic_key)
-    if not topic_payload or topic_payload.get("kind") != "recent_topic":
-        return ContinuationContext()
+    if should_reuse_recent_topic(user_text, image_urls):
+        topic_payload = _load_payload(sender_id, key_builder=_topic_key)
+        if topic_payload and topic_payload.get("kind") == "recent_topic":
+            topic_text = topic_payload.get("topic_text", "")
+            reply_summary = topic_payload.get("assistant_reply", "")
+            if topic_text:
+                note_parts.append(
+                    "[最近会话话题]\n"
+                    f"- 你们上一段主要在聊：{topic_text}\n"
+                    f"- 你上一轮对这个话题的回答是：{reply_summary}\n"
+                    "- 当前用户这句明显是在承接上文，请默认继续这个最近话题。"
+                    "先给出这个话题的速通版/简版/下一步，不要先跳去旧计划、长期记忆或无关业务。"
+                )
 
-    topic_text = topic_payload.get("topic_text", "")
-    reply_summary = topic_payload.get("assistant_reply", "")
-    if not topic_text:
-        return ContinuationContext()
+    if should_reuse_active_constraints(user_text, image_urls):
+        constraint_payload = _load_payload(sender_id, key_builder=_constraint_key)
+        if constraint_payload and constraint_payload.get("kind") == "active_constraints":
+            constraints = [str(c) for c in constraint_payload.get("constraints") or [] if isinstance(c, str)]
+            if constraints:
+                joined = "；".join(constraints[-4:])
+                note_parts.append(
+                    "[当前任务约束]\n"
+                    f"- 用户已经补充过这些条件：{joined}\n"
+                    "- 当前这句是在继续上一件事时，默认把这些条件一起带上。"
+                    "不要重新问用户已经说过的限制条件，搜索、筛选和总结时都要优先使用这些约束。"
+                )
 
-    note = (
-        "[最近会话话题]\n"
-        f"- 你们上一段主要在聊：{topic_text}\n"
-        f"- 你上一轮对这个话题的回答是：{reply_summary}\n"
-        "- 当前用户这句明显是在承接上文，请默认继续这个最近话题。"
-        "先给出这个话题的速通版/简版/下一步，不要先跳去旧计划、长期记忆或无关业务。"
-    )
-    return ContinuationContext(note=note, reused_images=())
+    if not note_parts:
+        return ContinuationContext()
+    return ContinuationContext(note="\n\n".join(note_parts), reused_images=())
