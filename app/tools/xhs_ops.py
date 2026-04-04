@@ -31,6 +31,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -96,6 +97,126 @@ _LOGIN_CHECK_PROMPT = (
     "3. 页面是否正常加载？\n"
     "用中文简洁回复，第一个词用'已登录'或'未登录'开头。"
 )
+
+_QUERY_MODIFIER_TOKENS = {
+    "cos", "coser", "cosplay", "博主", "kol", "up", "up主", "vlog", "vlogger",
+    "二次元", "动漫", "漫展", "游戏", "影评", "电影", "美食", "旅行", "探店", "穿搭",
+    "摄影", "摄影师", "舞蹈", "音乐", "搞笑", "健身", "护肤", "彩妆", "主播", "留学",
+    "留学生", "纽约", "美国", "纽约大学", "ny", "usa", "new", "york",
+}
+
+
+def _normalize_xhs_text(text: str) -> str:
+    lowered = (text or "").strip().lower()
+    return re.sub(r"\s+", " ", lowered)
+
+
+def _tokenize_xhs_keyword(keyword: str) -> list[str]:
+    tokens = re.findall(r"[a-z0-9_+#]+|[\u4e00-\u9fff]{1,24}", _normalize_xhs_text(keyword))
+    deduped: list[str] = []
+    for token in tokens:
+        if token and token not in deduped:
+            deduped.append(token)
+    return deduped
+
+
+def _extract_xhs_query_signals(keyword: str) -> tuple[list[str], list[str]]:
+    tokens = _tokenize_xhs_keyword(keyword)
+    anchor_tokens = [token for token in tokens if token not in _QUERY_MODIFIER_TOKENS]
+    modifier_tokens = [token for token in tokens if token in _QUERY_MODIFIER_TOKENS]
+    if not anchor_tokens and tokens:
+        anchor_tokens = [tokens[0]]
+        modifier_tokens = [token for token in tokens[1:] if token != tokens[0]]
+    return anchor_tokens, modifier_tokens
+
+
+def _score_xhs_user_candidate(user: dict, keyword: str) -> tuple[int, list[str]]:
+    nickname = _normalize_xhs_text(user.get("nickname", ""))
+    red_id = _normalize_xhs_text(user.get("red_id", ""))
+    desc = _normalize_xhs_text(user.get("desc", ""))
+    haystack = " ".join(part for part in [nickname, red_id, desc] if part)
+    anchor_tokens, modifier_tokens = _extract_xhs_query_signals(keyword)
+    score = 0
+    reasons: list[str] = []
+    matched_anchor = False
+
+    for token in anchor_tokens:
+        if nickname == token:
+            score += 240
+            matched_anchor = True
+            reasons.append(f"昵称精确命中“{token}”")
+        elif token and token in nickname:
+            score += 180
+            matched_anchor = True
+            reasons.append(f"昵称包含“{token}”")
+        elif red_id == token:
+            score += 150
+            matched_anchor = True
+            reasons.append(f"小红书号精确命中“{token}”")
+        elif token and token in red_id:
+            score += 110
+            matched_anchor = True
+            reasons.append(f"小红书号包含“{token}”")
+        elif token and token in desc:
+            score += 45
+            reasons.append(f"简介提到“{token}”")
+        elif token and token in haystack:
+            score += 25
+            reasons.append(f"页面信息提到“{token}”")
+
+    for token in modifier_tokens:
+        if token and token in nickname:
+            score += 30
+            reasons.append(f"昵称命中限定词“{token}”")
+        elif token and token in desc:
+            score += 40
+            reasons.append(f"简介命中限定词“{token}”")
+        elif token and token in haystack:
+            score += 20
+            reasons.append(f"页面信息命中限定词“{token}”")
+
+    if matched_anchor:
+        score += 20
+    elif anchor_tokens:
+        score -= 120
+        reasons.append("缺少核心名字命中")
+
+    if nickname and any(token in nickname for token in anchor_tokens):
+        score += 15
+    if len({reason for reason in reasons if "命中" in reason}) >= 2:
+        score += 10
+
+    return score, reasons
+
+
+def _rank_xhs_user_candidates(users: list[dict], keyword: str) -> list[dict]:
+    ranked: list[dict] = []
+    for user in users:
+        score, reasons = _score_xhs_user_candidate(user, keyword)
+        ranked.append({**user, "_score": score, "_reasons": reasons[:3]})
+    ranked.sort(
+        key=lambda item: (
+            item.get("_score", 0),
+            len(item.get("nickname", "")),
+            len(item.get("desc", "")),
+        ),
+        reverse=True,
+    )
+    return ranked
+
+
+def _parse_first_json_object(text: str) -> dict[str, Any] | None:
+    text = (text or "").strip()
+    if not text:
+        return None
+    match = re.search(r"\{.*\}", text, re.S)
+    if not match:
+        return None
+    try:
+        parsed = json.loads(match.group(0))
+    except Exception:
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 # ── 会话管理 ──
@@ -1715,9 +1836,10 @@ async def _xhs_search_impl(
             if state_users:
                 from app.tools.source_registry import register_urls
 
+                ranked_users = _rank_xhs_user_candidates(state_users, keyword)
                 links_section = "\n── 用户搜索结果（从页面数据提取）──\n"
                 all_urls = [page.url]
-                for i, u in enumerate(state_users, 1):
+                for i, u in enumerate(ranked_users, 1):
                     uid = u.get("user_id", "")
                     profile_url = f"{_XHS_BASE}/user/profile/{uid}" if uid else ""
                     if profile_url:
@@ -1729,7 +1851,10 @@ async def _xhs_search_impl(
                     desc_str = f" | {desc[:50]}" if desc else ""
                     red_id = u.get("red_id", "")
                     red_id_str = f" | 小红书号: {red_id}" if red_id else ""
-                    links_section += f"[{i}] {nickname}{fans_str}{red_id_str}{desc_str}\n"
+                    score = u.get("_score", 0)
+                    reasons = "；".join(u.get("_reasons", [])[:2])
+                    reasons_str = f" | 命中: {reasons}" if reasons else ""
+                    links_section += f"[{i}] {nickname}{fans_str}{red_id_str}{desc_str} | 匹配分: {score}{reasons_str}\n"
                     if profile_url:
                         links_section += f"    主页: {profile_url}\n"
 
@@ -1743,6 +1868,7 @@ async def _xhs_search_impl(
                     f"── AI 视觉补充 ──\n{analysis}\n\n"
                     f"搜索链接: {page.url}\n\n"
                     f"重要：上面的用户数据从页面内部数据提取，主页链接可直接分享。\n"
+                    f"重要：列表已按“昵称/小红书号/简介”和搜索词的匹配度排序，优先查看前几项。\n"
                     f"注意：不要自己编造或猜测小红书链接和账号 ID，只使用上面提取到的真实数据。"
                 )
         else:
@@ -1955,22 +2081,51 @@ async def _handle_xhs_get_user(args: dict) -> ToolResult:
         await asyncio.sleep(3)
 
         extract_prompt = (
-            "这是一个小红书用户的主页。请提取：\n"
-            "1. 昵称\n"
-            "2. 小红书号\n"
-            "3. 简介/签名\n"
-            "4. 关注数、粉丝数、获赞与收藏数\n"
-            "5. 最近发布的笔记列表（标题+点赞数，尽量多提取）\n"
-            "请结构化输出，数字要准确。"
+            "这是一个小红书用户的主页。请只输出一个 JSON 对象，字段如下：\n"
+            '{'
+            '"nickname":"昵称",'
+            '"red_id":"小红书号",'
+            '"bio":"简介/签名",'
+            '"location":"主页里可见的地区/IP/学校/城市信息",'
+            '"stats":{"following":"关注数","followers":"粉丝数","likes":"获赞与收藏数"},'
+            '"recent_titles":["最近笔记标题1","最近笔记标题2"]'
+            '}\n'
+            "如果某个字段看不到就填空字符串或空数组。不要输出任何解释文字。"
         )
 
         analysis, _ = await _take_screenshot_and_analyze(page, extract_prompt)
+        parsed = _parse_first_json_object(analysis)
 
         from app.tools.source_registry import register_urls
         register_urls([user_url])
 
+        structured_section = ""
+        if parsed:
+            stats = parsed.get("stats") if isinstance(parsed.get("stats"), dict) else {}
+            recent_titles = parsed.get("recent_titles") if isinstance(parsed.get("recent_titles"), list) else []
+            titles_str = " / ".join(str(title) for title in recent_titles[:3] if title)
+            stats_str = " | ".join(
+                f"{label}: {value}"
+                for label, value in [
+                    ("关注", stats.get("following", "")),
+                    ("粉丝", stats.get("followers", "")),
+                    ("获赞与收藏", stats.get("likes", "")),
+                ]
+                if value
+            )
+            structured_section = (
+                "── 结构化摘要 ──\n"
+                f"昵称: {parsed.get('nickname', '') or '未知'}\n"
+                f"小红书号: {parsed.get('red_id', '') or '未知'}\n"
+                f"简介: {parsed.get('bio', '') or '未知'}\n"
+                f"地区/学校: {parsed.get('location', '') or '未知'}\n"
+                f"{stats_str}\n"
+                f"最近笔记: {titles_str or '未知'}\n\n"
+            )
+
         return ToolResult.success(
             f"用户主页：\n\n"
+            f"{structured_section}"
             f"── AI 提取的数据 ──\n{analysis}\n\n"
             f"链接: {user_url}"
         )
@@ -3505,15 +3660,20 @@ async def _xhs_playwright_search_impl(
         if is_user_search:
             state_users = await _extract_search_users_from_state(page, max_results)
             if state_users:
+                ranked_users = _rank_xhs_user_candidates(state_users, keyword)
                 results = []
-                for u in state_users:
+                for u in ranked_users:
                     uid = u.get("user_id", "")
                     profile_url = f"{_XHS_BASE}/user/profile/{uid}" if uid else ""
+                    reasons = "；".join(u.get("_reasons", [])[:2])
                     results.append({
                         "title": u.get("nickname", ""),
-                        "body": u.get("desc", ""),
+                        "body": f"{u.get('desc', '')}\n匹配信号: {reasons}".strip(),
                         "href": profile_url,
-                        "metrics": {"followers": str(u.get("fans", ""))},
+                        "metrics": {
+                            "followers": str(u.get("fans", "")),
+                            "match_score": str(u.get("_score", 0)),
+                        },
                     })
                 if results:
                     return {
