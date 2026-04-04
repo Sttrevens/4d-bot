@@ -918,6 +918,7 @@ async def _recover_missed_messages() -> None:
     window_start = max(last_alive_ts - 60, _t.time() - 1800)
     window_end = _t.time()
     total_recovered = 0
+    recovery_failures: list[str] = []
     is_short_restart = downtime < 30
 
     from app.services.user_registry import _p2p_chat_ids_map
@@ -928,16 +929,6 @@ async def _recover_missed_messages() -> None:
         set_current_tenant(tenant)
 
         try:
-            # 获取 bot 的 open_id（复用 handler 的多层 fallback 逻辑）
-            bot_open_id = wh._get_bot_open_id(tenant)
-
-            if not bot_open_id:
-                logger.warning(
-                    "startup recovery: can't get bot open_id for tenant=%s, skipping",
-                    tenant_id,
-                )
-                continue
-
             # ── P2P 私聊恢复（任何停机都扫，API 开销小）──
             p2p_map = _p2p_chat_ids_map.get(tenant_id, {})
             for open_id, chat_id in list(p2p_map.items())[:20]:  # 最多扫 20 个私聊
@@ -1021,8 +1012,19 @@ async def _recover_missed_messages() -> None:
             if is_short_restart:
                 continue  # 短停机只扫 P2P，群聊靠飞书重试
 
+            # bot open_id 只对群聊 @bot 恢复必需；不要因为它失败而跳过 P2P 恢复。
+            bot_open_id = wh._get_bot_open_id(tenant)
+            if not bot_open_id:
+                logger.warning(
+                    "startup recovery: can't get bot open_id for tenant=%s, skipping group recovery only",
+                    tenant_id,
+                )
+                recovery_failures.append(f"feishu:{tenant_id}:missing_bot_open_id")
+                continue
+
             data = feishu_get("/im/v1/chats", params={"page_size": 50})
             if isinstance(data, str):
+                recovery_failures.append(f"feishu:{tenant_id}:list_chats_failed")
                 continue
 
             groups = data.get("data", {}).get("items", [])
@@ -1120,6 +1122,7 @@ async def _recover_missed_messages() -> None:
                     await asyncio.sleep(1)
 
         except Exception:
+            recovery_failures.append(f"feishu:{tenant_id}:exception")
             logger.warning("startup recovery: failed for tenant=%s", tenant_id, exc_info=True)
 
     # ── 企微客服恢复：用保存的 cursor+token 拉取停机期间的消息 ──
@@ -1148,6 +1151,9 @@ async def _recover_missed_messages() -> None:
                     "startup recovery: kf sync_msg failed for %s (token may be expired): %s",
                     tenant_id, data.get("errmsg", ""),
                 )
+                recovery_failures.append(
+                    f"wecom_kf:{tenant_id}:sync_msg_err:{data.get('errcode', -1)}"
+                )
                 continue
 
             msg_list = data.get("msg_list", [])
@@ -1167,10 +1173,17 @@ async def _recover_missed_messages() -> None:
             if new_cursor:
                 kf_wh._save_kf_sync_state(tenant_id, new_cursor, saved_token)
         except Exception:
+            recovery_failures.append(f"wecom_kf:{tenant_id}:exception")
             logger.warning("startup recovery: kf recovery failed for %s", tenant_id, exc_info=True)
 
     if total_recovered:
         logger.info("startup recovery: dispatched %d missed messages total", total_recovered)
+    elif recovery_failures:
+        logger.warning(
+            "startup recovery: recovered 0 messages but encountered %d recovery blockers: %s",
+            len(recovery_failures),
+            ", ".join(recovery_failures[:8]),
+        )
     else:
         logger.info("startup recovery: no missed messages found (downtime=%.0fs)", downtime)
 
