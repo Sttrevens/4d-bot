@@ -10,6 +10,12 @@ from app.harness.compaction import (
     compress_gemini_function_results,
     compress_openai_tool_results,
 )
+from app.harness.coding_workflow import (
+    build_coding_workflow_instructions,
+    is_coding_workflow_turn,
+    should_clarify_before_coding,
+    should_plan_before_coding,
+)
 from app.harness.context import (
     append_openai_inbox_messages,
     normalize_inbox_item,
@@ -62,6 +68,10 @@ __all__ = [
     "DEFAULT_COMPACTION_KEEP_RECENT",
     "compress_gemini_function_results",
     "compress_openai_tool_results",
+    "build_coding_workflow_instructions",
+    "is_coding_workflow_turn",
+    "should_clarify_before_coding",
+    "should_plan_before_coding",
     "append_openai_inbox_messages",
     "normalize_inbox_item",
     "build_grounding_nudge",

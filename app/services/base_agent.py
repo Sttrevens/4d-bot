@@ -28,6 +28,7 @@ from typing import Callable, Awaitable
 from app.harness import (
     DEFAULT_COMPACTION_AFTER_ROUND,
     DEFAULT_COMPACTION_KEEP_RECENT,
+    build_coding_workflow_instructions,
     build_grounding_nudge,
     compress_openai_tool_results,
     infer_turn_mode,
@@ -1882,6 +1883,13 @@ async def _build_system_prompt(
     _task_type = task_type or (classify_task_type(user_text) if user_text else "normal")
     if _task_type == "research":
         prompt += _DEEP_RESEARCH_INSTRUCTIONS
+
+    _coding_workflow = build_coding_workflow_instructions(
+        user_text,
+        list(actual_tool_names) if actual_tool_names else None,
+    )
+    if _coding_workflow:
+        prompt += _coding_workflow
 
     # 注入能力画像（平台感知 + 实际工具能力）
     prompt += _build_capability_profile(tenant, actual_tool_names=actual_tool_names)
