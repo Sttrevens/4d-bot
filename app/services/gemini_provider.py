@@ -1001,13 +1001,27 @@ async def handle_message(
     # 3. GEMINI_PROXY 环境变量 → httpx 代理
     # 4. 默认直连 generativelanguage.googleapis.com
     http_options: dict = {}
+    _base_url_source = "direct"
     _custom_base = tenant.llm_base_url
     # 排除 OpenAI / Kimi 等非 Gemini base_url（默认值残留）
     if _custom_base and "moonshot" not in _custom_base and "openai.com" not in _custom_base:
         http_options["base_url"] = _custom_base
+        _base_url_source = "tenant.llm_base_url"
     elif os.getenv("GOOGLE_GEMINI_BASE_URL"):
         http_options["base_url"] = os.getenv("GOOGLE_GEMINI_BASE_URL")
-    proxy_url = os.getenv("GEMINI_PROXY", "")
+        _base_url_source = "GOOGLE_GEMINI_BASE_URL"
+    proxy_url = os.getenv("GEMINI_PROXY", "").strip()
+    base_url = str(http_options.get("base_url", "")).strip()
+    _force_proxy_with_base = os.getenv("GEMINI_FORCE_PROXY_WITH_BASE_URL", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+    _effective_proxy = proxy_url
+    if base_url and proxy_url and not _force_proxy_with_base:
+        logger.warning(
+            "gemini client config conflict: base_url and GEMINI_PROXY are both set; "
+            "ignore GEMINI_PROXY to avoid double proxy (set GEMINI_FORCE_PROXY_WITH_BASE_URL=1 to override)"
+        )
+        _effective_proxy = ""
     # ── 连接超时保护（防止代理挂掉时连接风暴）──
     # connect=5s: 代理不通时 5 秒快速失败，不要 hang 120 秒堆积连接
     # read=120s: LLM 生成可能很慢，保持长读取超时
@@ -1017,13 +1031,18 @@ async def handle_message(
         # 只使用 GEMINI_PROXY，不继承全局 HTTPS_PROXY/HTTP_PROXY（避免 xray 故障拖垮主链路）
         "trust_env": False,
     }
-    if proxy_url:
-        _client_args["proxy"] = proxy_url
+    if _effective_proxy:
+        _client_args["proxy"] = _effective_proxy
     http_options["async_client_args"] = _client_args
     http_options["timeout"] = 120_000  # SDK 层总超时 ms
-    logger.info("gemini client: base_url=%s model=%s",
-                http_options.get("base_url", "(direct)"),
-                tenant.llm_model or "gemini-3-flash-preview")
+    logger.info(
+        "gemini client route: base_url=%s(base=%s) proxy=%s trust_env=%s model=%s",
+        http_options.get("base_url", "(direct)"),
+        _base_url_source,
+        "on" if _effective_proxy else "off",
+        _client_args.get("trust_env"),
+        tenant.llm_model or "gemini-3-flash-preview",
+    )
     client = genai.Client(
         api_key=tenant.llm_api_key,
         http_options=http_options,
