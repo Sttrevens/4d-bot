@@ -7,6 +7,7 @@
 import re
 
 from app.tools.tool_result import ToolResult
+from app.tools.cerul_ops import cerul_search
 from app.tools.sandbox_caps import web_search as _do_search
 from app.tools.source_registry import register_urls
 
@@ -49,6 +50,13 @@ _SOCIAL_INTENT_KEYWORDS = re.compile(
     re.IGNORECASE,
 )
 
+# ── 视频证据意图检测（优先走 Cerul）──
+_VIDEO_EVIDENCE_KEYWORDS = re.compile(
+    r"谁说|说过|原话|时间戳|访谈|采访|播客|演讲|"
+    r"what did|who said|quote|timestamp|interview|podcast|talk",
+    re.IGNORECASE,
+)
+
 
 def _detect_platform_hint(query: str) -> str:
     """检测 query 中的社媒平台或社媒意图，生成 browser_open 提示。"""
@@ -88,6 +96,18 @@ def _detect_platform_hint(query: str) -> str:
     return ""
 
 
+def _should_prefer_cerul(query: str) -> bool:
+    """是否优先走 Cerul 视频检索。"""
+    if not query:
+        return False
+    if _VIDEO_EVIDENCE_KEYWORDS.search(query):
+        return True
+    # 中文常见表达：问某人如何谈论某观点
+    if "怎么谈论" in query or "如何谈论" in query:
+        return True
+    return False
+
+
 def web_search(args: dict) -> ToolResult:
     """搜索互联网并返回摘要结果。"""
     query = args.get("query", "").strip()
@@ -95,6 +115,28 @@ def web_search(args: dict) -> ToolResult:
         return ToolResult.error("请提供搜索关键词")
 
     max_results = args.get("max_results", 5)
+    cerul_fallback_note = ""
+
+    # 视频证据类问题优先 Cerul（可见“谁在视频里说过什么 + 时间戳”）
+    if _should_prefer_cerul(query):
+        cerul_result = cerul_search(
+            {
+                "query": query,
+                "max_results": min(max_results, 5),
+                "ranking_mode": "embedding",
+            }
+        )
+        if cerul_result.ok and "没有找到匹配的视频片段" not in cerul_result.content:
+            return ToolResult.success(
+                cerul_result.content
+                + "\n\n---\n以上结果来自 Cerul 视频检索（优先于网页搜索）。"
+            )
+        if not cerul_result.ok:
+            cerul_fallback_note = (
+                f"\n\n（Cerul 暂不可用，已回退网页搜索：{cerul_result.content}）"
+            )
+        else:
+            cerul_fallback_note = "\n\n（Cerul 暂无命中，已回退网页搜索。）"
 
     result = _do_search(query, max_results)
     if isinstance(result, str):
@@ -121,7 +163,9 @@ def web_search(args: dict) -> ToolResult:
     # 检测社媒平台/意图 → 提示用 browser_open
     platform_hint = _detect_platform_hint(query)
 
-    return ToolResult.success("\n\n".join(lines) + footer + platform_hint)
+    return ToolResult.success(
+        "\n\n".join(lines) + footer + cerul_fallback_note + platform_hint
+    )
 
 
 async def fetch_url(args: dict) -> ToolResult:
@@ -144,13 +188,10 @@ async def fetch_url(args: dict) -> ToolResult:
         import ipaddress, socket
         _parsed = _urlparse(url)
         _hostname = _parsed.hostname or ""
-        # 禁止 file:// 等非 HTTP 协议
         if _parsed.scheme not in ("http", "https"):
             return ToolResult.invalid_param("只支持 http/https 协议")
-        # 禁止 localhost
         if _hostname in ("localhost", "127.0.0.1", "[::1]", "0.0.0.0"):
             return ToolResult.blocked("禁止访问本地地址（SSRF 防护）")
-        # 解析 IP 并检查是否为内网/保留地址
         try:
             _ips = socket.getaddrinfo(_hostname, None)
             for _family, _type, _proto, _canonname, _sockaddr in _ips:
@@ -158,9 +199,9 @@ async def fetch_url(args: dict) -> ToolResult:
                 if _ip.is_private or _ip.is_loopback or _ip.is_link_local or _ip.is_reserved:
                     return ToolResult.blocked(f"禁止访问内网地址 {_ip}（SSRF 防护）")
         except (socket.gaierror, ValueError):
-            pass  # DNS 解析失败不阻塞，让 httpx 自己报错
+            pass
     except Exception:
-        pass  # 解析失败不阻塞
+        pass
 
     # SPA 检测完全依赖运行时（HTML 大但 strip 后文本极少 → 空壳 SPA）
     # ⛔ 不要在这里维护域名黑名单！曾有 _SPA_DOMAINS 列表硬拦截 luma.com 等域名，

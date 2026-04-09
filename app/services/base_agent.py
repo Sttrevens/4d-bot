@@ -113,6 +113,10 @@ from app.tools.web_search import (
     TOOL_DEFINITIONS as WEB_TOOLS,
     TOOL_MAP as WEB_TOOL_MAP,
 )
+from app.tools.cerul_ops import (
+    TOOL_DEFINITIONS as CERUL_TOOLS,
+    TOOL_MAP as CERUL_TOOL_MAP,
+)
 from app.tools.repo_search import (
     TOOL_DEFINITIONS as REPO_SEARCH_TOOLS,
     TOOL_MAP as REPO_SEARCH_TOOL_MAP,
@@ -322,7 +326,7 @@ def _handle_think(args: dict) -> str:
 ALL_TOOL_MAP = {
     "think": _handle_think,
     **FILE_TOOL_MAP, **GIT_TOOL_MAP, **GITHUB_TOOL_MAP,
-    **WEB_TOOL_MAP, **REPO_SEARCH_TOOL_MAP, **ISSUE_TOOL_MAP,
+    **WEB_TOOL_MAP, **CERUL_TOOL_MAP, **REPO_SEARCH_TOOL_MAP, **ISSUE_TOOL_MAP,
     **CALENDAR_TOOL_MAP, **DOC_TOOL_MAP, **MINUTES_TOOL_MAP,
     **TASK_TOOL_MAP, **USER_TOOL_MAP, **MESSAGE_TOOL_MAP,
     **SELF_TOOL_MAP, **SERVER_TOOL_MAP, **MEMORY_TOOL_MAP,
@@ -375,7 +379,7 @@ _WECOM_ONLY_TOOLS: frozenset = frozenset()
 _ALL_TOOL_DEFS = (
     [_THINK_TOOL_DEF]
     + CALENDAR_TOOLS + DOC_TOOLS + MINUTES_TOOLS + TASK_TOOLS
-    + USER_TOOLS + MESSAGE_TOOLS + WEB_TOOLS
+    + USER_TOOLS + MESSAGE_TOOLS + WEB_TOOLS + CERUL_TOOLS
     + REPO_SEARCH_TOOLS + FILE_TOOLS + GIT_TOOLS + GITHUB_TOOLS + ISSUE_TOOLS
     + SELF_TOOLS + SERVER_TOOLS
     + MEMORY_TOOLS + BITABLE_TOOLS
@@ -702,6 +706,7 @@ def check_url_provenance(
 _TOOL_GROUPS: dict[str, frozenset[str]] = {
     "core": frozenset({
         "think", "web_search", "fetch_url",
+        "cerul_search", "cerul_usage",
         "save_memory", "recall_memory",
         "list_capability_modules", "load_capability_module", "save_capability_module",
         "export_file",  # 几乎所有任务最终可能需要导出
@@ -754,6 +759,8 @@ _GROUP_KEYWORDS: dict[str, list[str]] = {
         "PDF", "pdf", "报告", "report", "导出", "export", "视频", "video",
         "PPT", "ppt", "演示", "slides", "CSV", "csv",
         "youtube", "bilibili", "b站",
+        "访谈", "采访", "播客", "演讲", "原话", "时间戳",
+        "interview", "podcast", "quote", "timestamp",
     ],
     "admin": [
         "实例", "instance", "容器", "container", "安装", "install",
@@ -1150,6 +1157,7 @@ _INSTRUCTIONS = """
 - 几乎所有列表工具都支持 keyword 模糊过滤（子串、多词、去标点匹配）
 - 不确定某个问题的答案时，主动用 web_search 查一下
 - web_search 是你的万能搜索工具，任何平台、任何话题都能搜。用户让你调研/搜索时，必须实际调用搜索工具，不要只靠已有知识回答
+- 当用户问「某个人在视频里说过什么/哪段访谈提到某观点/要时间戳原话证据」时，优先调用 cerul_search
 - 调研类任务应该多次搜索（3-5 次不同角度），不要搜一次就下结论
 
 不确定时必须承认（最高优先级 — 违反即失败）：
