@@ -31,6 +31,13 @@ jobs:
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
         run: |
+          for v in DEPLOY_KEY DEPLOY_HOST DEPLOY_USER DEPLOY_PATH; do
+            if [ -z "${!v}" ]; then
+              echo "FATAL: missing required GitHub secret: $v"
+              exit 1
+            fi
+          done
+
           mkdir -p ~/.ssh
           echo "$DEPLOY_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
@@ -91,10 +98,31 @@ jobs:
             # --env-file /dev/null: 不加载 .env（含 host.docker.internal 代理，build 时不可用）
             # HTTPS_PROXY/HTTP_PROXY: 传给 BuildKit 拉取 Docker Hub 基础镜像（python:3.12-slim）
             # --build-arg PLAYWRIGHT_PROXY: 传给 Dockerfile 内 playwright install 的 fallback
-            HTTPS_PROXY=$BUILD_PROXY HTTP_PROXY=$BUILD_PROXY \
-              docker compose --env-file /dev/null build \
-              --build-arg PLAYWRIGHT_PROXY="$BUILD_PROXY" \
-              --build-arg PIP_PROXY="$BUILD_PROXY"
+            build_compose() {
+              HTTPS_PROXY=$BUILD_PROXY HTTP_PROXY=$BUILD_PROXY \
+                docker compose --env-file /dev/null build \
+                --build-arg PLAYWRIGHT_PROXY="$BUILD_PROXY" \
+                --build-arg PIP_PROXY="$BUILD_PROXY"
+            }
+
+            build_ok=0
+            for attempt in 1 2 3; do
+              if build_compose; then
+                build_ok=1
+                break
+              fi
+
+              if [ "$attempt" -lt 3 ]; then
+                backoff=$((attempt * 15))
+                echo "WARN: docker compose build failed on attempt $attempt/3, retry in ${backoff}s..."
+                sleep "$backoff"
+              fi
+            done
+
+            if [ "$build_ok" -ne 1 ]; then
+              echo "FATAL: docker compose build failed after 3 attempts"
+              exit 1
+            fi
 
             # Phase 1 已部署：3 个 bot 各自在 provisioned 容器中运行
             # 只需要 build 镜像（上面已完成），不再启动根 compose 的遗留容器
