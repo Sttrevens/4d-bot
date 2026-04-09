@@ -1014,6 +1014,8 @@ async def handle_message(
     import httpx as _httpx
     _client_args: dict = {
         "timeout": _httpx.Timeout(connect=5.0, read=120.0, write=10.0, pool=5.0),
+        # 只使用 GEMINI_PROXY，不继承全局 HTTPS_PROXY/HTTP_PROXY（避免 xray 故障拖垮主链路）
+        "trust_env": False,
     }
     if proxy_url:
         _client_args["proxy"] = proxy_url
