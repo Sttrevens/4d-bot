@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import ipaddress
 import logging
 import os
@@ -88,6 +89,8 @@ def _is_url_safe(url: str) -> tuple[bool, str]:
 
 _SESSION_TIMEOUT = 300  # 5 分钟不活动自动关闭
 _MAX_TEXT_LENGTH = 3000  # 提取文本最大长度
+_COOKIE_REDIS_PREFIX = "browser:cookies:"
+_COOKIE_TTL = 86400 * 30  # 站点登录态缓存 30 天
 _SCREENSHOT_PROMPT = (
     "你是一个网页分析助手。请详细描述这个网页截图的内容和布局：\n"
     "1. 页面类型（登录页、首页、搜索结果、表单等）\n"
@@ -107,6 +110,7 @@ class _BrowserSession:
     page: Any = None        # Page
     tenant_id: str = ""
     last_used: float = field(default_factory=time.time)
+    loaded_sites: set[str] = field(default_factory=set)  # 当前会话已注入过 cookie 的站点
 
 
 # 全局会话存储（tenant_id → session）
@@ -121,12 +125,145 @@ def _get_tenant_id() -> str:
         return ""
 
 
+def _get_user_id() -> str:
+    """获取当前用户 ID（用于 per-user 登录态隔离）"""
+    try:
+        from app.tools.feishu_api import _current_user_open_id
+        return _current_user_open_id.get("")
+    except Exception:
+        return ""
+
+
+def _get_session_key() -> str:
+    """生成会话 key：tenant_id:user_id（退化兼容 tenant_id）"""
+    tid = _get_tenant_id()
+    uid = _get_user_id()
+    if tid and uid:
+        return f"{tid}:{uid}"
+    return tid
+
+
 def _get_tenant_or_none():
     try:
         from app.tenant.context import get_current_tenant
         return get_current_tenant()
     except Exception:
         return None
+
+
+def _normalize_site(value: str) -> str:
+    """归一化站点标识（支持 URL 或裸域名）"""
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+    host = ""
+    if "://" in raw:
+        try:
+            host = urlparse(raw).hostname or ""
+        except Exception:
+            host = ""
+    else:
+        host = raw.split("/", 1)[0]
+    host = host.strip().lower().strip(".")
+    if ":" in host:
+        host = host.split(":", 1)[0]
+    return host
+
+
+def _cookie_matches_site(cookie_domain: str, site: str) -> bool:
+    cd = (cookie_domain or "").strip().lower().lstrip(".")
+    s = (site or "").strip().lower().lstrip(".")
+    if not cd or not s:
+        return False
+    return cd == s or cd.endswith(f".{s}")
+
+
+def _cookie_redis_key(session_key: str, site: str) -> str:
+    return f"{_COOKIE_REDIS_PREFIX}{session_key}:{site}"
+
+
+async def _save_site_cookies_to_redis(session_key: str, site: str, cookies: list[dict]) -> int:
+    """按站点保存 cookie（仅保存匹配目标站点的 cookie）。"""
+    norm_site = _normalize_site(site)
+    if not session_key or not norm_site:
+        return 0
+    filtered = [dict(c) for c in cookies if _cookie_matches_site(c.get("domain", ""), norm_site)]
+    if not filtered:
+        return 0
+    try:
+        from app.services.redis_client import execute as redis_execute
+        result = redis_execute(
+            "SET",
+            _cookie_redis_key(session_key, norm_site),
+            json.dumps(filtered, ensure_ascii=False),
+            "EX",
+            _COOKIE_TTL,
+        )
+        if result:
+            logger.info(
+                "browser_ops: saved %d cookies for %s/%s",
+                len(filtered),
+                session_key,
+                norm_site,
+            )
+            return len(filtered)
+    except Exception as e:
+        logger.warning("browser_ops: failed to save cookies for %s/%s: %s", session_key, norm_site, e)
+    return 0
+
+
+async def _load_site_cookies_from_redis(session_key: str, site: str) -> list[dict] | None:
+    norm_site = _normalize_site(site)
+    if not session_key or not norm_site:
+        return None
+    try:
+        from app.services.redis_client import execute as redis_execute
+        data = redis_execute("GET", _cookie_redis_key(session_key, norm_site))
+        if data:
+            cookies = json.loads(data)
+            if isinstance(cookies, list):
+                return cookies
+    except Exception as e:
+        logger.warning("browser_ops: failed to load cookies for %s/%s: %s", session_key, norm_site, e)
+    return None
+
+
+async def _restore_site_cookies_if_available(
+    session_key: str, session: _BrowserSession, site_or_url: str,
+) -> tuple[str, int]:
+    """在页面打开前尝试恢复站点登录态。"""
+    site = _normalize_site(site_or_url)
+    if not site or site in session.loaded_sites:
+        return site, 0
+    cookies = await _load_site_cookies_from_redis(session_key, site)
+    if not cookies:
+        return site, 0
+    try:
+        await session.context.add_cookies(cookies)
+        session.loaded_sites.add(site)
+        logger.info("browser_ops: restored %d cookies for %s/%s", len(cookies), session_key, site)
+        return site, len(cookies)
+    except Exception as e:
+        logger.warning("browser_ops: failed to restore cookies for %s/%s: %s", session_key, site, e)
+        return site, 0
+
+
+async def _persist_current_site_cookies(
+    session_key: str, session: _BrowserSession, site_or_url: str,
+) -> tuple[str, int]:
+    """在动作后持久化当前站点 cookie（自动更新登录态缓存）。"""
+    site = _normalize_site(site_or_url)
+    if not site:
+        return "", 0
+    try:
+        cookies = await session.context.cookies()
+    except Exception as e:
+        logger.warning("browser_ops: read cookies failed for %s/%s: %s", session_key, site, e)
+        return site, 0
+    saved = await _save_site_cookies_to_redis(session_key, site, cookies)
+    if saved > 0:
+        session.loaded_sites.add(site)
+    return site, saved
 
 
 # ── Google Docs/Sheets/Slides 直接导出（不需要浏览器）──
@@ -364,14 +501,14 @@ async def _cleanup_stale_sessions() -> None:
         await _cleanup_session(tid)
 
 
-async def _get_or_create_session(tenant_id: str) -> _BrowserSession:
+async def _get_or_create_session(session_key: str) -> _BrowserSession:
     """获取或创建浏览器会话"""
     # 清理超时会话
     await _cleanup_stale_sessions()
 
     # 复用现有会话
-    if tenant_id in _sessions:
-        session = _sessions[tenant_id]
+    if session_key in _sessions:
+        session = _sessions[session_key]
         session.last_used = time.time()
         # 检查浏览器是否还活着
         try:
@@ -380,7 +517,7 @@ async def _get_or_create_session(tenant_id: str) -> _BrowserSession:
         except Exception:
             pass
         # 连接断了，清理重建
-        await _cleanup_session(tenant_id)
+        await _cleanup_session(session_key)
 
     # 创建新会话
     from playwright.async_api import async_playwright
@@ -402,10 +539,10 @@ async def _get_or_create_session(tenant_id: str) -> _BrowserSession:
         browser=browser,
         context=context,
         page=page,
-        tenant_id=tenant_id,
+        tenant_id=session_key,
         last_used=time.time(),
     )
-    _sessions[tenant_id] = session
+    _sessions[session_key] = session
     return session
 
 
@@ -500,10 +637,12 @@ async def _handle_browser_open(args: dict) -> ToolResult:
     tenant_id = _get_tenant_id()
     if not tenant_id:
         return ToolResult.error("无法获取当前租户信息")
+    session_key = _get_session_key() or tenant_id
 
     try:
-        session = await _get_or_create_session(tenant_id)
+        session = await _get_or_create_session(session_key)
         page = session.page
+        site, restored_count = await _restore_site_cookies_if_available(session_key, session, url)
 
         # 导航
         await page.goto(url, wait_until="domcontentloaded", timeout=30000)
@@ -533,6 +672,9 @@ async def _handle_browser_open(args: dict) -> ToolResult:
         except Exception:
             body_text = "(无法提取页面文本)"
 
+        # 自动更新当前站点 cookie（登录后无需手动保存）
+        await _persist_current_site_cookies(session_key, session, current_url)
+
         # AI 分析截图
         analysis = await _analyze_screenshot(screenshot, _SCREENSHOT_PROMPT)
 
@@ -540,10 +682,14 @@ async def _handle_browser_open(args: dict) -> ToolResult:
         from app.tools.source_registry import register_urls
         register_urls([current_url])
 
+        login_note = ""
+        if restored_count > 0 and site:
+            login_note = f"\n登录态: 已自动恢复 {restored_count} 条 {site} Cookies"
+
         return ToolResult.success(
             f"页面已打开\n"
             f"标题: {title}\n"
-            f"URL: {current_url}\n\n"
+            f"URL: {current_url}{login_note}\n\n"
             f"── AI 页面分析 ──\n{analysis}\n\n"
             f"── 页面文本（前 {_MAX_TEXT_LENGTH} 字符）──\n{body_text}"
         )
@@ -567,7 +713,8 @@ async def _handle_browser_do(args: dict) -> ToolResult:
         return ToolResult.invalid_param("action 不能为空")
 
     tenant_id = _get_tenant_id()
-    session = _sessions.get(tenant_id)
+    session_key = _get_session_key() or tenant_id
+    session = _sessions.get(session_key)
     if not session:
         return ToolResult.error(
             "没有活跃的浏览器会话。请先调用 browser_open 打开页面。\n"
@@ -653,6 +800,7 @@ async def _handle_browser_do(args: dict) -> ToolResult:
         screenshot = await page.screenshot(type="png", full_page=False)
         title = await page.title()
         current_url = page.url
+        await _persist_current_site_cookies(session_key, session, current_url)
 
         analysis = await _analyze_screenshot(
             screenshot,
@@ -677,7 +825,8 @@ async def _handle_browser_do(args: dict) -> ToolResult:
 async def _handle_browser_read(args: dict) -> ToolResult:
     """提取当前页面的文本内容"""
     tenant_id = _get_tenant_id()
-    session = _sessions.get(tenant_id)
+    session_key = _get_session_key() or tenant_id
+    session = _sessions.get(session_key)
     if not session:
         return ToolResult.error("没有活跃的浏览器会话。请先调用 browser_open 打开页面。")
 
@@ -704,10 +853,11 @@ async def _handle_browser_read(args: dict) -> ToolResult:
 async def _handle_browser_close(args: dict) -> ToolResult:
     """关闭浏览器会话"""
     tenant_id = _get_tenant_id()
-    if tenant_id not in _sessions:
+    session_key = _get_session_key() or tenant_id
+    if session_key not in _sessions:
         return ToolResult.success("没有活跃的浏览器会话。")
 
-    await _cleanup_session(tenant_id)
+    await _cleanup_session(session_key)
     return ToolResult.success("浏览器会话已关闭。")
 
 
