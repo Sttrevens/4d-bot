@@ -63,6 +63,7 @@ from app.harness.turn_mode import (
     should_run_code_preflight,
 )
 from app.harness.tool_escalation import (
+    build_tool_domain_nudge,
     build_tool_settle_nudge,
     is_light_advice_turn,
 )
@@ -108,6 +109,7 @@ __all__ = [
     "is_product_pricing_turn",
     "sanitize_suggested_groups",
     "should_run_code_preflight",
+    "build_tool_domain_nudge",
     "build_tool_settle_nudge",
     "is_light_advice_turn",
 ]

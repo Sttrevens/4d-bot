@@ -1,4 +1,4 @@
-from app.harness.tool_escalation import build_tool_settle_nudge
+from app.harness.tool_escalation import build_tool_domain_nudge, build_tool_settle_nudge
 
 
 def test_light_advice_stops_browser_escalation_after_enough_web_info():
@@ -40,3 +40,21 @@ def test_non_advice_turn_does_not_trigger_settle_nudge():
     )
     assert nudge is None
 
+
+def test_research_turn_blocks_task_calendar_tool_drift():
+    nudge = build_tool_domain_nudge(
+        "继续帮我调研这几个游戏首周销量",
+        ["list_feishu_tasks", "list_calendar_events"],
+        task_type="research",
+    )
+    assert nudge is not None
+    assert "调研/问答任务" in nudge
+
+
+def test_task_turn_allows_task_calendar_tools():
+    nudge = build_tool_domain_nudge(
+        "把今天会议纪要里的待办都加到我的任务里",
+        ["list_feishu_tasks", "create_feishu_task"],
+        task_type="research",
+    )
+    assert nudge is None

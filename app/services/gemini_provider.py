@@ -20,6 +20,7 @@ from google import genai
 from google.genai import types
 
 from app.harness import (
+    build_tool_domain_nudge,
     build_tool_settle_nudge,
     compress_gemini_function_results,
     extract_focus_terms,
@@ -841,6 +842,24 @@ async def _run_sub_agent(
                 tool_names_called.append(func_name)
             _fc_items.append((func_name, func_args, call_key))
 
+        _sub_proposed_tools = [name for name, _, _ in _fc_items]
+        _domain_nudge = build_tool_domain_nudge(
+            user_text,
+            _sub_proposed_tools,
+            task_type=sub_agent_type,
+        )
+        if _domain_nudge:
+            logger.info(
+                "sub-agent [%s] tool domain nudge (proposed=%s)",
+                sub_agent_type,
+                _sub_proposed_tools,
+            )
+            contents.append(types.Content(
+                role="user",
+                parts=[types.Part(text=_domain_nudge)],
+            ))
+            continue
+
         async def _exec_one(name: str, args: dict) -> str:
             """执行单个工具调用，返回结果字符串。"""
             if _followup_focus_terms:
@@ -1447,6 +1466,8 @@ async def handle_message(
     _MAX_EXIT_GATE_NUDGES = 3
     _custom_tool_thrashing_nudged = False  # P4: 自定义工具 thrashing 检测（最多 nudge 1 次）
     _empty_content_retries = 0  # 空响应重试计数（最多 3 次后用事实性总结退出）
+    _consecutive_empty_content = 0  # 连续空 content 次数（用于自动降级模型）
+    _force_base_model_rounds = 0  # 连续空响应后强制使用基础模型的轮数
     _pro_failures = 0  # 强模型连续 fallback 次数（熔断器）
     _PRO_CIRCUIT_BREAKER = 2  # 连续 fallback 2 次后禁用强模型
     _total_input_tokens = 0   # 跨轮次累计 input tokens
@@ -1468,7 +1489,14 @@ async def handle_message(
         current_model = model_name
         _pro_ok = (strong_model and strong_model != model_name
                    and _pro_failures < _PRO_CIRCUIT_BREAKER)
-        if _pro_ok and (_escalated or round_num >= 6):
+        if _force_base_model_rounds > 0:
+            current_model = model_name
+            _force_base_model_rounds -= 1
+            logger.info(
+                "empty-output guard: forcing base model for stability (%d rounds left)",
+                _force_base_model_rounds,
+            )
+        elif _pro_ok and (_escalated or round_num >= 6):
             current_model = strong_model
 
         logger.info("gemini agent round %d (model=%s)", round_num + 1, current_model)
@@ -1652,6 +1680,19 @@ async def handle_message(
 
         content_obj = candidate.content
         if not content_obj or not content_obj.parts:
+            _consecutive_empty_content += 1
+            if (
+                _consecutive_empty_content >= 2
+                and strong_model
+                and current_model == strong_model
+                and strong_model != model_name
+            ):
+                _force_base_model_rounds = max(_force_base_model_rounds, 3)
+                logger.warning(
+                    "empty-output guard: %d consecutive empty responses on %s, "
+                    "forcing %s for next rounds",
+                    _consecutive_empty_content, strong_model, model_name,
+                )
             if tool_names_called:
                 # ── 空响应 nudge：模型返回了空 content，但之前调过工具 ──
                 # 这通常意味着模型"想说什么但没说出来"，不应直接退出。
@@ -1704,6 +1745,7 @@ async def handle_message(
                 action_outcomes,
                 repeated=True,
             )
+        _consecutive_empty_content = 0
 
         # 分离 function_call 和文本（跳过 thinking parts，避免内心独白泄露）
         function_calls = []
@@ -1885,6 +1927,24 @@ async def handle_message(
                     logger.info("progress hint: LLM returned None (generation failed or text invalid)")
 
         proposed_tool_names = [fc.function_call.name for fc in function_calls]
+        domain_nudge = build_tool_domain_nudge(
+            user_text,
+            proposed_tool_names,
+            task_type=_task_type,
+        )
+        if domain_nudge:
+            logger.info(
+                "tool domain nudge at round %d (proposed=%s, task_type=%s)",
+                round_num + 1,
+                proposed_tool_names,
+                _task_type,
+            )
+            contents.append(content_obj)
+            contents.append(types.Content(
+                role="user",
+                parts=[types.Part(text=domain_nudge)],
+            ))
+            continue
         settle_nudge = build_tool_settle_nudge(
             user_text,
             proposed_tool_names,
@@ -2201,28 +2261,63 @@ def _build_factual_summary(
     action_outcomes: list[tuple[str, str]],
     reason: str = "",
 ) -> str:
-    """从 action_outcomes 构建事实性总结，不涉及 LLM。
-
-    当模型返回空或轮次耗尽时，
-    用代码层面的已知事实拼总结，杜绝 LLM 幻觉。
-    """
+    """构建面向用户的可读进展总结（不暴露内部工具细节）。"""
     if not tool_names_called and not action_outcomes:
         return "我刚刚这一下没顺利接住。你回我一句“继续”，或者把刚才那句再发一次，我马上接着处理。"
 
-    parts: list[str] = []
-    if reason:
-        parts.append(reason)
+    def _is_fail(outcome: str) -> bool:
+        text = (outcome or "").strip().lower()
+        return text.startswith("→ 失败") or "[error]" in text or "失败" in text or "timeout" in text
 
-    if action_outcomes:
-        parts.append("以下是已完成的操作：")
-        for name, outcome in action_outcomes[-15:]:
-            parts.append(f"  - {name}: {outcome[:300]}")
-    elif tool_names_called:
-        unique_tools = list(dict.fromkeys(tool_names_called[-15:]))
-        parts.append(f"已调用的工具：{', '.join(unique_tools)}")
+    search_tools = {"web_search", "fetch_url", "search_social_media", "xhs_search", "xhs_playwright_search"}
+    context_tools = {"recall_memory", "read_feishu_doc", "fetch_chat_history", "get_feishu_minute_transcript"}
+    task_tools = {"list_feishu_tasks", "list_feishu_tasklists", "list_tasklist_tasks", "list_calendar_events"}
 
-    parts.append('\n如果任务还没完成，你可以说"继续"让我接着做。')
-    return "\n".join(parts)
+    search_ok = 0
+    context_ok = 0
+    write_ok = 0
+    noncritical_detours = 0
+    failures = 0
+    for name, outcome in action_outcomes[-20:]:
+        if _is_fail(outcome):
+            failures += 1
+            continue
+        if name in search_tools:
+            search_ok += 1
+        elif name in context_tools:
+            context_ok += 1
+        elif name in task_tools:
+            noncritical_detours += 1
+        elif name != "think":
+            write_ok += 1
+
+    logger.info(
+        "fallback summary stats: search_ok=%d context_ok=%d write_ok=%d detours=%d failures=%d",
+        search_ok, context_ok, write_ok, noncritical_detours, failures,
+    )
+
+    lead = reason or "我这轮中途卡住了"
+    progress_chunks: list[str] = []
+    if search_ok:
+        progress_chunks.append(f"已完成 {search_ok} 轮资料检索")
+    if context_ok:
+        progress_chunks.append("把历史上下文也对齐了")
+    if write_ok:
+        progress_chunks.append("关键动作已经执行过一部分")
+    if not progress_chunks:
+        progress_chunks.append("上下文和前置步骤都还在")
+
+    if noncritical_detours:
+        progress_chunks.append("并且我已经收敛到当前主问题，不再跑偏")
+    if failures:
+        progress_chunks.append("中间有请求超时，我已保留现场继续接着做")
+
+    progress_sentence = "，".join(progress_chunks)
+    return (
+        f"{lead}\n"
+        f"当前进展：{progress_sentence}\n"
+        "你回我“继续”，我会直接给你可读结论，不再贴内部过程"
+    )
 
 
 def _build_empty_model_reply(

@@ -32,6 +32,24 @@ _HEAVY_DOWNSTREAM_TOOLS = frozenset({
 _SOCIAL_CHAIN_TOOLS = _PUBLIC_INFO_TOOLS | _HEAVY_DOWNSTREAM_TOOLS
 
 _FAILURE_RE = re.compile(r"(失败|超时|error|timeout|登录墙|需要登录|blocked)", re.IGNORECASE)
+_TASK_CALENDAR_INTENT_RE = re.compile(
+    r"(任务|待办|todo|task|tasklist|日程|日历|calendar|提醒|会议|安排|排期|报销单)",
+    re.IGNORECASE,
+)
+_TASK_CALENDAR_TOOLS = frozenset({
+    "list_feishu_tasks",
+    "list_feishu_tasklists",
+    "list_tasklist_tasks",
+    "create_feishu_task",
+    "update_feishu_task",
+    "complete_feishu_task",
+    "list_calendar_events",
+    "create_calendar_event",
+    "update_calendar_event",
+    "delete_calendar_event",
+    "check_availability",
+    "find_free_slots",
+})
 
 
 def is_light_advice_turn(user_text: str) -> bool:
@@ -109,3 +127,33 @@ def build_tool_settle_nudge(
         )
 
     return None
+
+
+def build_tool_domain_nudge(
+    user_text: str,
+    proposed_tools: list[str] | tuple[str, ...],
+    *,
+    task_type: str = "",
+) -> str | None:
+    """Block obvious cross-domain tool drift on research/chat turns."""
+    if not proposed_tools:
+        return None
+    proposed = set(proposed_tools)
+    off_domain = proposed & _TASK_CALENDAR_TOOLS
+    if not off_domain:
+        return None
+
+    if _TASK_CALENDAR_INTENT_RE.search(user_text or ""):
+        return None
+
+    turn_type = (task_type or "").strip().lower()
+    if turn_type not in {"research", "normal"}:
+        return None
+
+    blocked_names = "、".join(sorted(off_domain))
+    return (
+        "⚠️ 当前是调研/问答任务，不是任务或日历操作。"
+        f"你刚才尝试调用了不相关工具：{blocked_names}。"
+        "请回到当前问题，优先使用 web_search/fetch_url/read_feishu_doc/recall_memory 等信息检索工具，"
+        "然后直接给用户结论。"
+    )
