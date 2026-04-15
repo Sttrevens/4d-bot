@@ -22,11 +22,14 @@ from google.genai import types
 from app.harness import (
     build_tool_settle_nudge,
     compress_gemini_function_results,
+    extract_focus_terms,
     infer_turn_mode,
+    is_query_off_topic,
     normalize_inbox_item,
     remember_active_constraints,
     sanitize_suggested_groups,
     should_compact_history,
+    should_reuse_recent_topic,
     should_run_code_preflight,
     should_nudge_unmatched_reads,
 )
@@ -160,6 +163,17 @@ def _extract_first_json_object(raw: str) -> str | None:
 
 def _needs_feishu_collab_context(user_text: str) -> bool:
     return bool(_FEISHU_CONTEXT_HINT_RE.search(user_text or ""))
+
+
+def _extract_search_probe(func_name: str, func_args: dict) -> str:
+    """Extract a normalized query-like string from search-oriented tool args."""
+    if func_name == "web_search":
+        return str(func_args.get("query", "") or "").strip()
+    if func_name in {"search_social_media", "get_platform_search_url"}:
+        return str(func_args.get("keyword", "") or "").strip()
+    if func_name == "browser_open":
+        return str(func_args.get("url", "") or "").strip()
+    return ""
 
 
 def _classify_intent_keywords(user_text: str) -> dict:
@@ -562,6 +576,7 @@ async def _run_sub_agent(
     sender_name: str = "",
     on_progress: ProgressCallback | None = None,
     history: list[dict] | None = None,
+    chat_context: str = "",
 ) -> str:
     """在隔离的上下文中运行子 agent，返回结构化结果摘要。
 
@@ -596,10 +611,23 @@ async def _run_sub_agent(
     )
     # 子 agent 独立的 contents（继承最近对话历史，提供上下文）
     contents: list[types.Content] = []
+    _followup_focus_mode = should_reuse_recent_topic(user_text)
 
-    # 注入最近 3 轮对话历史（避免子 agent "失忆"）
+    if chat_context:
+        _ctx = chat_context[:2400]
+        contents.append(types.Content(
+            role="user",
+            parts=[types.Part(text=f"[聊天记录上下文]\n{_ctx}")],
+        ))
+        contents.append(types.Content(
+            role="model",
+            parts=[types.Part(text="好的，我已了解聊天上下文。")],
+        ))
+
+    # 注入最近对话历史（避免子 agent "失忆"）
+    # follow-up 指代句（这两个/继续）扩大窗口，降低跑偏概率
     # Gemini 要求 user/model 严格交替，需要合并连续同角色消息
-    _SUB_AGENT_HISTORY_ROUNDS = 3  # 最多 6 条消息（3 user + 3 assistant）
+    _SUB_AGENT_HISTORY_ROUNDS = 6 if _followup_focus_mode else 3
     if history:
         recent = history[-(2 * _SUB_AGENT_HISTORY_ROUNDS):]
         for msg in recent:
@@ -640,6 +668,17 @@ async def _run_sub_agent(
         ),
     )
 
+    _focus_seed: list[str] = [user_text]
+    if chat_context:
+        _focus_seed.append(chat_context)
+    if history:
+        for msg in history[-8:]:
+            if isinstance(msg, dict) and msg.get("role") == "user":
+                _focus_seed.append(str(msg.get("content", "")))
+    _followup_focus_terms = (
+        extract_focus_terms(*_focus_seed) if _followup_focus_mode else ()
+    )
+
     max_rounds = agent_cfg["max_rounds"]
     budget = agent_cfg["budget_seconds"]
     call_log: list[str] = []
@@ -661,6 +700,12 @@ async def _run_sub_agent(
         "sub-agent [%s] started: budget=%ds, max_rounds=%d",
         sub_agent_type, budget, max_rounds,
     )
+    if _followup_focus_terms:
+        logger.info(
+            "sub-agent [%s] followup focus guard enabled: %d terms",
+            sub_agent_type,
+            len(_followup_focus_terms),
+        )
 
     _sub_outcome = "success"  # 默认成功，各 break 点覆盖
 
@@ -773,6 +818,7 @@ async def _run_sub_agent(
             fc = fc_part.function_call
             func_name = fc.name
             func_args = dict(fc.args) if fc.args else {}
+            _search_probe = ""
 
             # 自动注入 tenant_id / sender 上下文
             if func_name in _CUSTOM_TOOL_META_NAMES and "tenant_id" not in func_args:
@@ -782,6 +828,10 @@ async def _run_sub_agent(
                     func_args["user_id"] = sender_id
                 if not func_args.get("user_name"):
                     func_args["user_name"] = sender_name
+                if func_name == "recall_memory" and not func_args.get("query_text"):
+                    func_args["query_text"] = user_text
+
+            _search_probe = _extract_search_probe(func_name, func_args)
 
             call_key = f"{func_name}({json.dumps(func_args, ensure_ascii=False)})"
             call_log.append(call_key)
@@ -791,6 +841,14 @@ async def _run_sub_agent(
 
         async def _exec_one(name: str, args: dict) -> str:
             """执行单个工具调用，返回结果字符串。"""
+            if _followup_focus_terms:
+                _probe = _extract_search_probe(name, args)
+                if _probe and is_query_off_topic(_probe, _followup_focus_terms):
+                    return (
+                        "[ERROR] 当前这轮是承接上文（如“这两个/继续”），"
+                        "但你的搜索关键词与最近话题不一致。"
+                        "请基于最近话题中的实体名重新搜索，不要跳回旧话题。"
+                    )
             # URL 溯源验证（sub-agent 也需要）
             _url_warn, _flagged = check_url_provenance(
                 name, args, _sub_seen_urls, _sub_blocked_urls,
@@ -1292,6 +1350,7 @@ async def handle_message(
                     sender_name=sender_name,
                     on_progress=on_progress,
                     history=history,
+                    chat_context=chat_context,
                 )
                 if sub_result and len(sub_result.strip()) > 20:
                     # 子 agent 返回了有效结果
@@ -1345,6 +1404,22 @@ async def handle_message(
     call_log: list[str] = []
     tool_names_called: list[str] = []
     action_outcomes: list[tuple[str, str]] = []  # (tool_name, outcome_summary)
+    _followup_focus_mode = should_reuse_recent_topic(user_text, image_urls)
+    _focus_seed: list[str] = [user_text]
+    if chat_context:
+        _focus_seed.append(chat_context)
+    if history:
+        for msg in history[-8:]:
+            if isinstance(msg, dict) and msg.get("role") == "user":
+                _focus_seed.append(str(msg.get("content", "")))
+    _followup_focus_terms = (
+        extract_focus_terms(*_focus_seed) if _followup_focus_mode else ()
+    )
+    if _followup_focus_terms:
+        logger.info(
+            "followup focus guard enabled: %d terms",
+            len(_followup_focus_terms),
+        )
     # URL 溯源：收集所有工具返回中的 URL，用于验证 LLM 写操作参数中的 URL 真实性
     _seen_urls: set[str] = extract_urls(user_text)  # 用户消息中的 URL 也算已见
     _blocked_urls: set[str] = set()  # 已被拦截过的 URL（死循环保护：拦截 2 次后放行）
@@ -2035,37 +2110,48 @@ async def handle_message(
                 result = ToolResult.error(f"unknown tool: {func_name}", code="not_found")
             else:
                 # ── URL 溯源验证：写操作中的 URL 必须来自已见数据 ──
-                _url_warning, _flagged = check_url_provenance(
-                    func_name, func_args, _seen_urls, _blocked_urls,
-                )
-                if _url_warning:
-                    logger.warning("URL provenance check failed for %s: %s",
-                                   func_name, _url_warning[:200])
-                    _blocked_urls.update(_flagged)  # 记录本次拦截的 URL
-                    result = ToolResult.error(_url_warning, code="url_hallucination")
-                    # 不执行工具，让 LLM 修正参数
-                elif (_intent_block := check_write_intent(
-                    func_name, func_args, user_text, tool_names_called,
-                )):
-                    logger.warning("write intent blocked: %s", _intent_block[:200])
-                    result = ToolResult.error(_intent_block, code="write_intent_blocked")
-                elif (risk := _get_custom_tool_risk(tenant.tenant_id, func_name)) in ("yellow", "red"):
-                    risk_hint = "写操作" if risk == "yellow" else "批量/高风险操作"
-                    result = ToolResult.blocked(
-                        f"这是一个{risk_hint}工具（{risk}级别）。"
-                        f"请告诉用户你要执行什么操作，等确认后再调用。"
+                if _followup_focus_terms and _search_probe and is_query_off_topic(
+                    _search_probe,
+                    _followup_focus_terms,
+                ):
+                    result = ToolResult.error(
+                        "当前这轮是承接上文（如“这两个/继续”），"
+                        "但你现在搜索的关键词与最近话题不一致。"
+                        "请优先使用最近话题里的实体名继续检索，不要跳回旧话题。",
+                        code="off_topic_query",
                     )
                 else:
-                    try:
-                        result = handler(func_args)
-                        # 支持 async 工具（如 analyze_video_url）
-                        if asyncio.iscoroutine(result):
-                            result = await result
-                    except Exception as exc:
-                        logger.exception("tool %s failed", func_name)
-                        result = ToolResult.error(str(exc), code="internal")
-                        record_error("tool_exception", f"{func_name} 异常", exc=exc,
-                                     tool_name=func_name, tool_args=func_args)
+                    _url_warning, _flagged = check_url_provenance(
+                        func_name, func_args, _seen_urls, _blocked_urls,
+                    )
+                    if _url_warning:
+                        logger.warning("URL provenance check failed for %s: %s",
+                                       func_name, _url_warning[:200])
+                        _blocked_urls.update(_flagged)  # 记录本次拦截的 URL
+                        result = ToolResult.error(_url_warning, code="url_hallucination")
+                        # 不执行工具，让 LLM 修正参数
+                    elif (_intent_block := check_write_intent(
+                        func_name, func_args, user_text, tool_names_called,
+                    )):
+                        logger.warning("write intent blocked: %s", _intent_block[:200])
+                        result = ToolResult.error(_intent_block, code="write_intent_blocked")
+                    elif (risk := _get_custom_tool_risk(tenant.tenant_id, func_name)) in ("yellow", "red"):
+                        risk_hint = "写操作" if risk == "yellow" else "批量/高风险操作"
+                        result = ToolResult.blocked(
+                            f"这是一个{risk_hint}工具（{risk}级别）。"
+                            f"请告诉用户你要执行什么操作，等确认后再调用。"
+                        )
+                    else:
+                        try:
+                            result = handler(func_args)
+                            # 支持 async 工具（如 analyze_video_url）
+                            if asyncio.iscoroutine(result):
+                                result = await result
+                        except Exception as exc:
+                            logger.exception("tool %s failed", func_name)
+                            result = ToolResult.error(str(exc), code="internal")
+                            record_error("tool_exception", f"{func_name} 异常", exc=exc,
+                                         tool_name=func_name, tool_args=func_args)
 
             # 记录工具执行进度（用于超时时构造智能消息）
             record_agent_progress(func_name)

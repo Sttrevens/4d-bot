@@ -316,6 +316,8 @@ async def handle_message(
                     func_args["user_id"] = sender_id
                 if not func_args.get("user_name"):
                     func_args["user_name"] = sender_name
+                if func_name == "recall_memory" and not func_args.get("query_text"):
+                    func_args["query_text"] = user_text
 
             # 空转检测用 name(args) 作 key，区分批量操作和真正循环
             call_key = f"{func_name}({tool_call.function.arguments})"

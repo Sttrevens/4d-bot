@@ -42,10 +42,15 @@ def recall_memory(args: dict) -> ToolResult:
     user_id = args.get("user_id", "")
     tags = args.get("tags", [])
     keyword = args.get("keyword", "")
+    query_text = args.get("query_text", "")
     limit = args.get("limit", 10)
 
     return ToolResult.success(mem.recall_text(
-        user_id=user_id, tags=tags, keyword=keyword, limit=limit,
+        user_id=user_id,
+        tags=tags,
+        keyword=keyword,
+        limit=limit,
+        query_text=query_text,
     ))
 
 
@@ -280,6 +285,10 @@ TOOL_DEFINITIONS = [
                 "keyword": {
                     "type": "string",
                     "description": "按关键词搜索记忆内容（在摘要/详情/结果中匹配，可选）",
+                },
+                "query_text": {
+                    "type": "string",
+                    "description": "当前用户这轮原始问题（可选）。用于语义召回避免拉出无关旧话题。",
                 },
                 "limit": {
                     "type": "integer",

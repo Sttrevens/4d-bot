@@ -153,6 +153,7 @@ def recall(
     tags: list[str] | None = None,
     keyword: str = "",
     limit: int = 20,
+    query_text: str = "",
 ) -> list[dict]:
     """检索相关记忆。支持按用户、标签、关键词过滤。
 
@@ -321,9 +322,16 @@ def recall_text(
     tags: list[str] | None = None,
     keyword: str = "",
     limit: int = 10,
+    query_text: str = "",
 ) -> str:
     """检索记忆并格式化为文本（供 LLM 工具返回）。"""
-    entries = recall(user_id=user_id, tags=tags, keyword=keyword, limit=limit)
+    entries = recall(
+        user_id=user_id,
+        tags=tags,
+        keyword=keyword,
+        limit=limit,
+        query_text=query_text,
+    )
     if not entries:
         return "没有找到相关记忆。"
     lines = []

@@ -30,6 +30,10 @@ from app.harness.orchestrator import (
     should_compact_history,
     should_nudge_unmatched_reads,
 )
+from app.harness.search_guardrails import (
+    extract_focus_terms,
+    is_query_off_topic,
+)
 from app.harness.session_facts import (
     ContinuationContext,
     build_continuation_context,
@@ -80,6 +84,8 @@ __all__ = [
     "should_relax_fact_grounding",
     "should_compact_history",
     "should_nudge_unmatched_reads",
+    "extract_focus_terms",
+    "is_query_off_topic",
     "ContinuationContext",
     "build_continuation_context",
     "infer_turn_objective",
