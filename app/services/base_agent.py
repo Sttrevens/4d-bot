@@ -23,6 +23,7 @@ import random
 import re
 import time
 import contextvars
+from dataclasses import dataclass
 from typing import Callable, Awaitable
 
 from app.harness import (
@@ -2386,6 +2387,7 @@ def detect_ungrounded_claims(
     reply_text: str,
     user_text: str,
     tool_names_called: list[str],
+    action_outcomes: list[tuple[str, str]] | None = None,
 ) -> str | None:
     """检测回复中是否有未经工具验证的事实性声称。
 
@@ -2422,15 +2424,53 @@ def detect_ungrounded_claims(
     return None
 
 
-# ── LLM Exit Gate (backup, with fail-closed) ──
-# 本地检测器处理不了的复杂情况，用小模型兜底。
-# 关键改动：超时时 fail-CLOSED（nudge），不再 fail-open。
+# ── Exit Governor ──
+# 统一出口治理层：先跑 deterministic 合约检查，再跑中立 LLM 裁判，
+# 将“是否允许退出”统一收敛为结构化决策，避免散落式补丁判断。
+
+
+@dataclass(frozen=True)
+class ExitGovernorDecision:
+    verdict: str  # "pass" | "nudge" | "grounding"
+    reason: str
+    nudge_text: str = ""
+    judge_context: str = ""
+
+
+_PROMISE_COMMITMENT_RE = re.compile(
+    r"(我(这就|马上|先|现在|回头|稍后|待会|立刻)|稍等|等我|我去|我先|我来).{0,12}"
+    r"(查|搜|找|看|处理|做|确认|安排|发|通知|同步|修|改|跟进|研究|试试)",
+    re.IGNORECASE,
+)
+_HISTORY_ASSERTION_REPLY_RE = re.compile(
+    r"(你之前说|你说过|你提到过|你之前提到|你说的是|你原话)",
+    re.IGNORECASE,
+)
+_HISTORY_ASSERTION_USER_CHALLENGE_RE = re.compile(
+    r"(不对|错了|不是|搞错|弄错|日期不对|时间不对|wrong)",
+    re.IGNORECASE,
+)
+
+_EXIT_NUDGE_ACTION = (
+    "你的回复里包含“准备去做/已经做了”的执行语义，但当前没有足够执行证据。"
+    "请不要空口承诺：如果这是行动型任务，立即调用对应工具执行；"
+    "如果这是解释型问题，直接给出答案，不要假装已执行。"
+)
+_EXIT_NUDGE_GROUNDING = (
+    "⚠️ 你的回复包含需要外部验证的事实信息，但证据不足。"
+    "请先调用搜索/读取类工具完成验证，再基于证据回答。"
+)
+_EXIT_NUDGE_HISTORY_ASSERTION = (
+    "你在断言“用户之前说过什么”，但没有先验证原始聊天记录。"
+    "在引用用户历史原话前，必须先调用 fetch_chat_history 再回答。"
+)
 
 _EXIT_REVIEW_PROMPT = """\
-你是一个独立的 AI agent 退出审查器（Evaluator），负责评估 agent 的回复质量。
-agent 正在帮用户完成任务，现在 agent 给出了一段回复但**没有调用任何工具**（或工具调用很少）。
+你是一个中立的 AI agent 退出审查器（Neutral Exit Judge）。
+你只负责判断这条回复是否允许退出本轮，不能帮 agent 编理由。
 
-请从三个维度对 agent 的回复打分（1-10 分）：
+请从三个维度打分（1-10）并给出决策：
+- decision: pass | nudge | grounding
 
 **意图匹配度（权重 40%）：**
 用户的消息和 agent 的回复是否对应？
@@ -2457,8 +2497,179 @@ agent 的行为是否合理？
 agent 本轮已调用的工具: {tools_used}
 agent 的回复: {reply_text}
 
-请用以下 JSON 格式回复（不要输出任何其他内容）：
-{{"relevance": N, "factual": N, "behavioral": N}}"""
+请严格输出 JSON（不要任何额外文本）：
+{{
+  "decision": "pass|nudge|grounding",
+  "relevance": N,
+  "factual": N,
+  "behavioral": N,
+  "reason": "简短原因（不超过40字）"
+}}"""
+
+
+def _safe_score(value: object, default: int = 8) -> int:
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(10, n))
+
+
+def _infer_decision_from_text(text: str) -> str | None:
+    if not text:
+        return None
+    lower = text.lower()
+    if "grounding" in lower:
+        return "grounding"
+    if "nudge" in lower:
+        return "nudge"
+    if "pass" in lower:
+        return "pass"
+    if re.search(r"(未验证|先搜索|缺少证据|需要验证)", text):
+        return "grounding"
+    if re.search(r"(未执行|没执行|未调用工具|空承诺|先执行)", text):
+        return "nudge"
+    return None
+
+
+def _fallback_decision_without_judge(
+    reply_text: str,
+    user_text: str,
+    tool_names_called: list[str],
+) -> tuple[str, str]:
+    called = set(tool_names_called)
+    if not called and _PROMISE_COMMITMENT_RE.search(reply_text or ""):
+        return "nudge", "judge unavailable; pending-action commitment detected"
+    if not (called & _GROUNDING_TOOLS) and requires_external_grounding(user_text or ""):
+        return "grounding", "judge unavailable; external grounding still required"
+    return "pass", "judge unavailable; fallback policy pass"
+
+
+def detect_unverified_history_assertion(
+    reply_text: str,
+    user_text: str,
+    tool_names_called: list[str],
+) -> bool:
+    if not reply_text or not user_text:
+        return False
+    if not _HISTORY_ASSERTION_REPLY_RE.search(reply_text):
+        return False
+    if "fetch_chat_history" in tool_names_called:
+        return False
+    return bool(_HISTORY_ASSERTION_USER_CHALLENGE_RE.search(user_text))
+
+
+async def _llm_exit_review_detailed(
+    reply_text: str,
+    user_text: str,
+    tool_names_called: list[str],
+    *,
+    gemini_client=None,
+) -> tuple[str, str]:
+    if gemini_client is None:
+        return "pass", ""
+    if not reply_text or len(reply_text) < 8:
+        return "pass", ""
+
+    try:
+        from google.genai import types as _t
+
+        prompt = _EXIT_REVIEW_PROMPT.format(
+            user_text=(user_text or "")[:260],
+            tools_used=", ".join(tool_names_called[-10:]) if tool_names_called else "无",
+            reply_text=reply_text[:380],
+        )
+
+        resp = await asyncio.wait_for(
+            gemini_client.aio.models.generate_content(
+                model="gemini-3-flash-preview",
+                contents=prompt + "\n\n只输出 JSON。",
+                config=_t.GenerateContentConfig(
+                    temperature=0.0,
+                    max_output_tokens=140,
+                    thinking_config=_t.ThinkingConfig(include_thoughts=False),
+                    response_mime_type="application/json",
+                    response_schema={
+                        "type": "object",
+                        "properties": {
+                            "decision": {
+                                "type": "string",
+                                "enum": ["pass", "nudge", "grounding"],
+                            },
+                            "relevance": {"type": "integer"},
+                            "factual": {"type": "integer"},
+                            "behavioral": {"type": "integer"},
+                            "reason": {"type": "string"},
+                        },
+                        "required": ["decision", "relevance", "factual", "behavioral", "reason"],
+                    },
+                ),
+            ),
+            timeout=6.0,
+        )
+
+        raw = (resp.text or "").strip()
+        raw = _extract_first_json_object(raw) or raw
+        try:
+            payload = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            payload = None
+
+        if not isinstance(payload, dict):
+            retry = await asyncio.wait_for(
+                gemini_client.aio.models.generate_content(
+                    model="gemini-3-flash-preview",
+                    contents=(
+                        "You are a neutral exit judge.\n"
+                        "Return exactly ONE token: PASS or NUDGE or GROUNDING.\n\n"
+                        f"User: {(user_text or '')[:200]}\n"
+                        f"Tools: {', '.join(tool_names_called[-8:]) if tool_names_called else 'none'}\n"
+                        f"Reply: {reply_text[:240]}"
+                    ),
+                    config=_t.GenerateContentConfig(
+                        temperature=0.0,
+                        max_output_tokens=8,
+                        thinking_config=_t.ThinkingConfig(include_thoughts=False),
+                    ),
+                ),
+                timeout=3.0,
+            )
+            token = (retry.text or "").strip().upper()
+            if "GROUNDING" in token:
+                return "grounding", "neutral judge retry: grounding"
+            if "NUDGE" in token:
+                return "nudge", "neutral judge retry: nudge"
+            if "PASS" in token:
+                return "pass", "neutral judge retry: pass"
+            verdict, reason = _fallback_decision_without_judge(reply_text, user_text, tool_names_called)
+            logger.info("exit review: cannot parse judge output %r, fallback=%s", raw[:80], verdict)
+            return verdict, reason
+
+        relevance = _safe_score(payload.get("relevance"), 8)
+        factual = _safe_score(payload.get("factual"), 8)
+        behavioral = _safe_score(payload.get("behavioral"), 8)
+        weighted = relevance * 0.4 + factual * 0.3 + behavioral * 0.3
+
+        declared = _infer_decision_from_text(str(payload.get("decision", ""))) or "pass"
+        if declared == "pass" and weighted < 6.0:
+            if factual <= min(relevance, behavioral):
+                declared = "grounding"
+            else:
+                declared = "nudge"
+        if declared in {"nudge", "grounding"} and weighted >= 8.5:
+            declared = "pass"
+
+        reason = str(payload.get("reason", "")).strip()[:120]
+        judge_context = (
+            f"decision={declared}; relevance={relevance}; factual={factual}; "
+            f"behavioral={behavioral}; weighted={weighted:.1f}; reason={reason or 'n/a'}"
+        )
+        logger.info("exit review: %s (reply=%s)", judge_context, reply_text[:60])
+        return declared, judge_context
+    except Exception:
+        verdict, reason = _fallback_decision_without_judge(reply_text, user_text, tool_names_called)
+        logger.info("exit review failed/timeout, fallback=%s", verdict)
+        return verdict, reason
 
 
 async def llm_exit_review(
@@ -2468,98 +2679,84 @@ async def llm_exit_review(
     *,
     gemini_client=None,
 ) -> str:
-    """用独立 Evaluator 对 agent 退出进行多维评分。
+    verdict, _ = await _llm_exit_review_detailed(
+        reply_text,
+        user_text,
+        tool_names_called,
+        gemini_client=gemini_client,
+    )
+    return verdict
 
-    返回: "pass"（放行退出）或 "nudge"（催促执行）或 "grounding"（催促搜索验证）。
-    超时/异常时默认 pass（fail-open）。
 
-    评分维度（借鉴 Anthropic Harness 架构 + harness/evaluate.md 量化评估）：
-    - 意图匹配度 40%：回复是否回答了用户实际问的问题
-    - 事实可靠性 30%：事实是否有工具数据支撑
-    - 行为合理性 30%：执行的行为是否被用户要求
-    加权分 < 6.0 → nudge
-    """
-    if gemini_client is None:
-        return "pass"
+async def evaluate_exit_governor(
+    reply_text: str,
+    user_text: str,
+    tool_names_called: list[str],
+    *,
+    action_outcomes: list[tuple[str, str]] | None = None,
+    gemini_client=None,
+    enable_llm_judge: bool = True,
+) -> ExitGovernorDecision:
+    if not reply_text or len(reply_text.strip()) < 4:
+        return ExitGovernorDecision(verdict="pass", reason="empty_or_short_reply")
 
-    # 太短的回复不值得审查（如 "好的"、"嗯"）
-    if not reply_text or len(reply_text) < 8:
-        return "pass"
-
-    try:
-        from google.genai import types as _t
-
-        prompt = _EXIT_REVIEW_PROMPT.format(
-            user_text=(user_text or "")[:200],
-            tools_used=", ".join(tool_names_called[-10:]) if tool_names_called else "无",
-            reply_text=reply_text[:300],
+    if detect_action_claims(
+        reply_text,
+        tool_names_called,
+        user_text=user_text,
+        action_outcomes=action_outcomes,
+    ):
+        return ExitGovernorDecision(
+            verdict="nudge",
+            reason="deterministic.action_claim",
+            nudge_text=_EXIT_NUDGE_ACTION,
         )
 
-        resp = await asyncio.wait_for(
-            gemini_client.aio.models.generate_content(
-                model="gemini-3-flash-preview",
-                contents=prompt + "\n\nReply ONLY with valid JSON. Example: {\"relevance\": 8, \"factual\": 8, \"behavioral\": 8}",
-                config=_t.GenerateContentConfig(
-                    temperature=0.0,
-                    max_output_tokens=80,
-                    thinking_config=_t.ThinkingConfig(include_thoughts=False),
-                    response_mime_type="application/json",
-                    response_schema={
-                        "type": "object",
-                        "properties": {
-                            "relevance": {"type": "integer"},
-                            "factual": {"type": "integer"},
-                            "behavioral": {"type": "integer"}
-                        },
-                        "required": ["relevance", "factual", "behavioral"]
-                    },
-                ),
-            ),
-            timeout=5.0,
+    grounding_nudge = detect_ungrounded_claims(
+        reply_text,
+        user_text,
+        tool_names_called,
+        action_outcomes=action_outcomes,
+    )
+    if grounding_nudge:
+        return ExitGovernorDecision(
+            verdict="grounding",
+            reason="deterministic.grounding",
+            nudge_text=grounding_nudge,
         )
 
-        raw = (resp.text or "").strip()
-        raw = _extract_first_json_object(raw) or raw
-        # 解析 JSON 分数
-        try:
-            scores = json.loads(raw)
-        except (json.JSONDecodeError, ValueError):
-            logger.info("exit review: cannot parse scores from %r, pass", raw[:60])
-            return "pass"
-
-        relevance = scores.get("relevance", 8)
-        factual = scores.get("factual", 8)
-        behavioral = scores.get("behavioral", 8)
-        weighted = relevance * 0.4 + factual * 0.3 + behavioral * 0.3
-
-        logger.info(
-            "exit review: relevance=%d factual=%d behavioral=%d weighted=%.1f (reply: %s)",
-            relevance, factual, behavioral, weighted, reply_text[:60],
+    if detect_unverified_history_assertion(reply_text, user_text, tool_names_called):
+        return ExitGovernorDecision(
+            verdict="nudge",
+            reason="deterministic.history_assertion",
+            nudge_text=_EXIT_NUDGE_HISTORY_ASSERTION,
         )
 
-        if weighted < 6.0:
-            # 低分 → 分析具体原因给出精准 nudge
-            if factual <= 4:
-                logger.info("exit review → grounding nudge (factual=%.0f)", factual)
-                return "grounding"
-            if behavioral <= 4:
-                logger.info("exit review → nudge (behavioral=%.0f)", behavioral)
-                return "nudge"
-            if relevance <= 4:
-                logger.info("exit review → nudge (relevance=%.0f)", relevance)
-                return "nudge"
-            # 整体偏低
-            logger.info("exit review → nudge (weighted=%.1f)", weighted)
-            return "nudge"
+    if not enable_llm_judge:
+        return ExitGovernorDecision(verdict="pass", reason="llm_judge_disabled")
 
-        logger.debug("exit review → pass (weighted=%.1f)", weighted)
-        return "pass"
+    verdict, judge_context = await _llm_exit_review_detailed(
+        reply_text,
+        user_text,
+        tool_names_called,
+        gemini_client=gemini_client,
+    )
+    if verdict == "pass":
+        return ExitGovernorDecision(
+            verdict="pass",
+            reason="llm.pass",
+            judge_context=judge_context,
+        )
 
-    except Exception:
-        # fail-OPEN: 超时/异常时放行。本地 detect_action_claims 已做了第一道检查，
-        # LLM gate 是兜底防线，超时不应阻止模型正常退出。
-        logger.info("exit review failed/timeout, defaulting to PASS (fail-open)")
-        return "pass"
+    nudge_text = _EXIT_NUDGE_GROUNDING if verdict == "grounding" else _EXIT_NUDGE_ACTION
+    if judge_context:
+        nudge_text = f"{nudge_text}\n\n[中立裁判意见]\n{judge_context}"
+    return ExitGovernorDecision(
+        verdict=verdict,
+        reason=f"llm.{verdict}",
+        nudge_text=nudge_text,
+        judge_context=judge_context,
+    )
 
 
 def _drain_inbox(inbox: asyncio.Queue) -> list[dict]:

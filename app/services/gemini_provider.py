@@ -43,9 +43,7 @@ from app.services.base_agent import (
     _get_custom_tool_risk,
     _has_unmatched_reads,
     check_unfulfilled_deliverables,
-    detect_action_claims,
-    detect_ungrounded_claims,
-    llm_exit_review,
+    evaluate_exit_governor,
     _CUSTOM_TOOL_META_NAMES,
     _GROUP_DESCRIPTIONS,
     classify_task_type,
@@ -769,30 +767,34 @@ async def _run_sub_agent(
         if not function_calls:
             reply = "\n".join(text_parts).strip()
             if reply:
-                # ── Sub-agent exit gate: 用 LLM 判断是否真的完成 ──
-                # 防止 sub-agent 在第一轮就返回"搞定了/请查看附件"但实际没调工具
+                # ── Sub-agent Exit Governor: deterministic + neutral judge ──
                 # 只 nudge 一次，避免死循环
                 if not _exit_nudged:
-                    _exit_verdict = await llm_exit_review(
-                        reply, user_text, tool_names_called,
+                    _exit_decision = await evaluate_exit_governor(
+                        reply,
+                        user_text,
+                        tool_names_called,
+                        action_outcomes=action_outcomes,
                         gemini_client=client,
+                        enable_llm_judge=True,
                     )
-                    if _exit_verdict == "nudge":
+                    if _exit_decision.verdict in {"nudge", "grounding"}:
                         _exit_nudged = True
                         logger.info(
-                            "sub-agent [%s] exit gate: nudging (reply claims action, "
-                            "tools_called=%s)", sub_agent_type, tool_names_called,
+                            "sub-agent [%s] exit governor nudge: verdict=%s reason=%s",
+                            sub_agent_type,
+                            _exit_decision.verdict,
+                            _exit_decision.reason,
                         )
-                        # 把模型的回复加入上下文，再追加 nudge 消息让它实际执行
                         contents.append(content_obj)
                         contents.append(types.Content(
                             role="user",
                             parts=[types.Part(text=(
-                                "你刚才描述了要做的事情，但还没有实际调用工具执行。"
-                                "请现在调用相应的工具来完成任务，不要只是描述。"
+                                _exit_decision.nudge_text
+                                or "请先完成必要工具执行，再退出。"
                             ))],
                         ))
-                        continue  # 回到 loop 让模型重新生成（这次带工具调用）
+                        continue
 
                 _elapsed = time.monotonic() - _loop_start
                 logger.info(
@@ -1443,7 +1445,6 @@ async def handle_message(
     _MAX_DELIVERABLE_NUDGES = 2
     _exit_gate_nudge_count = 0  # LLM exit gate 催促计数（允许最多 2 次）
     _MAX_EXIT_GATE_NUDGES = 3
-    _assertion_nudge_count = 0  # P2: 事实断言防幻觉守卫计数（最多 1 次）
     _custom_tool_thrashing_nudged = False  # P4: 自定义工具 thrashing 检测（最多 nudge 1 次）
     _empty_content_retries = 0  # 空响应重试计数（最多 3 次后用事实性总结退出）
     _pro_failures = 0  # 强模型连续 fallback 次数（熔断器）
@@ -1805,137 +1806,41 @@ async def handle_message(
                     ))
                     continue
 
-            # ── 退出前检查 4a: 快速本地检测（无 LLM 调用，instant）──
-            # 正则匹配"已经删了/加了/发了"等动作声称，对比实际工具调用
+            # ── 退出前检查 4: Exit Governor（deterministic + neutral judge）──
             # 涉及视觉分析/自定义工具调试时，放宽到 round 4+ 再检测（这类任务天然需要更多轮）
             _exit_gate_min_round = 4 if _vision_analysis_in_progress else 1
-            if _exit_gate_nudge_count < _MAX_EXIT_GATE_NUDGES and reply_text and round_num >= _exit_gate_min_round:
-                if detect_action_claims(
-                    reply_text,
-                    tool_names_called,
-                    user_text=user_text,
-                    action_outcomes=action_outcomes,
-                ):
-                    _exit_gate_nudge_count += 1
-                    logger.info(
-                        "local action-claim detector nudge #%d at round %d (reply: %s)",
-                        _exit_gate_nudge_count, round_num + 1, reply_text[:80],
-                    )
-                    contents.append(content_obj)
-                    contents.append(types.Content(
-                        role="user",
-                        parts=[types.Part(text=(
-                            "⛔ 你的回复声称已经执行了操作，但实际上没有调用任何工具。"
-                            "如果当前用户这轮明确是在要你执行某件事，请立即调用对应工具完成操作。"
-                            "如果当前用户这轮是在问解释、分析、总结、观点或资料，不要跳去执行旧任务，继续围绕当前问题回答。"
-                            "不要用文字描述你做了什么——只在当前问题确实要求行动时再调用工具。"
-                            "如果之前的操作失败了，请重新尝试。"
-                        ))],
-                    ))
-                    continue
-
-            # ── 退出前检查 4a2: Grounding gate（事实验证关卡）──
-            # 检测"回复了事实但没搜过" → 强制打回重搜
-            # 只在第一轮检测（防止后续轮重复 nudge），且只 nudge 一次
-            if _exit_gate_nudge_count < _MAX_EXIT_GATE_NUDGES and reply_text and round_num <= 1:
-                _grounding_nudge = detect_ungrounded_claims(
-                    reply_text, user_text, tool_names_called,
-                )
-                if _grounding_nudge:
-                    _exit_gate_nudge_count += 1
-                    logger.info(
-                        "grounding gate nudge at round %d (reply: %s)",
-                        round_num + 1, reply_text[:80],
-                    )
-                    contents.append(content_obj)
-                    contents.append(types.Content(
-                        role="user",
-                        parts=[types.Part(text=_grounding_nudge)],
-                    ))
-                    continue
-
-            # ── 退出前检查 4b: LLM exit gate（兜底，处理本地检测不了的复杂情况）──
-            # fail-OPEN：超时时放行（本地 detect_action_claims 已做了第一道检查）
-            # ⚠️ 关键守卫：模型已调 ≥3 工具时跳过 LLM exit review。
-            # 原因：模型在积极工作后给出的文本回复大概率是中间汇报/结果报告，
-            # 而非空承诺。LLM reviewer 无法区分人格化语气（"我错了是我傻逼"）
-            # 和真正的空承诺，误判会打断正常任务流导致模型迷失方向。
-            # 本地 detect_action_claims 已覆盖"声称做了但没做"的场景，
-            # LLM gate 只需在零工具调用时兜底。
-            _skip_llm_gate = len(tool_names_called) >= 3
-            if _skip_llm_gate:
-                logger.debug(
-                    "skipping LLM exit review: %d tools already called",
-                    len(tool_names_called),
-                )
             if (
-                not _skip_llm_gate
-                and _exit_gate_nudge_count < _MAX_EXIT_GATE_NUDGES
+                _exit_gate_nudge_count < _MAX_EXIT_GATE_NUDGES
                 and reply_text
                 and round_num >= _exit_gate_min_round
             ):
-                _gate = await llm_exit_review(
-                    reply_text, user_text, tool_names_called,
+                _exit_decision = await evaluate_exit_governor(
+                    reply_text,
+                    user_text,
+                    tool_names_called,
+                    action_outcomes=action_outcomes,
                     gemini_client=client,
+                    enable_llm_judge=True,
                 )
-                if _gate == "nudge":
+                if _exit_decision.verdict in {"nudge", "grounding"}:
                     _exit_gate_nudge_count += 1
                     logger.info(
-                        "exit gate nudge #%d at round %d (reply: %s)",
-                        _exit_gate_nudge_count, round_num + 1, reply_text[:80],
+                        "exit governor nudge #%d at round %d: verdict=%s reason=%s (reply=%s)",
+                        _exit_gate_nudge_count,
+                        round_num + 1,
+                        _exit_decision.verdict,
+                        _exit_decision.reason,
+                        reply_text[:80],
                     )
                     contents.append(content_obj)
                     contents.append(types.Content(
                         role="user",
                         parts=[types.Part(text=(
-                            "你说了要执行操作但实际上没有调用任何工具。"
-                            "请立即调用对应的工具完成操作，不要只是说你会做——直接做。"
+                            _exit_decision.nudge_text
+                            or "请先完成必要工具执行，再退出。"
                         ))],
                     ))
                     continue
-                if _gate == "grounding":
-                    _exit_gate_nudge_count += 1
-                    logger.info(
-                        "exit gate grounding nudge #%d at round %d (reply: %s)",
-                        _exit_gate_nudge_count, round_num + 1, reply_text[:80],
-                    )
-                    contents.append(content_obj)
-                    contents.append(types.Content(
-                        role="user",
-                        parts=[types.Part(text=(
-                            "⚠️ 你的回复包含具体的事实信息（人名、公司、数据等），"
-                            "但你没有调用任何搜索工具来验证。你的知识可能过时或错误。"
-                            "请先用 web_search 搜索确认，然后基于搜索结果回答。"
-                        ))],
-                    ))
-                    continue
-
-            # ── P2: 事实断言防幻觉守卫（架构层） ──
-            # 当模型声称"你之前说的是X"但从未调用 fetch_chat_history 验证时，
-            # 强制打回让它先查聊天记录，避免编造用户未说过的话。
-            # 仅在用户质疑（"不对"/"错了"/"日期不对"等）时触发，最多 nudge 1 次。
-            if (
-                reply_text
-                and _assertion_nudge_count < 1
-                and re.search(r"(你之前说|你说过|你提到过|你之前提到|你说的是|你原话)", reply_text)
-                and "fetch_chat_history" not in tool_names_called
-                and re.search(r"(不对|错了|不是|搞错|弄错|日期不对|时间不对|wrong)", user_text, re.IGNORECASE)
-            ):
-                _assertion_nudge_count += 1
-                logger.info(
-                    "P2 hallucination guard: reply asserts user's words without checking history, nudging (reply: %s)",
-                    reply_text[:80],
-                )
-                contents.append(content_obj)
-                contents.append(types.Content(
-                    role="user",
-                    parts=[types.Part(text=(
-                        "⛔ 你声称用户之前说了某句话，但你没有用 fetch_chat_history 验证。"
-                        "在断言用户说过什么之前，必须先调用 fetch_chat_history 查看原始对话记录。"
-                        "不要凭记忆回忆用户的原话——记忆可能出错。请先查记录再回复。"
-                    ))],
-                ))
-                continue
 
             if reply_text:
                 reply = _strip_hallucinated_code_blocks(_strip_degenerate_repetition(reply_text))
