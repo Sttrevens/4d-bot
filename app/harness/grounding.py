@@ -77,7 +77,7 @@ _ENTITY_TOKEN_RE = re.compile(r"[A-Z][a-z]{2,}|[A-Z]{2,}|[\u4e00-\u9fff]{2,6}")
 _EVIDENCE_URL_RE = re.compile(r"https?://[^\s\"'<>]+")
 _TOKEN_STOPWORDS = {
     "现在", "目前", "当前", "最新", "今年", "本赛季", "球队", "球员", "预测", "分析",
-    "首轮", "次轮", "东部", "西部", "总决赛", "比分", "数据", "资料", "官方", "来源",
+    "首轮", "次轮", "东部", "西部", "总决赛", "比分", "对阵", "数据", "资料", "官方", "来源",
     "query", "site", "from", "with", "that", "this", "will", "would", "should",
     "then", "than", "playoff", "playoffs", "bracket", "matchup", "matchups",
 }
@@ -218,7 +218,7 @@ def build_evidence_contract_nudge(
         f"风险级别：{risk.level}（{risk.reason}），触发原因：{reason}。"
         f"{detail}。"
         "请先补齐证据（优先 fetch_url/browser_read 等深证据），再输出最终结论；"
-        "若证据不足，请明确说“目前未查到可靠来源/无法确认”，不要把猜测写成事实。"
+        "若证据不足，请明确说“目前未查到可靠来源/无法确认”，不要把猜测写成事实。并优先引用官方来源。"
     )
 
 
@@ -254,16 +254,18 @@ def detect_evidence_contract_gap(
         )
 
     if _ENTITY_RELATION_SIGNAL_RE.search(reply_text):
-        coverage = _lexical_coverage_ratio(reply_text, ledger.evidence_text)
-        threshold = 0.35 if risk.level == "high" else 0.20
-        if coverage < threshold:
-            return build_evidence_contract_nudge(
-                risk,
-                reason="low_entity_evidence_coverage",
-                successful_evidence_count=ledger.successful_evidence_count,
-                domain_count=len(ledger.evidence_domains),
-                coverage=coverage,
-            )
+        reply_entities = _extract_entity_tokens(reply_text)
+        if len(reply_entities) >= 3:
+            coverage = _lexical_coverage_ratio(reply_text, ledger.evidence_text)
+            threshold = 0.35 if risk.level == "high" else 0.20
+            if coverage < threshold:
+                return build_evidence_contract_nudge(
+                    risk,
+                    reason="low_entity_evidence_coverage",
+                    successful_evidence_count=ledger.successful_evidence_count,
+                    domain_count=len(ledger.evidence_domains),
+                    coverage=coverage,
+                )
     return None
 
 
