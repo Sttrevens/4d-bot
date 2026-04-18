@@ -31,6 +31,7 @@ from app.harness import (
     DEFAULT_COMPACTION_KEEP_RECENT,
     build_coding_workflow_instructions,
     build_grounding_nudge,
+    detect_temporal_grounding_issue,
     compress_openai_tool_results,
     infer_turn_mode,
     is_non_actionable_turn,
@@ -2398,6 +2399,20 @@ def detect_ungrounded_claims(
 
     called = set(tool_names_called)
 
+    # 时效性事实任务必须通过年份/时态锚点校验，不能只看“是否调用过搜索工具”。
+    temporal_nudge = detect_temporal_grounding_issue(
+        reply_text,
+        user_text,
+        tool_names_called,
+        action_outcomes=action_outcomes,
+    )
+    if temporal_nudge:
+        logger.info(
+            "grounding gate: temporal grounding mismatch. user=%s reply=%s",
+            user_text[:60], reply_text[:60],
+        )
+        return temporal_nudge
+
     # 如果已经调过验证类工具，放行（不管回复内容如何）
     if called & _GROUNDING_TOOLS:
         return None
@@ -2536,10 +2551,19 @@ def _fallback_decision_without_judge(
     reply_text: str,
     user_text: str,
     tool_names_called: list[str],
+    action_outcomes: list[tuple[str, str]] | None = None,
 ) -> tuple[str, str]:
     called = set(tool_names_called)
     if not called and _PROMISE_COMMITMENT_RE.search(reply_text or ""):
         return "nudge", "judge unavailable; pending-action commitment detected"
+    temporal_nudge = detect_temporal_grounding_issue(
+        reply_text,
+        user_text,
+        tool_names_called,
+        action_outcomes=action_outcomes,
+    )
+    if temporal_nudge:
+        return "grounding", "judge unavailable; temporal grounding still required"
     if not (called & _GROUNDING_TOOLS) and requires_external_grounding(user_text or ""):
         return "grounding", "judge unavailable; external grounding still required"
     return "pass", "judge unavailable; fallback policy pass"
@@ -2564,6 +2588,7 @@ async def _llm_exit_review_detailed(
     user_text: str,
     tool_names_called: list[str],
     *,
+    action_outcomes: list[tuple[str, str]] | None = None,
     gemini_client=None,
 ) -> tuple[str, str]:
     if gemini_client is None:
@@ -2641,7 +2666,12 @@ async def _llm_exit_review_detailed(
                 return "nudge", "neutral judge retry: nudge"
             if "PASS" in token:
                 return "pass", "neutral judge retry: pass"
-            verdict, reason = _fallback_decision_without_judge(reply_text, user_text, tool_names_called)
+            verdict, reason = _fallback_decision_without_judge(
+                reply_text,
+                user_text,
+                tool_names_called,
+                action_outcomes=action_outcomes,
+            )
             logger.info("exit review: cannot parse judge output %r, fallback=%s", raw[:80], verdict)
             return verdict, reason
 
@@ -2667,7 +2697,12 @@ async def _llm_exit_review_detailed(
         logger.info("exit review: %s (reply=%s)", judge_context, reply_text[:60])
         return declared, judge_context
     except Exception:
-        verdict, reason = _fallback_decision_without_judge(reply_text, user_text, tool_names_called)
+        verdict, reason = _fallback_decision_without_judge(
+            reply_text,
+            user_text,
+            tool_names_called,
+            action_outcomes=action_outcomes,
+        )
         logger.info("exit review failed/timeout, fallback=%s", verdict)
         return verdict, reason
 
@@ -2677,12 +2712,14 @@ async def llm_exit_review(
     user_text: str,
     tool_names_called: list[str],
     *,
+    action_outcomes: list[tuple[str, str]] | None = None,
     gemini_client=None,
 ) -> str:
     verdict, _ = await _llm_exit_review_detailed(
         reply_text,
         user_text,
         tool_names_called,
+        action_outcomes=action_outcomes,
         gemini_client=gemini_client,
     )
     return verdict
@@ -2739,6 +2776,7 @@ async def evaluate_exit_governor(
         reply_text,
         user_text,
         tool_names_called,
+        action_outcomes=action_outcomes,
         gemini_client=gemini_client,
     )
     if verdict == "pass":
@@ -3233,9 +3271,22 @@ def _extract_outcome(func_name: str, result_str: str, func_args: dict | None = N
         source_url = func_args["url"][:200]
         content_len = len(result_str)
         return f"→ 从 {source_url} 读取了 {content_len} 字符数据"
+    if func_name == "web_search" and func_args and func_args.get("query"):
+        query = str(func_args["query"]).strip().replace("\n", " ")
+        query = re.sub(r"\s+", " ", query)[:140]
+        content_len = len(result_str)
+        return f"→ query={query}; 返回了 {content_len} 字符数据"
+    if func_name == "search_social_media" and func_args:
+        keyword = str(func_args.get("keyword", "")).strip().replace("\n", " ")
+        platform = str(func_args.get("platform", "")).strip().replace("\n", " ")
+        summary = f"{platform}:{keyword}".strip(":")
+        summary = re.sub(r"\s+", " ", summary)[:140]
+        content_len = len(result_str)
+        if summary:
+            return f"→ query={summary}; 返回了 {content_len} 字符数据"
+        return f"→ 返回了 {content_len} 字符数据"
 
     # 提取 URL（飞书文档/表格/文件链接等）
-    import re
     urls = re.findall(r'https?://[^\s"\'<>\]））]+', s)
     # 提取标题/文件名
     title_match = re.search(r'[「《"\'](.*?)[」》"\'"]', s[:500])

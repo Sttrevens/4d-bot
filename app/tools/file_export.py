@@ -20,11 +20,13 @@
 from __future__ import annotations
 
 import csv
+import concurrent.futures
 import io
 import json
 import logging
 import os
 import re
+import threading
 import time
 
 import httpx
@@ -51,6 +53,13 @@ _token_cache: dict[str, tuple[str, float]] = {}
 
 # 文件大小上限 (20MB)
 _MAX_FILE_SIZE = 20 * 1024 * 1024
+
+# weasyprint 渲染执行器（单线程串行），避免超时后线程无限累积
+_WEASYPRINT_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="weasyprint_pdf"
+)
+_WEASYPRINT_INFLIGHT: concurrent.futures.Future | None = None
+_WEASYPRINT_LOCK = threading.Lock()
 
 
 def _get_token_sync(corpid: str, secret: str, cache_key: str = "") -> str:
@@ -282,6 +291,28 @@ def _is_html_content(content: str) -> bool:
                          "<table", "<section", "<article", "<main"))
 
 
+def _run_with_timeout_no_wait(fn, timeout_s: float):
+    """Run fn in a worker thread and return early on timeout."""
+    global _WEASYPRINT_INFLIGHT
+    with _WEASYPRINT_LOCK:
+        if _WEASYPRINT_INFLIGHT is not None and _WEASYPRINT_INFLIGHT.done():
+            _WEASYPRINT_INFLIGHT = None
+        if _WEASYPRINT_INFLIGHT is not None:
+            raise TimeoutError("previous render still running")
+        future = _WEASYPRINT_EXECUTOR.submit(fn)
+        _WEASYPRINT_INFLIGHT = future
+    try:
+        return future.result(timeout=timeout_s)
+    except concurrent.futures.TimeoutError as exc:
+        future.cancel()
+        raise TimeoutError from exc
+    finally:
+        if future.done():
+            with _WEASYPRINT_LOCK:
+                if _WEASYPRINT_INFLIGHT is future:
+                    _WEASYPRINT_INFLIGHT = None
+
+
 def _html_to_pdf(html: str) -> bytes | None:
     """用 weasyprint 将 HTML 转为 PDF。返回 None 表示 weasyprint 不可用或超时。"""
     try:
@@ -290,7 +321,6 @@ def _html_to_pdf(html: str) -> bytes | None:
         logger.info("weasyprint not installed, falling back to fpdf2")
         return None
 
-    import concurrent.futures
     try:
         # weasyprint 渲染复杂表格可能卡 10 分钟+，加 60 秒超时保护
         def _render():
@@ -298,13 +328,11 @@ def _html_to_pdf(html: str) -> bytes | None:
                 stylesheets=[CSS(string=_BASE_PDF_CSS)]
             )
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(_render)
-            result = future.result(timeout=60)
+        result = _run_with_timeout_no_wait(_render, timeout_s=60)
 
         logger.info("weasyprint: HTML→PDF OK (%dKB)", len(result) // 1024)
         return bytes(result)
-    except concurrent.futures.TimeoutError:
+    except TimeoutError:
         logger.warning("weasyprint: render timed out (>60s), falling back to fpdf2")
         return None
     except Exception:

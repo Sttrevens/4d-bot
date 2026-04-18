@@ -22,7 +22,10 @@ from app.harness.context import (
 )
 from app.harness.grounding import (
     build_grounding_nudge,
+    build_temporal_grounding_nudge,
+    detect_temporal_grounding_issue,
     reply_contains_dense_factual_claims,
+    requires_temporal_grounding,
     requires_external_grounding,
     should_relax_fact_grounding,
 )
@@ -67,6 +70,7 @@ from app.harness.tool_escalation import (
     build_tool_settle_nudge,
     is_light_advice_turn,
 )
+from app.harness.tool_runtime import invoke_tool_handler
 
 __all__ = [
     "DEFAULT_COMPACTION_AFTER_ROUND",
@@ -80,7 +84,10 @@ __all__ = [
     "append_openai_inbox_messages",
     "normalize_inbox_item",
     "build_grounding_nudge",
+    "build_temporal_grounding_nudge",
+    "detect_temporal_grounding_issue",
     "reply_contains_dense_factual_claims",
+    "requires_temporal_grounding",
     "requires_external_grounding",
     "should_relax_fact_grounding",
     "should_compact_history",
@@ -112,4 +119,5 @@ __all__ = [
     "build_tool_domain_nudge",
     "build_tool_settle_nudge",
     "is_light_advice_turn",
+    "invoke_tool_handler",
 ]

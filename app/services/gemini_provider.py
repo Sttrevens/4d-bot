@@ -25,6 +25,7 @@ from app.harness import (
     compress_gemini_function_results,
     extract_focus_terms,
     infer_turn_mode,
+    invoke_tool_handler,
     is_query_off_topic,
     normalize_inbox_item,
     remember_active_constraints,
@@ -889,7 +890,7 @@ async def _run_sub_agent(
             if not handler:
                 return f"[ERROR] 工具 '{name}' 不存在"
             try:
-                result = handler(args) if not asyncio.iscoroutinefunction(handler) else await handler(args)
+                result = await invoke_tool_handler(handler, args)
                 record_agent_progress(name)
                 if isinstance(result, ToolResult):
                     return result.content

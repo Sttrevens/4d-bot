@@ -58,3 +58,13 @@ def test_task_turn_allows_task_calendar_tools():
         task_type="research",
     )
     assert nudge is None
+
+
+def test_file_deliverable_turn_blocks_code_exploration_drift():
+    nudge = build_tool_domain_nudge(
+        "帮我把这份评估逻辑导出成PDF发我",
+        ["search_files", "list_files"],
+        task_type="normal",
+    )
+    assert nudge is not None
+    assert "文件交付" in nudge

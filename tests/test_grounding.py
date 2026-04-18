@@ -1,6 +1,9 @@
+from datetime import datetime
+
 from app.harness import (
     build_grounding_nudge,
     reply_contains_dense_factual_claims,
+    requires_temporal_grounding,
     requires_external_grounding,
     should_relax_fact_grounding,
 )
@@ -64,3 +67,32 @@ def test_codex_pricing_nudge_rejects_fake_tool_trace():
         "<tools_used>\nweb_search → 返回了 714 字符数据\n</tools_used>\n我没胡扯啊。",
     )
     assert "不要再解释" in nudge or "先真实调用 web_search" in nudge
+
+
+def test_temporal_turn_requires_year_anchor_even_with_search_tools():
+    current_year = datetime.now().year
+    user_text = "现在NBA季后赛正式出炉了，给我每轮比分预测"
+    assert requires_temporal_grounding(user_text)
+    nudge = detect_ungrounded_claims(
+        "按这个对阵，掘金和凯尔特人会会师总决赛。",
+        user_text,
+        ["web_search"],
+        action_outcomes=[("web_search", "→ query=NBA playoffs bracket 2024 predictions; 返回了 800 字符数据")],
+    )
+    assert nudge is not None
+    assert str(current_year) in nudge
+
+
+def test_temporal_turn_passes_when_target_year_present_in_evidence():
+    current_year = datetime.now().year
+    user_text = "现在NBA季后赛正式出炉了，给我每轮比分预测"
+    nudge = detect_ungrounded_claims(
+        "我按最新对阵做了预测。",
+        user_text,
+        ["web_search", "fetch_url"],
+        action_outcomes=[
+            ("web_search", f"→ query=NBA playoffs bracket {current_year}; 返回了 780 字符数据"),
+            ("fetch_url", f"→ 从 https://example.com/{current_year}-nba-playoffs 读取了 2200 字符数据"),
+        ],
+    )
+    assert nudge is None

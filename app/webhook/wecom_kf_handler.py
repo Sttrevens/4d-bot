@@ -132,6 +132,9 @@ _BATCH_WAIT = 1.5  # 秒，等新消息的窗口期
 _user_pending: dict[str, list[dict]] = {}   # tuk → 待处理消息列表
 _batch_timers: dict[str, asyncio.Task] = {}  # tuk → 定时器任务
 
+# 进度消息去重窗口：同一条进度在短时间内不重复发送
+_PROGRESS_DEDUP_WINDOW = 45.0
+
 # ── In-flight 请求追踪（用于 shutdown 保存 + startup 恢复）──
 # request_id → {external_userid, tenant_id, text_preview, start_time}
 _in_flight: dict[str, dict] = {}
@@ -1128,9 +1131,27 @@ async def _do_agent_work(
     _current_user_open_id.set(sender_id)
 
     mode = _state.get_mode(external_userid)
+    _last_progress_text = ""
+    _last_progress_ts = 0.0
 
     async def _send_progress(msg: str) -> None:
+        nonlocal _last_progress_text, _last_progress_ts
         msg = strip_markdown(msg)
+        normalized = " ".join(msg.split())
+        now = time.time()
+        if (
+            normalized
+            and normalized == _last_progress_text
+            and (now - _last_progress_ts) < _PROGRESS_DEDUP_WINDOW
+        ):
+            logger.info(
+                "wecom_kf: suppress duplicated progress hint for %s: %s",
+                external_userid[:12],
+                normalized[:80],
+            )
+            return
+        _last_progress_text = normalized
+        _last_progress_ts = now
         for chunk in split_reply(msg, _MAX_REPLY_LEN, max_bytes=_MAX_REPLY_BYTES):
             await _safe_send(external_userid, chunk, _hit_send_limit)
 

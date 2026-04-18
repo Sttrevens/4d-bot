@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime
 
 from app.harness.turn_mode import infer_turn_mode, is_non_actionable_turn
 
@@ -38,6 +39,28 @@ _FACTUAL_CLAIM_SIGNALS = re.compile(
     r"|[\u4e00-\u9fff]{2,4}[、,，][\u4e00-\u9fff]{2,4}[、,，][\u4e00-\u9fff]{2,4}"
 )
 _FAKE_TOOL_TRACE_RE = re.compile(r"<(?:tools_used|execute_tool)>", re.IGNORECASE)
+_YEAR_RE = re.compile(r"\b((?:19|20)\d{2})\b")
+_SEASON_RE = re.compile(r"\b((?:19|20)\d{2})\s*[-/]\s*(\d{2,4})\b")
+_TEMPORAL_URGENCY_RE = re.compile(
+    r"(现在|目前|当前|最新|刚刚|刚才|今日|今天|本周|本月|今年|正式出炉|"
+    r"刚公布|实时|战况|现阶段|截至目前|最新消息)",
+    re.IGNORECASE,
+)
+_TEMPORAL_TOPIC_RE = re.compile(
+    r"(赛程|对阵|比分|战绩|排名|榜单|名单|结果|走势|发布|上架|更新|"
+    r"股价|汇率|利率|政策|法规|CEO|总统|选举|任命)",
+    re.IGNORECASE,
+)
+_CURRENT_RELATIVE_RE = re.compile(r"(今年|本赛季|当前|目前|最新|截至目前)", re.IGNORECASE)
+_EVIDENCE_TOOLS = frozenset({
+    "web_search",
+    "fetch_url",
+    "browser_open",
+    "browser_read",
+    "search_social_media",
+    "xhs_search",
+    "xhs_playwright_search",
+})
 
 
 def requires_external_grounding(user_text: str) -> bool:
@@ -49,6 +72,117 @@ def requires_external_grounding(user_text: str) -> bool:
         or _PRICING_RE.search(text)
         or _PUBLIC_ENTITY_FACT_RE.search(text)
     )
+
+
+def _extract_years(text: str) -> set[int]:
+    years: set[int] = set()
+    if not text:
+        return years
+    for m in _YEAR_RE.findall(text):
+        try:
+            years.add(int(m))
+        except ValueError:
+            continue
+    for y1_s, y2_s in _SEASON_RE.findall(text):
+        try:
+            y1 = int(y1_s)
+            y2 = int(y2_s)
+        except ValueError:
+            continue
+        if y2 < 100:
+            century = y1 // 100
+            y2 = century * 100 + y2
+            if y2 < y1:
+                y2 += 100
+        years.add(y1)
+        years.add(y2)
+    return years
+
+
+def requires_temporal_grounding(user_text: str) -> bool:
+    text = (user_text or "").strip()
+    if not text:
+        return False
+    explicit_year = bool(_extract_years(text))
+    return bool(
+        explicit_year
+        or (_TEMPORAL_URGENCY_RE.search(text) and (requires_external_grounding(text) or _TEMPORAL_TOPIC_RE.search(text)))
+    )
+
+
+def _target_years_for_turn(user_text: str) -> set[int]:
+    text = (user_text or "").strip()
+    years = _extract_years(text)
+    if years:
+        return years
+    if requires_temporal_grounding(text):
+        return {datetime.now().year}
+    return set()
+
+
+def build_temporal_grounding_nudge(
+    user_text: str,
+    *,
+    target_years: set[int],
+    observed_years: set[int] | None = None,
+) -> str:
+    years_label = " / ".join(str(y) for y in sorted(target_years)) if target_years else "当前年份"
+    observed = sorted(observed_years or set())
+    observed_label = "、".join(str(y) for y in observed) if observed else "无明确年份锚点"
+    _ = user_text
+    return (
+        "⚠️ 这是时效性事实任务，但你的证据链没有锁定正确时间锚点。"
+        f"目标年份应为：{years_label}；当前证据/回复年份：{observed_label}。"
+        "请先检索并确认目标年份对应的官方或权威来源，再给结论。"
+        "如果还未拿到该年份的数据，明确说“目前未查到可靠来源”，不要用旧年份替代。"
+    )
+
+
+def detect_temporal_grounding_issue(
+    reply_text: str,
+    user_text: str,
+    tool_names_called: list[str],
+    action_outcomes: list[tuple[str, str]] | None = None,
+) -> str | None:
+    if not user_text:
+        return None
+    if not requires_temporal_grounding(user_text):
+        return None
+
+    target_years = _target_years_for_turn(user_text)
+    if not target_years:
+        return None
+
+    called = set(tool_names_called or [])
+    if not (called & _EVIDENCE_TOOLS):
+        return build_temporal_grounding_nudge(user_text, target_years=target_years)
+
+    evidence_text = ""
+    if action_outcomes:
+        evidence_text = "\n".join(
+            outcome for name, outcome in action_outcomes if name in _EVIDENCE_TOOLS
+        )
+    reply_years = _extract_years(reply_text or "")
+    evidence_years = _extract_years(evidence_text)
+    observed_years = reply_years | evidence_years
+
+    if observed_years and not (observed_years & target_years):
+        return build_temporal_grounding_nudge(
+            user_text,
+            target_years=target_years,
+            observed_years=observed_years,
+        )
+
+    if not (observed_years & target_years):
+        if reply_text and _CURRENT_RELATIVE_RE.search(reply_text):
+            return None
+        return build_temporal_grounding_nudge(
+            user_text,
+            target_years=target_years,
+            observed_years=observed_years,
+        )
+
+    return None
 
 
 def should_relax_fact_grounding(user_text: str) -> bool:

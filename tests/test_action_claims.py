@@ -148,6 +148,13 @@ class TestFalsePositives:
             user_text="他的宿命论具体是什么逻辑",
         )
 
+    def test_explanation_frame_on_followup_continue(self):
+        assert not detect_action_claims(
+            "我来给你梳理一下我们刚才定下来的评估维度和权重",
+            [],
+            user_text="继续",
+        )
+
 
 class TestEdgeCases:
     def test_none_reply(self):
