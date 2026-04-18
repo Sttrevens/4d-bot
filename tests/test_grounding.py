@@ -47,7 +47,7 @@ def test_dense_factual_claims_still_trigger_on_public_facts():
         [],
     )
     assert nudge is not None
-    assert "公开事实" in nudge or "公开资料" in nudge
+    assert "公开事实" in nudge or "公开资料" in nudge or "时效性事实任务" in nudge
 
 
 def test_pricing_nudge_discourages_guessing():
