@@ -1,6 +1,7 @@
 from app.harness.search_guardrails import (
     extract_focus_terms,
     is_query_off_topic,
+    is_temporal_scope_drift_query,
     rewrite_web_search_query,
 )
 
@@ -48,3 +49,15 @@ def test_rewrite_prefers_weather_authoritative_domains():
         current_year=2026,
     )
     assert "site:weather.com" in rewritten or "site:noaa.gov" in rewritten
+
+
+def test_temporal_scope_drift_query_detects_future_projection_on_now_turn():
+    user_text = "现在NBA季后赛正式出炉了，给我做每轮比分预测"
+    assert is_temporal_scope_drift_query(
+        "NBA future power rankings three-year outlook 2026",
+        user_text,
+    )
+    assert not is_temporal_scope_drift_query(
+        "NBA playoff bracket matchups standings 2026",
+        user_text,
+    )

@@ -101,6 +101,11 @@ _POLICY_RE = re.compile(
     r"(政策|法规|法案|监管|公告|白皮书|行政令|law|regulation|policy|act|guideline)",
     re.IGNORECASE,
 )
+_FUTURE_SCOPE_RE = re.compile(
+    r"(future|long\s*term|three[-\s]?year|projection|projected|outlook|"
+    r"未来|长期|三年|潜力|前景|远期|王朝|dynasty|power\s*rankings?)",
+    re.IGNORECASE,
+)
 
 
 def _extract_focus_tokens(text: str) -> list[str]:
@@ -149,6 +154,21 @@ def is_query_off_topic(query: str, focus_terms: list[str] | tuple[str, ...]) -> 
         if len(term) >= 4 and term in q_text:
             return False
     return True
+
+
+def is_temporal_scope_drift_query(query: str, user_text: str) -> bool:
+    """Return True when query drifts into future/projection scope for a current-facts turn."""
+    q = (query or "").strip()
+    u = (user_text or "").strip()
+    if not q or not u:
+        return False
+    if not _TEMPORAL_NOW_RE.search(u):
+        return False
+    if _FUTURE_SCOPE_RE.search(u):
+        return False
+    if not (_SPORTS_RE.search(u) or _FINANCE_RE.search(u) or _POLICY_RE.search(u) or _WEATHER_RE.search(u)):
+        return False
+    return bool(_FUTURE_SCOPE_RE.search(q))
 
 
 def _extract_years(text: str) -> set[int]:

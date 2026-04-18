@@ -2575,23 +2575,13 @@ def _fallback_decision_without_judge(
     tool_names_called: list[str],
     action_outcomes: list[tuple[str, str]] | None = None,
 ) -> tuple[str, str]:
+    _ = user_text
+    _ = action_outcomes
     called = set(tool_names_called)
     if not called and _PROMISE_COMMITMENT_RE.search(reply_text or ""):
         return "nudge", "judge unavailable; pending-action commitment detected"
-    temporal_nudge = detect_temporal_grounding_issue(
-        reply_text,
-        user_text,
-        tool_names_called,
-        action_outcomes=action_outcomes,
-    )
-    if temporal_nudge:
-        return "grounding", "judge unavailable; temporal grounding still required"
     if _INTERMEDIATE_REPLY_RE.search(reply_text or ""):
         return "nudge", "judge unavailable; intermediate payload detected"
-    if not (called & _GROUNDING_TOOLS) and requires_external_grounding(user_text or ""):
-        return "grounding", "judge unavailable; external grounding still required"
-    if called and requires_external_grounding(user_text or ""):
-        return "nudge", "judge unavailable; require one more grounded synthesis round"
     return "pass", "judge unavailable; fallback policy pass"
 
 

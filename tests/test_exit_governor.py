@@ -96,3 +96,25 @@ async def test_exit_governor_nudges_intermediate_payload():
     )
     assert decision.verdict == "nudge"
     assert decision.reason == "deterministic.intermediate_payload"
+
+
+@pytest.mark.asyncio
+async def test_exit_governor_does_not_re_nudge_completed_turn_when_judge_unparseable():
+    fake_client = _FakeGeminiClient(
+        texts=[
+            "Here is the JSON requested:",
+            "UNPARSABLE",
+        ]
+    )
+    decision = await evaluate_exit_governor(
+        reply_text="这是基于已检索结果整理的最终预测结论。",
+        user_text="现在NBA季后赛正式出炉了，给我每轮比分预测",
+        tool_names_called=["web_search", "fetch_url"],
+        action_outcomes=[
+            ("web_search", "NBA playoffs 2026 bracket ..."),
+            ("fetch_url", "https://www.nba.com/... 2026 bracket"),
+        ],
+        gemini_client=fake_client,
+        enable_llm_judge=True,
+    )
+    assert decision.verdict == "pass"

@@ -27,6 +27,7 @@ from app.harness import (
     infer_turn_mode,
     invoke_tool_handler,
     is_query_off_topic,
+    is_temporal_scope_drift_query,
     normalize_inbox_item,
     remember_active_constraints,
     sanitize_suggested_groups,
@@ -888,6 +889,12 @@ async def _run_sub_agent(
                         "但你的搜索关键词与最近话题不一致。"
                         "请基于最近话题中的实体名重新搜索，不要跳回旧话题。"
                     )
+            _probe = _extract_search_probe(name, args)
+            if _probe and is_temporal_scope_drift_query(_probe, user_text):
+                return (
+                    "[ERROR] 当前用户问的是“现在/最新”的事实，请不要改写成“未来趋势/长期前景/三年展望”。"
+                    "请回到当前时间锚点，优先检索已出炉的官方对阵、赛程、伤病和权威战报。"
+                )
             # URL 溯源验证（sub-agent 也需要）
             _url_warn, _flagged = check_url_provenance(
                 name, args, _sub_seen_urls, _sub_blocked_urls,
@@ -2122,6 +2129,12 @@ async def handle_message(
                         "但你现在搜索的关键词与最近话题不一致。"
                         "请优先使用最近话题里的实体名继续检索，不要跳回旧话题。",
                         code="off_topic_query",
+                    )
+                elif _search_probe and is_temporal_scope_drift_query(_search_probe, user_text):
+                    result = ToolResult.error(
+                        "当前用户问的是“现在/最新”的事实，请不要改写成“未来趋势/长期前景/三年展望”。"
+                        "请回到当前时间锚点，优先检索已出炉的官方对阵、赛程、伤病和权威战报。",
+                        code="temporal_scope_drift",
                     )
                 else:
                     _url_warning, _flagged = check_url_provenance(
