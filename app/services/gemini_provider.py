@@ -34,6 +34,7 @@ from app.harness import (
     should_reuse_recent_topic,
     should_run_code_preflight,
     should_nudge_unmatched_reads,
+    rewrite_web_search_query,
 )
 from app.services.base_agent import (
     _build_system_prompt,
@@ -823,6 +824,22 @@ async def _run_sub_agent(
             func_name = fc.name
             func_args = dict(fc.args) if fc.args else {}
             _search_probe = ""
+
+            # ── Search Harness：查询重写（子 agent）──
+            if func_name == "web_search":
+                _raw_query = str(func_args.get("query", "") or "").strip()
+                _rewritten_query = rewrite_web_search_query(
+                    _raw_query,
+                    user_text=user_text,
+                )
+                if _rewritten_query and _rewritten_query != _raw_query:
+                    logger.info(
+                        "sub-agent [%s] search harness: rewrite web_search query '%s' -> '%s'",
+                        sub_agent_type,
+                        _raw_query[:120],
+                        _rewritten_query[:120],
+                    )
+                    func_args["query"] = _rewritten_query
 
             # 自动注入 tenant_id / sender 上下文
             if func_name in _CUSTOM_TOOL_META_NAMES and "tenant_id" not in func_args:
@@ -1974,6 +1991,24 @@ async def handle_message(
             fc = fc_part.function_call
             func_name = fc.name
             func_args = dict(fc.args) if fc.args else {}
+            _search_query = ""
+            _search_probe = ""
+
+            # ── Search Harness：查询重写（提高官方来源命中率）──
+            if func_name == "web_search":
+                _raw_query = str(func_args.get("query", "") or "").strip()
+                _rewritten_query = rewrite_web_search_query(
+                    _raw_query,
+                    user_text=user_text,
+                )
+                if _rewritten_query and _rewritten_query != _raw_query:
+                    logger.info(
+                        "search harness: rewrite web_search query '%s' -> '%s'",
+                        _raw_query[:120],
+                        _rewritten_query[:120],
+                    )
+                    func_args["query"] = _rewritten_query
+                _search_query = str(func_args.get("query", "") or "").strip()
 
             # 自定义工具元操作：自动注入 tenant_id
             if func_name in _CUSTOM_TOOL_META_NAMES and "tenant_id" not in func_args:
@@ -1985,6 +2020,8 @@ async def handle_message(
                     func_args["user_id"] = sender_id
                 if not func_args.get("user_name"):
                     func_args["user_name"] = sender_name
+
+            _search_probe = _extract_search_probe(func_name, func_args)
 
             call_key = f"{func_name}({json.dumps(func_args, ensure_ascii=False)})"
             call_log.append(call_key)

@@ -2465,6 +2465,10 @@ _HISTORY_ASSERTION_USER_CHALLENGE_RE = re.compile(
     r"(不对|错了|不是|搞错|弄错|日期不对|时间不对|wrong)",
     re.IGNORECASE,
 )
+_INTERMEDIATE_REPLY_RE = re.compile(
+    r"^\s*(<thought\b|<tools_used\b|<tool\b|web_search\s*→|fetch_url\s*→|search_social_media\s*→)",
+    re.IGNORECASE,
+)
 
 _EXIT_NUDGE_ACTION = (
     "你的回复里包含“准备去做/已经做了”的执行语义，但当前没有足够执行证据。"
@@ -2478,6 +2482,10 @@ _EXIT_NUDGE_GROUNDING = (
 _EXIT_NUDGE_HISTORY_ASSERTION = (
     "你在断言“用户之前说过什么”，但没有先验证原始聊天记录。"
     "在引用用户历史原话前，必须先调用 fetch_chat_history 再回答。"
+)
+_EXIT_NUDGE_INTERMEDIATE = (
+    "你输出的是中间过程（思考/工具摘要），还不是用户可读的最终答复。"
+    "请继续执行：需要信息就继续调用工具；如果已完成，请直接给用户结论。"
 )
 
 _EXIT_REVIEW_PROMPT = """\
@@ -2564,8 +2572,12 @@ def _fallback_decision_without_judge(
     )
     if temporal_nudge:
         return "grounding", "judge unavailable; temporal grounding still required"
+    if _INTERMEDIATE_REPLY_RE.search(reply_text or ""):
+        return "nudge", "judge unavailable; intermediate payload detected"
     if not (called & _GROUNDING_TOOLS) and requires_external_grounding(user_text or ""):
         return "grounding", "judge unavailable; external grounding still required"
+    if called and requires_external_grounding(user_text or ""):
+        return "nudge", "judge unavailable; require one more grounded synthesis round"
     return "pass", "judge unavailable; fallback policy pass"
 
 
@@ -2736,6 +2748,13 @@ async def evaluate_exit_governor(
 ) -> ExitGovernorDecision:
     if not reply_text or len(reply_text.strip()) < 4:
         return ExitGovernorDecision(verdict="pass", reason="empty_or_short_reply")
+
+    if _INTERMEDIATE_REPLY_RE.search(reply_text):
+        return ExitGovernorDecision(
+            verdict="nudge",
+            reason="deterministic.intermediate_payload",
+            nudge_text=_EXIT_NUDGE_INTERMEDIATE,
+        )
 
     if detect_action_claims(
         reply_text,

@@ -36,6 +36,7 @@ from app.harness.orchestrator import (
 from app.harness.search_guardrails import (
     extract_focus_terms,
     is_query_off_topic,
+    rewrite_web_search_query,
 )
 from app.harness.session_facts import (
     ContinuationContext,
@@ -94,6 +95,7 @@ __all__ = [
     "should_nudge_unmatched_reads",
     "extract_focus_terms",
     "is_query_off_topic",
+    "rewrite_web_search_query",
     "ContinuationContext",
     "build_continuation_context",
     "infer_turn_objective",

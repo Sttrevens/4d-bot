@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from datetime import datetime
 from urllib.parse import unquote
 
 _SPACE_RE = re.compile(r"\s+")
@@ -75,6 +76,32 @@ _FOCUS_FILLER_WORDS = {
     "官网",
 }
 
+_STEAM_HINT_RE = re.compile(r"(steam|游戏|发售|wishlist|愿望单)", re.IGNORECASE)
+_YEAR_RE = re.compile(r"\b((?:19|20)\d{2})\b")
+_SEASON_RE = re.compile(r"\b((?:19|20)\d{2})\s*[-/]\s*(\d{2,4})\b")
+_TEMPORAL_NOW_RE = re.compile(
+    r"(现在|目前|当前|最新|刚刚|刚出炉|今日|今天|本周|本月|今年|截至目前|latest|current|today|now)",
+    re.IGNORECASE,
+)
+_SPORTS_RE = re.compile(
+    r"(nba|wnba|nfl|mlb|nhl|季后赛|playoff|总决赛|分区决赛|对阵|战绩|排名|赛程|比分)",
+    re.IGNORECASE,
+)
+_NBA_RE = re.compile(r"\bnba\b|湖人|勇士|凯尔特人|雷霆|掘金|尼克斯|雄鹿|76人", re.IGNORECASE)
+_FINANCE_RE = re.compile(
+    r"(股价|财报|市值|营收|利润|估值|融资|汇率|利率|通胀|gdp|cpi|ppi|非农|"
+    r"stock|earnings|revenue|market cap|forex|rate)",
+    re.IGNORECASE,
+)
+_WEATHER_RE = re.compile(
+    r"(天气|气温|降雨|台风|预警|空气质量|weather|forecast|temperature|rain|storm)",
+    re.IGNORECASE,
+)
+_POLICY_RE = re.compile(
+    r"(政策|法规|法案|监管|公告|白皮书|行政令|law|regulation|policy|act|guideline)",
+    re.IGNORECASE,
+)
+
 
 def _extract_focus_tokens(text: str) -> list[str]:
     source = unquote((text or "").lower())
@@ -122,3 +149,86 @@ def is_query_off_topic(query: str, focus_terms: list[str] | tuple[str, ...]) -> 
         if len(term) >= 4 and term in q_text:
             return False
     return True
+
+
+def _extract_years(text: str) -> set[int]:
+    years: set[int] = set()
+    if not text:
+        return years
+    for m in _YEAR_RE.findall(text):
+        try:
+            years.add(int(m))
+        except ValueError:
+            continue
+    for y1_s, y2_s in _SEASON_RE.findall(text):
+        try:
+            y1 = int(y1_s)
+            y2 = int(y2_s)
+        except ValueError:
+            continue
+        if y2 < 100:
+            century = y1 // 100
+            y2 = century * 100 + y2
+            if y2 < y1:
+                y2 += 100
+        years.add(y1)
+        years.add(y2)
+    return years
+
+
+def _inject_temporal_anchor(query: str, user_text: str, *, current_year: int) -> str:
+    if _extract_years(query):
+        return query
+    context = f"{user_text} {query}".strip()
+    if not _TEMPORAL_NOW_RE.search(context):
+        return query
+    if not (
+        _SPORTS_RE.search(context)
+        or _FINANCE_RE.search(context)
+        or _WEATHER_RE.search(context)
+        or _POLICY_RE.search(context)
+    ):
+        return query
+    return f"{query} {current_year}".strip()
+
+
+def _inject_domain_hint(query: str, user_text: str) -> str:
+    lower = query.lower()
+    if "site:" in lower:
+        return query
+    context = f"{user_text} {query}".strip()
+    if _NBA_RE.search(context):
+        return f"{query} (site:nba.com OR site:espn.com OR site:cbssports.com)"
+    if _SPORTS_RE.search(context):
+        return f"{query} (site:espn.com OR site:cbssports.com)"
+    if _FINANCE_RE.search(context):
+        return f"{query} (site:finance.yahoo.com OR site:investing.com OR site:sec.gov)"
+    if _WEATHER_RE.search(context):
+        return f"{query} (site:weather.com OR site:noaa.gov)"
+    if _POLICY_RE.search(context):
+        return f"{query} site:.gov"
+    return query
+
+
+def rewrite_web_search_query(
+    query: str,
+    *,
+    user_text: str = "",
+    current_year: int | None = None,
+) -> str:
+    """Rewrite low-signal queries toward timely, authoritative sources."""
+    raw = (query or "").strip()
+    if not raw:
+        return raw
+    if current_year is None:
+        current_year = datetime.now().year
+
+    raw = _inject_temporal_anchor(raw, user_text, current_year=current_year)
+    raw = _inject_domain_hint(raw, user_text)
+
+    lower = raw.lower()
+    if "site:" in lower or "store.steampowered.com" in lower:
+        return raw
+    if _STEAM_HINT_RE.search(raw):
+        return f"{raw} site:store.steampowered.com"
+    return raw

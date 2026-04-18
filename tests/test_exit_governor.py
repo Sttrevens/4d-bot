@@ -82,3 +82,17 @@ async def test_exit_governor_accepts_structured_judge_nudge_with_context():
     assert decision.verdict == "nudge"
     assert decision.reason == "llm.nudge"
     assert "behavioral=3" in decision.nudge_text
+
+
+@pytest.mark.asyncio
+async def test_exit_governor_nudges_intermediate_payload():
+    decision = await evaluate_exit_governor(
+        reply_text="<tools_used>\nweb_search → 返回了 300 字符数据\n</tools_used>",
+        user_text="现在NBA季后赛正式出炉了，给我每轮比分预测",
+        tool_names_called=["web_search"],
+        action_outcomes=[("web_search", "→ query=NBA playoffs 2026; 返回了 300 字符数据")],
+        gemini_client=None,
+        enable_llm_judge=False,
+    )
+    assert decision.verdict == "nudge"
+    assert decision.reason == "deterministic.intermediate_payload"
