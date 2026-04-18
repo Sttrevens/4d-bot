@@ -96,3 +96,33 @@ def test_temporal_turn_passes_when_target_year_present_in_evidence():
         ],
     )
     assert nudge is None
+
+
+def test_high_risk_turn_requires_evidence_contract_for_entity_relations():
+    current_year = datetime.now().year
+    user_text = "现在NBA季后赛正式出炉了，给我每一轮比分预测"
+    nudge = detect_ungrounded_claims(
+        "老鹰会在首轮4-2淘汰尼克斯，特雷杨会主导比赛。",
+        user_text,
+        ["web_search"],
+        action_outcomes=[
+            ("web_search", f"→ query=NBA playoffs bracket {current_year}; 返回了 1200 字符数据"),
+        ],
+    )
+    assert nudge is not None
+    assert "证据账本" in nudge
+
+
+def test_medium_risk_turn_passes_when_entity_coverage_is_supported():
+    current_year = datetime.now().year
+    user_text = "这家公司现在的管理层有哪些人？"
+    nudge = detect_ungrounded_claims(
+        "执行董事张三，总经理王五，监事李四。",
+        user_text,
+        ["web_search", "fetch_url"],
+        action_outcomes=[
+            ("web_search", f"→ query=公司 管理层 张三 王五 李四 {current_year}; 返回了 920 字符数据"),
+            ("fetch_url", f"→ 从 https://example.com/company-management-{current_year} 读取了 2100 字符数据；执行董事张三 总经理王五 监事李四"),
+        ],
+    )
+    assert nudge is None

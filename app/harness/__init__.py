@@ -21,6 +21,7 @@ from app.harness.context import (
     normalize_inbox_item,
 )
 from app.harness.grounding import (
+    detect_evidence_contract_gap,
     build_grounding_nudge,
     build_temporal_grounding_nudge,
     detect_temporal_grounding_issue,
@@ -85,6 +86,7 @@ __all__ = [
     "append_openai_inbox_messages",
     "normalize_inbox_item",
     "build_grounding_nudge",
+    "detect_evidence_contract_gap",
     "build_temporal_grounding_nudge",
     "detect_temporal_grounding_issue",
     "reply_contains_dense_factual_claims",

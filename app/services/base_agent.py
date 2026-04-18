@@ -30,6 +30,7 @@ from app.harness import (
     DEFAULT_COMPACTION_AFTER_ROUND,
     DEFAULT_COMPACTION_KEEP_RECENT,
     build_coding_workflow_instructions,
+    detect_evidence_contract_gap,
     build_grounding_nudge,
     detect_temporal_grounding_issue,
     compress_openai_tool_results,
@@ -2413,7 +2414,20 @@ def detect_ungrounded_claims(
         )
         return temporal_nudge
 
-    # 如果已经调过验证类工具，放行（不管回复内容如何）
+    evidence_nudge = detect_evidence_contract_gap(
+        reply_text,
+        user_text,
+        tool_names_called,
+        action_outcomes=action_outcomes,
+    )
+    if evidence_nudge:
+        logger.info(
+            "grounding gate: evidence contract gap. user=%s reply=%s",
+            user_text[:60], reply_text[:80],
+        )
+        return evidence_nudge
+
+    # 如果已经调过验证类工具，且通过证据契约检查，则放行
     if called & _GROUNDING_TOOLS:
         return None
 

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from datetime import datetime
+from urllib.parse import urlparse
 
 from app.harness.turn_mode import infer_turn_mode, is_non_actionable_turn
 
@@ -61,6 +63,208 @@ _EVIDENCE_TOOLS = frozenset({
     "xhs_search",
     "xhs_playwright_search",
 })
+_HIGH_RISK_DECISION_RE = re.compile(
+    r"(预测|预判|推荐|建议|决策|评估|打分|胜率|比分|排名|投资|下注|买入|卖出|"
+    r"forecast|predict|projection|recommendation|strategy)",
+    re.IGNORECASE,
+)
+_ENTITY_RELATION_SIGNAL_RE = re.compile(
+    r"(效力|在.*队|加盟|转会|担任|任职|属于|对阵|vs|面对|击败|冠军|排名|"
+    r"is with|plays for|signed with|appointed as)",
+    re.IGNORECASE,
+)
+_ENTITY_TOKEN_RE = re.compile(r"[A-Z][a-z]{2,}|[A-Z]{2,}|[\u4e00-\u9fff]{2,6}")
+_EVIDENCE_URL_RE = re.compile(r"https?://[^\s\"'<>]+")
+_TOKEN_STOPWORDS = {
+    "现在", "目前", "当前", "最新", "今年", "本赛季", "球队", "球员", "预测", "分析",
+    "首轮", "次轮", "东部", "西部", "总决赛", "比分", "数据", "资料", "官方", "来源",
+    "query", "site", "from", "with", "that", "this", "will", "would", "should",
+    "then", "than", "playoff", "playoffs", "bracket", "matchup", "matchups",
+}
+_ERROR_OUTCOME_RE = re.compile(r"(失败|error|timeout|blocked|无权限|not found)", re.IGNORECASE)
+_GROUNDING_DEEP_EVIDENCE_TOOLS = frozenset({"fetch_url", "browser_read", "browser_open"})
+
+
+@dataclass(frozen=True)
+class GroundingRiskProfile:
+    level: str  # low | medium | high
+    reason: str
+
+
+@dataclass(frozen=True)
+class EvidenceLedger:
+    called_evidence_tools: frozenset[str]
+    successful_evidence_count: int
+    evidence_domains: frozenset[str]
+    observed_years: frozenset[int]
+    evidence_text: str
+
+
+def _extract_entity_tokens(text: str) -> set[str]:
+    if not text:
+        return set()
+    tokens: set[str] = set()
+    for raw in _ENTITY_TOKEN_RE.findall(text):
+        token = raw.strip()
+        if not token:
+            continue
+        lowered = token.lower()
+        if lowered in _TOKEN_STOPWORDS:
+            continue
+        if token in _TOKEN_STOPWORDS:
+            continue
+        if len(token) <= 1:
+            continue
+        tokens.add(token)
+    return tokens
+
+
+def _extract_domains(text: str) -> set[str]:
+    domains: set[str] = set()
+    if not text:
+        return domains
+    for url in _EVIDENCE_URL_RE.findall(text):
+        try:
+            host = (urlparse(url).netloc or "").lower()
+        except Exception:
+            continue
+        if host:
+            domains.add(host)
+    return domains
+
+
+def _is_successful_evidence_outcome(outcome: str) -> bool:
+    if not outcome:
+        return False
+    return not _ERROR_OUTCOME_RE.search(outcome)
+
+
+def _lexical_coverage_ratio(reply_text: str, evidence_text: str) -> float:
+    reply_tokens = _extract_entity_tokens(reply_text)
+    if not reply_tokens:
+        return 1.0
+    evidence_tokens = _extract_entity_tokens(evidence_text)
+    if not evidence_tokens:
+        return 0.0
+    hit = 0
+    evidence_text_lower = (evidence_text or "").lower()
+    for token in reply_tokens:
+        if token in evidence_tokens or token.lower() in evidence_text_lower:
+            hit += 1
+    return hit / max(1, len(reply_tokens))
+
+
+def classify_grounding_risk(user_text: str, reply_text: str) -> GroundingRiskProfile:
+    text = (user_text or "").strip()
+    if not text:
+        return GroundingRiskProfile(level="low", reason="empty_turn")
+    if should_relax_fact_grounding(text):
+        return GroundingRiskProfile(level="low", reason="conceptual_turn")
+    if requires_temporal_grounding(text):
+        return GroundingRiskProfile(level="high", reason="temporal_facts")
+    if _HIGH_RISK_DECISION_RE.search(text) and requires_external_grounding(text):
+        return GroundingRiskProfile(level="high", reason="decision_like_task")
+    if requires_external_grounding(text) or reply_contains_dense_factual_claims(reply_text):
+        return GroundingRiskProfile(level="medium", reason="fact_lookup")
+    return GroundingRiskProfile(level="low", reason="general_chat")
+
+
+def build_evidence_ledger(
+    tool_names_called: list[str],
+    action_outcomes: list[tuple[str, str]] | None = None,
+) -> EvidenceLedger:
+    called = set(tool_names_called or [])
+    called_evidence_tools = frozenset(called & _EVIDENCE_TOOLS)
+    successful_count = 0
+    domains: set[str] = set()
+    years: set[int] = set()
+    evidence_chunks: list[str] = []
+
+    for name, outcome in action_outcomes or []:
+        if name not in _EVIDENCE_TOOLS:
+            continue
+        if not _is_successful_evidence_outcome(outcome):
+            continue
+        successful_count += 1
+        trimmed = (outcome or "")[:500]
+        evidence_chunks.append(trimmed)
+        domains.update(_extract_domains(trimmed))
+        years.update(_extract_years(trimmed))
+
+    evidence_text = "\n".join(evidence_chunks)
+    return EvidenceLedger(
+        called_evidence_tools=called_evidence_tools,
+        successful_evidence_count=successful_count,
+        evidence_domains=frozenset(domains),
+        observed_years=frozenset(years),
+        evidence_text=evidence_text,
+    )
+
+
+def build_evidence_contract_nudge(
+    risk: GroundingRiskProfile,
+    *,
+    reason: str,
+    successful_evidence_count: int,
+    domain_count: int,
+    coverage: float | None = None,
+) -> str:
+    detail = (
+        f"当前证据条数={successful_evidence_count}，来源域名数={domain_count}"
+        + (f"，实体覆盖率={coverage:.2f}" if coverage is not None else "")
+    )
+    return (
+        "⚠️ 这是事实型回答，当前还没满足“证据账本”要求。"
+        f"风险级别：{risk.level}（{risk.reason}），触发原因：{reason}。"
+        f"{detail}。"
+        "请先补齐证据（优先 fetch_url/browser_read 等深证据），再输出最终结论；"
+        "若证据不足，请明确说“目前未查到可靠来源/无法确认”，不要把猜测写成事实。"
+    )
+
+
+def detect_evidence_contract_gap(
+    reply_text: str,
+    user_text: str,
+    tool_names_called: list[str],
+    action_outcomes: list[tuple[str, str]] | None = None,
+) -> str | None:
+    if not reply_text or not user_text:
+        return None
+
+    risk = classify_grounding_risk(user_text, reply_text)
+    if risk.level == "low":
+        return None
+
+    ledger = build_evidence_ledger(tool_names_called, action_outcomes)
+    if ledger.successful_evidence_count == 0:
+        return build_evidence_contract_nudge(
+            risk,
+            reason="missing_evidence",
+            successful_evidence_count=ledger.successful_evidence_count,
+            domain_count=len(ledger.evidence_domains),
+        )
+
+    has_deep_evidence = bool(ledger.called_evidence_tools & _GROUNDING_DEEP_EVIDENCE_TOOLS)
+    if risk.level == "high" and ledger.successful_evidence_count < 2 and not has_deep_evidence:
+        return build_evidence_contract_nudge(
+            risk,
+            reason="insufficient_sources_for_high_risk",
+            successful_evidence_count=ledger.successful_evidence_count,
+            domain_count=len(ledger.evidence_domains),
+        )
+
+    if _ENTITY_RELATION_SIGNAL_RE.search(reply_text):
+        coverage = _lexical_coverage_ratio(reply_text, ledger.evidence_text)
+        threshold = 0.35 if risk.level == "high" else 0.20
+        if coverage < threshold:
+            return build_evidence_contract_nudge(
+                risk,
+                reason="low_entity_evidence_coverage",
+                successful_evidence_count=ledger.successful_evidence_count,
+                domain_count=len(ledger.evidence_domains),
+                coverage=coverage,
+            )
+    return None
 
 
 def requires_external_grounding(user_text: str) -> bool:
