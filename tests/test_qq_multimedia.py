@@ -252,16 +252,12 @@ class TestQQAPIHelpers:
         """已经是 data URL 的直接返回。"""
         import asyncio
         ch = QQChannel()
-        result = asyncio.get_event_loop().run_until_complete(
-            ch.download_image("msg1", "data:image/png;base64,abc123")
-        )
+        result = asyncio.run(ch.download_image("msg1", "data:image/png;base64,abc123"))
         assert result == "data:image/png;base64,abc123"
 
     def test_download_image_empty(self):
         """空 image_key 返回空字符串。"""
         import asyncio
         ch = QQChannel()
-        result = asyncio.get_event_loop().run_until_complete(
-            ch.download_image("msg1", "")
-        )
+        result = asyncio.run(ch.download_image("msg1", ""))
         assert result == ""

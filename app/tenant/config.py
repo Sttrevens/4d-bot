@@ -62,6 +62,24 @@ class ChannelConfig:
     qq_app_secret: str = ""               # QQ 开放平台 AppSecret
     qq_token: str = ""                    # Webhook 回调验证 token（Ed25519 seed）
 
+    @property
+    def prompt_hint(self) -> str:
+        if self.platform == "feishu":
+            return (
+                "用户在飞书上与你对话。你可以处理飞书里的文档、日历、任务、"
+                "多维表格、邮件与团队协作流程。"
+            )
+        if self.platform == "wecom":
+            return "用户在企业微信上与你对话。优先围绕企业内部沟通和协作来响应。"
+        if self.platform == "wecom_kf":
+            return (
+                "用户在微信客服里与你对话。你主要通过会话答疑、跟进和服务客户，"
+                "不要默认承诺飞书类协作能力。"
+            )
+        if self.platform == "qq":
+            return "用户在 QQ 上与你对话。QQ 平台不支持创建文档/日历等飞书专属功能。"
+        return ""
+
 
 # ── Tenant / Bot 身份层 ──
 
@@ -133,6 +151,7 @@ class TenantConfig:
     scheduler_timezone: str = "Asia/Shanghai"
 
     # ── 人设模式 ──
+    # true = 使用自定义身份/语气模板，但仍继承全局职业行为、安全边界与事实约束
     custom_persona: bool = False
 
     # ── 纯文本路由 ──

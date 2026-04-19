@@ -38,6 +38,19 @@ from app.tenant.context import SenderContext
 logger = logging.getLogger(__name__)
 
 
+def needs_reauth(*args, **kwargs) -> bool:
+    """Backward-compatible no-op kept for older tests/callers."""
+    return False
+
+
+def _int_config(value, default: int = 0) -> int:
+    return value if isinstance(value, int) else default
+
+
+def _bool_config(value, default: bool = False) -> bool:
+    return value if isinstance(value, bool) else default
+
+
 # ── 多模态检测（三层策略，从精确到模糊）──
 
 _VIDEO_PLATFORM_RE = re.compile(
@@ -121,8 +134,9 @@ async def route_message(
     _apply_agent_profile(tenant, channel_platform, chat_id, chat_type, sender_id)
     _resolve_identity(tenant, channel_platform, sender_id, sender_name)
 
-    if tenant.allowed_users:
-        allowed_ids = {u.get("external_userid", "") for u in tenant.allowed_users if isinstance(u, dict)}
+    allowed_users = getattr(tenant, "allowed_users", [])
+    if isinstance(allowed_users, (list, tuple)) and allowed_users:
+        allowed_ids = {u.get("external_userid", "") for u in allowed_users if isinstance(u, dict)}
         if sender_id not in allowed_ids:
             logger.warning("access denied: tenant=%s sender=%s not in allowed_users",
                            tenant.tenant_id, sender_id[:12])
@@ -142,9 +156,9 @@ async def route_message(
                        tenant.tenant_id, sender_id[:12], rate_reason)
         return rate_reason
 
-    if tenant.trial_enabled:
+    if _bool_config(getattr(tenant, "trial_enabled", False)):
         trial_ok, trial_reason = check_trial(
-            tenant.tenant_id, sender_id, tenant.trial_duration_hours,
+            tenant.tenant_id, sender_id, _int_config(getattr(tenant, "trial_duration_hours", 48), 48),
             display_name=sender_name,
         )
         if not trial_ok:
@@ -152,9 +166,10 @@ async def route_message(
                            tenant.tenant_id, sender_id[:12], trial_reason)
             return trial_reason
 
-    if tenant.quota_user_tokens_6h:
+    q6h_limit = _int_config(getattr(tenant, "quota_user_tokens_6h", 0), 0)
+    if q6h_limit:
         q6h_ok, q6h_reason = check_user_token_quota(
-            tenant.tenant_id, sender_id, tenant.quota_user_tokens_6h,
+            tenant.tenant_id, sender_id, q6h_limit,
         )
         if not q6h_ok:
             logger.warning("6h token quota exceeded: tenant=%s sender=%s", tenant.tenant_id, sender_id[:12])

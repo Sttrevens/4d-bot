@@ -262,8 +262,8 @@ def _diff_review_hints(old: str, new: str, path: str) -> str:
 
     names = ", ".join(sorted(relevant)[:8])
     return (
-        f"⚠️ 变更涉及 {names}。"
-        f"用 search_code 搜索这些标识符，确认没有其他地方需要同步修改。"
+        f"⚠️ 变更审查提醒：这次修改涉及 {names}。"
+        f"请用 search_code 搜索这些标识符，确认没有其他地方需要同步修改。"
     )
 
 
