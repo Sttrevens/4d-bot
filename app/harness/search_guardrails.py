@@ -106,6 +106,20 @@ _FUTURE_SCOPE_RE = re.compile(
     r"未来|长期|三年|潜力|前景|远期|王朝|dynasty|power\s*rankings?)",
     re.IGNORECASE,
 )
+_PREDICTION_TASK_RE = re.compile(
+    r"(预测|预判|推演|胜率|比分|推荐|策略|odds|forecast|prediction|predict|projection)",
+    re.IGNORECASE,
+)
+_FACT_PACK_QUERY_RE = re.compile(
+    r"(bracket|matchup|matchups|standings|schedule|injur|injury|seed|play-?in|official|confirmed|"
+    r"对阵|排名|赛程|伤病|附加赛|名单|战报|赛果|实时)",
+    re.IGNORECASE,
+)
+_OPINION_QUERY_RE = re.compile(
+    r"(expert|experts|picks?|预测|前瞻|盘口|odds|power\s*rankings?|future|outlook|projection|"
+    r"专家|看好|冠军归属|谁会夺冠|谁能夺冠)",
+    re.IGNORECASE,
+)
 
 
 def _extract_focus_tokens(text: str) -> list[str]:
@@ -169,6 +183,32 @@ def is_temporal_scope_drift_query(query: str, user_text: str) -> bool:
     if not (_SPORTS_RE.search(u) or _FINANCE_RE.search(u) or _POLICY_RE.search(u) or _WEATHER_RE.search(u)):
         return False
     return bool(_FUTURE_SCOPE_RE.search(q))
+
+
+def requires_fact_pack_first(user_text: str) -> bool:
+    """Return True when the turn is a current-facts prediction/decision task."""
+    u = (user_text or "").strip()
+    if not u:
+        return False
+    if not _TEMPORAL_NOW_RE.search(u):
+        return False
+    if not _PREDICTION_TASK_RE.search(u):
+        return False
+    return bool(_SPORTS_RE.search(u) or _FINANCE_RE.search(u) or _POLICY_RE.search(u))
+
+
+def is_fact_pack_query(query: str) -> bool:
+    q = (query or "").strip()
+    if not q:
+        return False
+    return bool(_FACT_PACK_QUERY_RE.search(q))
+
+
+def is_opinion_query(query: str) -> bool:
+    q = (query or "").strip()
+    if not q:
+        return False
+    return bool(_OPINION_QUERY_RE.search(q))
 
 
 def _extract_years(text: str) -> set[int]:

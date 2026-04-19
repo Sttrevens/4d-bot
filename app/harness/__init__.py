@@ -36,7 +36,10 @@ from app.harness.orchestrator import (
 )
 from app.harness.search_guardrails import (
     extract_focus_terms,
+    is_fact_pack_query,
+    is_opinion_query,
     is_query_off_topic,
+    requires_fact_pack_first,
     is_temporal_scope_drift_query,
     rewrite_web_search_query,
 )
@@ -97,7 +100,10 @@ __all__ = [
     "should_compact_history",
     "should_nudge_unmatched_reads",
     "extract_focus_terms",
+    "is_fact_pack_query",
+    "is_opinion_query",
     "is_query_off_topic",
+    "requires_fact_pack_first",
     "is_temporal_scope_drift_query",
     "rewrite_web_search_query",
     "ContinuationContext",

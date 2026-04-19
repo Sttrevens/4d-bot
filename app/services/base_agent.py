@@ -2225,7 +2225,27 @@ _DELIVERABLE_PATTERNS: list[tuple[_re.Pattern, frozenset[str], str]] = [
 ]
 
 
-def check_unfulfilled_deliverables(user_text: str, tool_names: list[str]) -> list[str]:
+def _feishu_doc_written_successfully(action_outcomes: list[tuple[str, str]] | None) -> bool:
+    if not action_outcomes:
+        return False
+    write_tools = {"write_feishu_doc", "update_feishu_doc", "edit_feishu_doc"}
+    write_markers = (
+        "已写入", "内容已写入", "文档已更新", "写入成功", "成功写入", "blocks", "内容块",
+    )
+    for func_name, outcome in action_outcomes:
+        text = str(outcome or "")
+        if func_name == "create_feishu_doc" and "内容已写入" in text:
+            return True
+        if func_name in write_tools and any(marker in text for marker in write_markers):
+            return True
+    return False
+
+
+def check_unfulfilled_deliverables(
+    user_text: str,
+    tool_names: list[str],
+    action_outcomes: list[tuple[str, str]] | None = None,
+) -> list[str]:
     """检查用户要求的交付物是否已由对应工具生成。
 
     返回未生成的交付物名称列表（空 = 全部满足或用户没要求文件）。
@@ -2233,8 +2253,15 @@ def check_unfulfilled_deliverables(user_text: str, tool_names: list[str]) -> lis
     called = set(tool_names)
     missing: list[str] = []
     for pattern, required_tools, display_name in _DELIVERABLE_PATTERNS:
-        if pattern.search(user_text) and not (called & required_tools):
+        if not pattern.search(user_text):
+            continue
+        if not (called & required_tools):
             missing.append(display_name)
+            continue
+        # 飞书文档是“创建 + 写入”两步事务：仅 create_feishu_doc 但未写内容视为未完成
+        if display_name == "报告文件" and "create_feishu_doc" in called:
+            if not _feishu_doc_written_successfully(action_outcomes):
+                missing.append(display_name)
     return missing
 
 
@@ -3316,6 +3343,17 @@ def _extract_outcome(func_name: str, result_str: str, func_args: dict | None = N
     title = title_match.group(1)[:60] if title_match else ""
 
     # 按工具类型定制摘要
+    if func_name == "create_feishu_doc":
+        _has_content = bool(str((func_args or {}).get("content", "")).strip())
+        _parts = ["→ 成功"]
+        if _has_content:
+            _parts.append("内容已写入")
+        else:
+            _parts.append("仅创建文档（未写入内容）")
+        if urls:
+            _parts.append(urls[0][:120])
+        return " ".join(_parts)
+
     _WRITE_TOOLS = {
         "create_document", "create_feishu_doc", "edit_feishu_doc",
         "write_feishu_doc", "update_feishu_doc",

@@ -26,10 +26,13 @@ from app.harness import (
     extract_focus_terms,
     infer_turn_mode,
     invoke_tool_handler,
+    is_fact_pack_query,
+    is_opinion_query,
     is_query_off_topic,
     is_temporal_scope_drift_query,
     normalize_inbox_item,
     remember_active_constraints,
+    requires_fact_pack_first,
     sanitize_suggested_groups,
     should_compact_history,
     should_reuse_recent_topic,
@@ -171,6 +174,8 @@ def _extract_search_probe(func_name: str, func_args: dict) -> str:
     """Extract a normalized query-like string from search-oriented tool args."""
     if func_name == "web_search":
         return str(func_args.get("query", "") or "").strip()
+    if func_name == "fetch_url":
+        return str(func_args.get("url", "") or "").strip()
     if func_name in {"search_social_media", "get_platform_search_url"}:
         return str(func_args.get("keyword", "") or "").strip()
     if func_name == "browser_open":
@@ -518,6 +523,7 @@ def _clean_error_msg(raw: str, max_len: int = 120) -> str:
 def _maybe_record_watchdog(
     user_text: str,
     tool_names_called: list[str],
+    action_outcomes: list[tuple[str, str]],
     sender_id: str,
     sender_name: str,
     chat_id: str,
@@ -525,7 +531,11 @@ def _maybe_record_watchdog(
     reply: str,
 ) -> None:
     """检查是否有未完成交付物，有则记录到 watchdog 供后台重试。"""
-    missing = check_unfulfilled_deliverables(user_text, tool_names_called)
+    missing = check_unfulfilled_deliverables(
+        user_text,
+        tool_names_called,
+        action_outcomes,
+    )
     if not missing:
         return
     try:
@@ -686,6 +696,8 @@ async def _run_sub_agent(
     call_log: list[str] = []
     tool_names_called: list[str] = []
     action_outcomes: list[tuple[str, str]] = []
+    _fact_pack_required = requires_fact_pack_first(user_text)
+    _fact_pack_ready = not _fact_pack_required
     _loop_start = time.monotonic()
     _escalated = False
     _pro_failures = 0
@@ -895,6 +907,17 @@ async def _run_sub_agent(
                     "[ERROR] 当前用户问的是“现在/最新”的事实，请不要改写成“未来趋势/长期前景/三年展望”。"
                     "请回到当前时间锚点，优先检索已出炉的官方对阵、赛程、伤病和权威战报。"
                 )
+            if (
+                _fact_pack_required
+                and not _fact_pack_ready
+                and _probe
+                and is_opinion_query(_probe)
+                and not is_fact_pack_query(_probe)
+            ):
+                return (
+                    "[ERROR] 这类预测任务必须先完成事实基线（官方对阵、赛程、伤病、战绩）。"
+                    "请先检索并核对事实表，再做专家观点或预测类搜索。"
+                )
             # URL 溯源验证（sub-agent 也需要）
             _url_warn, _flagged = check_url_provenance(
                 name, args, _sub_seen_urls, _sub_blocked_urls,
@@ -947,6 +970,21 @@ async def _run_sub_agent(
         # 组装 response_parts + 记录
         response_parts: list[types.Part] = []
         for (func_name, func_args, _), result_str in zip(_fc_items, result_strs):
+            _probe = _extract_search_probe(func_name, func_args)
+            _is_error = str(result_str).startswith("[ERROR]")
+            if (
+                _fact_pack_required
+                and not _fact_pack_ready
+                and not _is_error
+                and _probe
+                and is_fact_pack_query(_probe)
+            ):
+                _fact_pack_ready = True
+                logger.info(
+                    "sub-agent [%s] fact-pack baseline ready via %s",
+                    sub_agent_type,
+                    func_name,
+                )
             # Sub-agent URL 溯源：在截断前从完整数据中提取 URL
             _sub_seen_urls.update(extract_urls(result_str))
 
@@ -1450,6 +1488,8 @@ async def handle_message(
     call_log: list[str] = []
     tool_names_called: list[str] = []
     action_outcomes: list[tuple[str, str]] = []  # (tool_name, outcome_summary)
+    _fact_pack_required = requires_fact_pack_first(user_text)
+    _fact_pack_ready = not _fact_pack_required
     _followup_focus_mode = should_reuse_recent_topic(user_text, image_urls)
     _focus_seed: list[str] = [user_text]
     if chat_context:
@@ -1677,7 +1717,11 @@ async def handle_message(
             if tool_names_called:
                 # 交付物检查：模型返回空但还有未生成的文件 → 催促继续
                 if _deliverable_nudge_count < _MAX_DELIVERABLE_NUDGES:
-                    _missing = check_unfulfilled_deliverables(user_text, tool_names_called)
+                    _missing = check_unfulfilled_deliverables(
+                        user_text,
+                        tool_names_called,
+                        action_outcomes,
+                    )
                     if _missing:
                         _deliverable_nudge_count += 1
                         logger.info("empty candidates + unfulfilled deliverables %s, nudging", _missing)
@@ -1693,7 +1737,16 @@ async def handle_message(
                             len(tool_names_called))
                 reply = _build_empty_model_reply(user_text, tool_names_called, action_outcomes)
                 _trigger_memory(sender_id, sender_name, user_text, reply, tool_names_called, call_log, action_outcomes)
-                _maybe_record_watchdog(user_text, tool_names_called, sender_id, sender_name, chat_id, chat_type, reply)
+                _maybe_record_watchdog(
+                    user_text,
+                    tool_names_called,
+                    action_outcomes,
+                    sender_id,
+                    sender_name,
+                    chat_id,
+                    chat_type,
+                    reply,
+                )
                 return reply
             return _build_empty_model_reply(user_text, tool_names_called, action_outcomes)
 
@@ -1726,7 +1779,11 @@ async def handle_message(
                 if _empty_content_retries <= 3:
                     # 交付物检查优先
                     if _deliverable_nudge_count < _MAX_DELIVERABLE_NUDGES:
-                        _missing = check_unfulfilled_deliverables(user_text, tool_names_called)
+                        _missing = check_unfulfilled_deliverables(
+                            user_text,
+                            tool_names_called,
+                            action_outcomes,
+                        )
                         if _missing:
                             _deliverable_nudge_count += 1
                             logger.info("empty content + unfulfilled deliverables %s, nudging", _missing)
@@ -1762,7 +1819,16 @@ async def handle_message(
                     repeated=True,
                 )
                 _trigger_memory(sender_id, sender_name, user_text, reply, tool_names_called, call_log, action_outcomes)
-                _maybe_record_watchdog(user_text, tool_names_called, sender_id, sender_name, chat_id, chat_type, reply)
+                _maybe_record_watchdog(
+                    user_text,
+                    tool_names_called,
+                    action_outcomes,
+                    sender_id,
+                    sender_name,
+                    chat_id,
+                    chat_type,
+                    reply,
+                )
                 return reply
             return _build_empty_model_reply(
                 user_text,
@@ -1856,7 +1922,11 @@ async def handle_message(
             # ── 退出前检查 3: 用户要的文件没生成 ──
             # 用户说"生成 PDF 和 PPT"但 export_file 从未被调用 → 催模型继续
             if _deliverable_nudge_count < _MAX_DELIVERABLE_NUDGES and round_num >= 1:
-                _missing = check_unfulfilled_deliverables(user_text, tool_names_called)
+                _missing = check_unfulfilled_deliverables(
+                    user_text,
+                    tool_names_called,
+                    action_outcomes,
+                )
                 if _missing:
                     _deliverable_nudge_count += 1
                     logger.info(
@@ -1915,7 +1985,16 @@ async def handle_message(
                 # 模型返回空文本（如全是 thinking parts 被过滤）→ 事实性总结，不再问 LLM
                 reply = _build_factual_summary(tool_names_called, action_outcomes)
             _trigger_memory(sender_id, sender_name, user_text, reply, tool_names_called, call_log, action_outcomes)
-            _maybe_record_watchdog(user_text, tool_names_called, sender_id, sender_name, chat_id, chat_type, reply)
+            _maybe_record_watchdog(
+                user_text,
+                tool_names_called,
+                action_outcomes,
+                sender_id,
+                sender_name,
+                chat_id,
+                chat_type,
+                reply,
+            )
             return reply
 
         # ── 智能进度通知 ──
@@ -2136,6 +2215,17 @@ async def handle_message(
                         "请回到当前时间锚点，优先检索已出炉的官方对阵、赛程、伤病和权威战报。",
                         code="temporal_scope_drift",
                     )
+                elif (
+                    _fact_pack_required
+                    and not _fact_pack_ready
+                    and _search_probe
+                    and is_opinion_query(_search_probe)
+                    and not is_fact_pack_query(_search_probe)
+                ):
+                    result = ToolResult.error(
+                        "先完成事实基线：请先检索官方对阵、赛程、伤病与战绩，再做专家观点/预测类搜索。",
+                        code="fact_pack_required",
+                    )
                 else:
                     _url_warning, _flagged = check_url_provenance(
                         func_name, func_args, _seen_urls, _blocked_urls,
@@ -2173,7 +2263,9 @@ async def handle_message(
             record_agent_progress(func_name)
 
             # 统一处理结果
+            _result_ok = True
             if isinstance(result, ToolResult):
+                _result_ok = result.ok
                 if not result.ok:
                     record_error(
                         "tool_error",
@@ -2185,11 +2277,27 @@ async def handle_message(
                 result_str = result.get("text", "")
             elif isinstance(result, str):
                 if "[ERROR]" in result:
+                    _result_ok = False
                     record_error("tool_error", f"{func_name} → {result[:300]}",
                                  tool_name=func_name, tool_args=func_args)
                 result_str = result
             else:
                 result_str = str(result)
+
+            if (
+                _fact_pack_required
+                and not _fact_pack_ready
+                and _result_ok
+                and _search_probe
+                and is_fact_pack_query(_search_probe)
+            ):
+                _fact_pack_ready = True
+                logger.info(
+                    "fact-pack baseline ready at round %d via %s (%s)",
+                    round_num + 1,
+                    func_name,
+                    _search_probe[:120],
+                )
 
             # URL 溯源：在截断前从完整数据中提取所有 URL（截断后的 URL 仍可用于溯源验证）
             _seen_urls.update(extract_urls(result_str))
@@ -2208,10 +2316,7 @@ async def handle_message(
             ))
 
             # 工具性能追踪（经验沉淀：成功/失败率 + 错误模式）
-            _tool_ok = not (
-                (isinstance(result, ToolResult) and not result.ok)
-                or (isinstance(result, str) and "[ERROR]" in result)
-            )
+            _tool_ok = _result_ok
             _tool_err = ""
             if not _tool_ok:
                 _tool_err = result_str[:200] if result_str else ""
@@ -2303,7 +2408,16 @@ async def handle_message(
     logger.warning("max rounds (%d) reached", _MAX_ROUNDS)
     reply = _build_factual_summary(tool_names_called, action_outcomes, "已达到最大执行轮次。")
     _trigger_memory(sender_id, sender_name, user_text, reply, tool_names_called, call_log, action_outcomes)
-    _maybe_record_watchdog(user_text, tool_names_called, sender_id, sender_name, chat_id, chat_type, reply)
+    _maybe_record_watchdog(
+        user_text,
+        tool_names_called,
+        action_outcomes,
+        sender_id,
+        sender_name,
+        chat_id,
+        chat_type,
+        reply,
+    )
     return reply
 
 
