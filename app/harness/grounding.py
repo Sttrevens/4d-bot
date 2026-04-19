@@ -62,7 +62,33 @@ _EVIDENCE_TOOLS = frozenset({
     "search_social_media",
     "xhs_search",
     "xhs_playwright_search",
+    "fetch_chat_history",
+    "read_feishu_doc",
+    "read_feishu_wiki",
+    "list_feishu_tasks",
+    "list_tasklist_tasks",
+    "list_calendar_events",
+    "get_feishu_minute_transcript",
 })
+_FIRST_PARTY_EVIDENCE_TOOLS = frozenset({
+    "fetch_chat_history",
+    "recall_memory",
+    "read_feishu_doc",
+    "read_feishu_wiki",
+    "list_feishu_tasks",
+    "list_tasklist_tasks",
+    "list_calendar_events",
+    "get_feishu_minute_transcript",
+})
+_FIRST_PARTY_SCOPE_RE = re.compile(
+    r"(飞书|企微|微信群|群聊|大群|群里|本群|私聊|聊天记录|会话|频道|消息记录|"
+    r"会议纪要|纪要|任务列表|日历)",
+    re.IGNORECASE,
+)
+_FIRST_PARTY_LOOKUP_RE = re.compile(
+    r"(看看|看下|查看|翻|爬楼|回顾|总结|同步|参与讨论|跟进|接着聊|刚才说|上条)",
+    re.IGNORECASE,
+)
 _HIGH_RISK_DECISION_RE = re.compile(
     r"(预测|预判|推荐|建议|决策|评估|打分|胜率|比分|排名|投资|下注|买入|卖出|"
     r"forecast|predict|projection|recommendation|strategy)",
@@ -98,6 +124,15 @@ class EvidenceLedger:
     evidence_domains: frozenset[str]
     observed_years: frozenset[int]
     evidence_text: str
+
+
+def _is_first_party_context_turn(user_text: str) -> bool:
+    text = (user_text or "").strip()
+    if not text:
+        return False
+    if not _FIRST_PARTY_SCOPE_RE.search(text):
+        return False
+    return bool(_FIRST_PARTY_LOOKUP_RE.search(text) or _TEMPORAL_URGENCY_RE.search(text))
 
 
 def _extract_entity_tokens(text: str) -> set[str]:
@@ -273,6 +308,8 @@ def requires_external_grounding(user_text: str) -> bool:
     text = (user_text or "").strip()
     if not text:
         return False
+    if _is_first_party_context_turn(text):
+        return False
     return bool(
         _EXPLICIT_RESEARCH_RE.search(text)
         or _PRICING_RE.search(text)
@@ -321,6 +358,8 @@ def _target_years_for_turn(user_text: str) -> set[int]:
     years = _extract_years(text)
     if years:
         return years
+    if _is_first_party_context_turn(text):
+        return set()
     if requires_temporal_grounding(text):
         return {datetime.now().year}
     return set()
@@ -352,6 +391,19 @@ def detect_temporal_grounding_issue(
 ) -> str | None:
     if not user_text:
         return None
+    if _is_first_party_context_turn(user_text):
+        called = set(tool_names_called or [])
+        if called & _FIRST_PARTY_EVIDENCE_TOOLS:
+            if not action_outcomes:
+                return None
+            for name, outcome in action_outcomes:
+                if name in _FIRST_PARTY_EVIDENCE_TOOLS and _is_successful_evidence_outcome(outcome):
+                    return None
+        return (
+            "⚠️ 这是第一方上下文任务（群聊/会话/内部记录）。"
+            "请先调用 fetch_chat_history / recall_memory / read_feishu_doc 等工具拿到当前上下文，"
+            "再总结或参与讨论；不要跳到外部年份检索。"
+        )
     if not requires_temporal_grounding(user_text):
         return None
 

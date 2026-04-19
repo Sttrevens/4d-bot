@@ -2410,6 +2410,9 @@ _GROUNDING_TOOLS = frozenset({
     "web_search", "fetch_url", "browser_open", "browser_read",
     "search_social_media", "xhs_search", "xhs_playwright_search",
     "recall_memory",
+    "fetch_chat_history", "read_feishu_doc", "read_feishu_wiki",
+    "list_feishu_tasks", "list_tasklist_tasks", "list_calendar_events",
+    "get_feishu_minute_transcript",
 })
 
 def detect_ungrounded_claims(

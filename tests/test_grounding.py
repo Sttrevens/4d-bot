@@ -126,3 +126,29 @@ def test_medium_risk_turn_passes_when_entity_coverage_is_supported():
         ],
     )
     assert nudge is None
+
+
+def test_first_party_context_turn_skips_external_year_anchor():
+    user_text = "去CAMDOWN大群里看看最新消息，试着参与讨论"
+    nudge = detect_ungrounded_claims(
+        "我刚看完群聊，大家在讨论新 shader 的反馈。",
+        user_text,
+        ["list_bot_groups", "fetch_chat_history", "send_message_to_group"],
+        action_outcomes=[
+            ("fetch_chat_history", "→ 返回了 1800 字符数据"),
+            ("send_message_to_group", "→ 成功"),
+        ],
+    )
+    assert nudge is None
+
+
+def test_first_party_context_turn_requires_context_read_before_summary():
+    user_text = "去项目群里看看最新消息，帮我同步一下"
+    nudge = detect_ungrounded_claims(
+        "我已经看完群聊了，当前讨论主要集中在视觉改版。",
+        user_text,
+        ["send_message_to_group"],
+        action_outcomes=[("send_message_to_group", "→ 成功")],
+    )
+    assert nudge is not None
+    assert "第一方上下文任务" in nudge
