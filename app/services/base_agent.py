@@ -549,15 +549,28 @@ def check_write_intent(
     except Exception:
         logger.warning("write_intent_check failed (fail-open)", exc_info=True)
         return None  # fail-open
-    from urllib.parse import urlparse, urlunparse, parse_qs, urlencode, unquote
+
+
+def _normalize_url(u: str) -> str:
+    """规范化 URL 用于溯源比较。
+
+    - 小写化
+    - 去掉尾部斜杠
+    - 解码常见转义
+    - 去掉 fragment
+    - 清理常见追踪参数
+    """
+    from urllib.parse import parse_qs, urlencode, unquote, urlparse, urlunparse
+
     u = unquote(u).rstrip("/").lower()
     try:
         p = urlparse(u)
-        # 去除常见追踪参数（utm_*, fbclid 等），不影响实际链接含义
         if p.query:
             params = parse_qs(p.query, keep_blank_values=True)
-            clean = {k: v for k, v in params.items()
-                     if not k.startswith("utm_") and k not in ("fbclid", "ref", "source")}
+            clean = {
+                k: v for k, v in params.items()
+                if not k.startswith("utm_") and k not in ("fbclid", "ref", "source")
+            }
             cleaned_query = urlencode(clean, doseq=True)
             u = urlunparse(p._replace(query=cleaned_query, fragment="")).rstrip("/")
         else:
@@ -1809,9 +1822,11 @@ async def _build_system_prompt(
     task_type: str = "",
     actual_tool_names: set[str] | None = None,
 ) -> str:
-    """合并用户配置的人设 + 工具说明 + 模式指令 + 已知用户 + 身份行为准则"""
+    """按固定 section 组装 system prompt。"""
     from datetime import datetime, timedelta
     from zoneinfo import ZoneInfo
+    from app.services.prompt_composer import PromptComposeContext, compose_prompt
+
     try:
         from app.tools.calendar_ops import _get_user_tz
         tz = _get_user_tz()
@@ -1824,33 +1839,24 @@ async def _build_system_prompt(
     tomorrow = now + timedelta(days=1)
     tomorrow_str = tomorrow.strftime('%Y-%m-%d')
     time_ctx = (
-        f"\n\n当前时间：{now.strftime('%Y年%m月%d日 %A %H:%M')}（{tz_label}）"
+        f"当前时间：{now.strftime('%Y年%m月%d日 %A %H:%M')}（{tz_label}）"
         f"\n今天={today_str}，明天={tomorrow_str}"
     )
     from app.tenant.context import get_current_tenant
     tenant = get_current_tenant()
-    base_prompt = tenant.llm_system_prompt or settings.kimi.chat_system_prompt
-    prompt = base_prompt + time_ctx + _INSTRUCTIONS
 
-    # 飞书平台：注入飞书专属工具指令（日历/任务/文档/消息等）
+    tenant_identity = tenant.llm_system_prompt or settings.kimi.chat_system_prompt
+    dynamic_knowledge_blocks: list[str] = []
+    session_context_blocks: list[str] = []
+
     from app.tenant.context import get_current_channel as _get_ch
     _ch = _get_ch()
     _current_plat = _ch.platform if _ch else tenant.platform
-    if _current_plat == "feishu":
-        prompt += _FEISHU_INSTRUCTIONS
-        # 动态注入飞书 API 域提示（仅当 call_feishu_api 工具可用时）
-        if actual_tool_names and "call_feishu_api" in actual_tool_names and user_text:
-            try:
-                from app.knowledge.feishu_api_hints import get_domain_hints
-                _api_hints = get_domain_hints(user_text)
-                if _api_hints:
-                    prompt += _api_hints
-            except Exception:
-                pass  # 提示注入失败不影响核心功能
+    platform_prompt_hint = _ch.prompt_hint if _ch else ""
 
     # 自我迭代指令仅对开启该能力的租户注入（从知识库文件动态加载）
     if tenant.self_iteration_enabled:
-        prompt += _load_self_iteration_instructions()
+        dynamic_knowledge_blocks.append(_load_self_iteration_instructions())
 
     # 能力模块：静态配置 + 动态发现（M2: Manus 式角色切换）
     module_names = list(getattr(tenant, "capability_modules", None) or [])
@@ -1862,7 +1868,7 @@ async def _build_system_prompt(
                 module_names.append(m)
                 logger.info("auto-discovered capability module: %s", m)
     if module_names:
-        prompt += _load_capability_modules(module_names)
+        dynamic_knowledge_blocks.append(_load_capability_modules(module_names))
 
     # 触发匹配的 skill instructions 注入
     if user_text and tenant.tenant_id:
@@ -1870,66 +1876,63 @@ async def _build_system_prompt(
             from app.tools.skill_engine import load_triggered_skills
             skill_instructions, _, _ = load_triggered_skills(tenant.tenant_id, user_text)
             if skill_instructions:
-                prompt += skill_instructions
+                dynamic_knowledge_blocks.append(skill_instructions)
         except Exception:
             logger.warning("failed to load skill instructions", exc_info=True)
 
-    # 根据用户身份注入不同行为准则（custom_persona 租户有独立人设，跳过通用准则）
-    if not tenant.custom_persona:
-        if _is_admin(sender_id, sender_name):
-            prompt += _ADMIN_BEHAVIOR
-        else:
-            prompt += _NORMAL_BEHAVIOR
+    # 飞书 API 域提示：保留，但作为动态知识注入，不再硬塞进平台能力主体
+    if _current_plat == "feishu" and actual_tool_names and "call_feishu_api" in actual_tool_names and user_text:
+        try:
+            from app.knowledge.feishu_api_hints import get_domain_hints
+            _api_hints = get_domain_hints(user_text)
+            if _api_hints:
+                dynamic_knowledge_blocks.append(_api_hints)
+        except Exception:
+            pass
 
-    if mode == "full_access":
-        prompt += _FULL_ACCESS_ADDENDUM
-
-    # 记忆工具使用指引（有记忆工具的 bot 才注入）
     _has_memory_tools = not tenant.tools_enabled or "save_memory" in tenant.tools_enabled
-    if _has_memory_tools:
-        prompt += _MEMORY_USAGE_HINT
 
-    # M3: 深度研究模式指令（研究类任务注入端到端调研流程）
-    # 优先使用调用方传入的 task_type（LLM 分类），fallback 到关键词
     _task_type = task_type or (classify_task_type(user_text) if user_text else "normal")
+    scenario_blocks: list[str] = []
     if _task_type == "research":
-        prompt += _DEEP_RESEARCH_INSTRUCTIONS
+        scenario_blocks.append(_DEEP_RESEARCH_INSTRUCTIONS.strip())
 
     _coding_workflow = build_coding_workflow_instructions(
         user_text,
         list(actual_tool_names) if actual_tool_names else None,
     )
     if _coding_workflow:
-        prompt += _coding_workflow
+        scenario_blocks.append(_coding_workflow.strip())
 
-    # 注入能力画像（平台感知 + 实际工具能力）
-    prompt += _build_capability_profile(tenant, actual_tool_names=actual_tool_names)
+    capability_profile = _build_capability_profile(tenant, actual_tool_names=actual_tool_names)
 
     if chat_id:
         if chat_type == "group":
-            prompt += f"\n\n[当前场景] 你在群聊中（chat_id={chat_id}）。当前消息来自 {sender_name or sender_id}。如需查看本群历史消息，请用 fetch_chat_history(chat_id=\"{chat_id}\")。"
+            session_context_blocks.append(
+                f"[当前场景] 你在群聊中（chat_id={chat_id}）。当前消息来自 {sender_name or sender_id}。"
+                f"如需查看本群历史消息，请用 fetch_chat_history(chat_id=\"{chat_id}\")。"
+            )
         else:
-            prompt += f"\n\n[当前场景] 你在与 {sender_name or sender_id} 的私聊中（chat_id={chat_id}，用户open_id={sender_id}）。如需查看本私聊的历史消息，请用 fetch_chat_history(chat_id=\"{chat_id}\")。"
+            session_context_blocks.append(
+                f"[当前场景] 你在与 {sender_name or sender_id} 的私聊中（chat_id={chat_id}，用户open_id={sender_id}）。"
+                f"如需查看本私聊的历史消息，请用 fetch_chat_history(chat_id=\"{chat_id}\")。"
+            )
 
-    # 注入已知用户列表，让模型认识团队成员
     users_info = user_registry.summary()
     if users_info:
-        prompt += f"\n\n{users_info}"
+        session_context_blocks.append(users_info)
 
-    # 注入记忆上下文（用户画像 + 最近交互 + 活跃计划）
-    # 可通过 tenant.memory_context_enabled 关闭（轻量 bot 不需要记忆注入）
     if getattr(tenant, "memory_context_enabled", True):
         try:
             memory_ctx = await bot_memory.build_memory_context(sender_id, sender_name, user_text)
             if memory_ctx:
-                prompt += memory_ctx
+                session_context_blocks.append(memory_ctx)
             plans_ctx = bot_planner.get_active_plans_context(sender_id)
             if plans_ctx:
-                prompt += f"\n\n{plans_ctx}"
+                session_context_blocks.append(plans_ctx)
         except Exception:
             logger.warning("memory context injection failed", exc_info=True)
 
-    # 跨平台身份上下文：让 LLM 知道当前用户的跨 channel 身份
     try:
         from app.tenant.context import get_current_sender
         sender_ctx = get_current_sender()
@@ -1937,130 +1940,76 @@ async def _build_system_prompt(
             platforms_str = ", ".join(
                 f"{p}({uid[:12]}...)" for p, uid in sender_ctx.linked_platforms.items()
             )
-            prompt += (
-                f"\n\n[跨平台身份] 当前用户已关联统一身份（identity: {sender_ctx.identity_id[:8]}...）。"
+            session_context_blocks.append(
+                f"[跨平台身份] 当前用户已关联统一身份（identity: {sender_ctx.identity_id[:8]}...）。"
                 f"\n关联平台: {platforms_str}"
                 f"\n当前消息来自: {sender_ctx.channel_platform}"
                 f"\n该用户在所有关联平台的记忆和对话上下文是共享的。"
             )
         elif sender_ctx.channel_platform:
-            prompt += (
-                f"\n\n[身份提示] 当前用户在 {sender_ctx.channel_platform} 平台，尚未关联跨平台身份。"
+            session_context_blocks.append(
+                f"[身份提示] 当前用户在 {sender_ctx.channel_platform} 平台，尚未关联跨平台身份。"
                 f"\n如果用户提到自己在其他平台也和你聊过，你可以用 search_known_user 搜索并发起验证。"
             )
     except Exception:
         logger.warning("identity context injection failed", exc_info=True)
 
-    # 超管身份：注入待审批请求提醒 + 权限标识
     try:
         from app.tenant.context import get_current_sender
         sender_ctx = get_current_sender()
         if sender_ctx.is_super_admin:
-            prompt += _build_admin_context()
+            session_context_blocks.append(_build_admin_context())
         elif tenant.deploy_free_quota > 0:
-            prompt += _build_deploy_quota_context(tenant, sender_ctx.sender_id)
+            session_context_blocks.append(_build_deploy_quota_context(tenant, sender_ctx.sender_id))
     except Exception:
         logger.warning("admin context injection failed", exc_info=True)
 
-    return prompt
+    return compose_prompt(PromptComposeContext(
+        time_context=time_ctx,
+        tenant_identity=tenant_identity,
+        user_text=user_text,
+        task_type=_task_type,
+        mode=mode,
+        platform=_current_plat,
+        platform_prompt_hint=platform_prompt_hint,
+        actual_tool_names=set(actual_tool_names or set()),
+        capability_profile=capability_profile,
+        dynamic_knowledge_blocks=dynamic_knowledge_blocks,
+        session_context_blocks=session_context_blocks,
+        extra_scenario_blocks=scenario_blocks,
+        is_admin=_is_admin(sender_id, sender_name),
+        has_memory_tools=_has_memory_tools,
+    ))
 
 
 def _build_capability_profile(tenant, actual_tool_names: set[str] | None = None) -> str:
-    """根据租户配置动态生成能力画像，让 LLM 了解自己在哪个平台、能做什么、不能做什么。
-
-    actual_tool_names: 经过权限/平台/白名单过滤后的实际工具集。
-    如果传入则直接使用，避免能力画像与实际工具不一致（如 instance_management_enabled=False
-    但画像仍声称能创建实例）。
-    """
+    """根据租户配置动态生成用户可见的高层能力画像。"""
+    from app.services.prompt_composer import build_capability_profile
     from app.tenant.context import get_current_channel
-    lines = []
     current_ch = get_current_channel()
     platform = current_ch.platform if current_ch else tenant.platform
 
-    # ── 平台交互方式 ──
-    if platform == "wecom_kf":
-        lines.append("你在微信客服平台，用户通过微信和你聊天")
-        lines.append("定时任务执行后可以主动发消息通知用户（用户最后发消息后 48 小时内有效，超过 48 小时发不出去）")
-        lines.append("保存记忆时写「微信对话」而非「飞书对话」")
-    elif platform == "wecom":
-        lines.append("你在企业微信平台")
-    elif platform == "feishu":
-        lines.append("你在飞书平台，可以主动发消息、操作文档/日历/任务")
-    elif platform == "qq":
-        lines.append("你在 QQ 机器人平台，用户通过 QQ 和你聊天")
-        lines.append("只能被动回复（群聊 5 分钟内最多 5 条，单聊 60 分钟窗口），不能主动推送")
-
-    # ── 根据实际工具集描述能力 ──
-    # 优先使用调用方传入的已过滤工具集，确保能力画像与 LLM 实际可用工具完全一致
     if actual_tool_names is not None:
         _tools = set(actual_tool_names)
     else:
-        # fallback: 从 tenant config 推算（可能与实际不一致，仅兜底）
         _tools = set(tenant.tools_enabled) if tenant.tools_enabled else set(ALL_TOOL_MAP.keys())
         if platform != "feishu":
             _tools -= _FEISHU_ONLY_TOOLS
 
-    if "xhs_search" in _tools or "search_social_media" in _tools:
-        lines.append("你能搜索小红书/抖音等社媒平台的用户和内容")
-    if "xhs_get_note" in _tools:
-        lines.append(
-            "当用户发来小红书链接（xiaohongshu.com/...）时，用 xhs_get_note 获取内容，"
-            "不要用 web_search（会被反爬拦截）"
-        )
-    if "create_plan" in _tools:
-        lines.append("你能把大任务拆成多步计划，用 schedule_step 安排定时自动执行")
-    if "export_file" in _tools:
-        lines.append("你能导出 PDF/CSV/TXT 报告文件")
-    if "web_search" in _tools:
-        lines.append("你能联网搜索最新信息")
-    if "browser_open" in _tools:
-        lines.append("你能打开网页浏览和操作（浏览器自动化）")
-    if "save_memory" in _tools:
-        lines.append("你有跨对话记忆，能记住用户偏好和历史")
-    if "read_file" in _tools:
-        lines.append("你能读写代码仓库文件、创建 PR")
-
-    # 飞书特有能力
-    if platform == "feishu":
-        feishu_caps = []
-        if "list_events" in _tools:
-            feishu_caps.append("日历")
-        if "create_feishu_doc" in _tools:
-            feishu_caps.append("文档")
-        if "create_feishu_task" in _tools:
-            feishu_caps.append("任务")
-        if "search_bitable_records" in _tools:
-            feishu_caps.append("多维表格")
-        if feishu_caps:
-            lines.append(f"你能操作飞书{'/'.join(feishu_caps)}")
-
-    # 实例管理 / co-host 能力（动态读取 provisioner 支持的平台列表）
     if "provision_tenant" in _tools:
         try:
             from app.services.provisioner import SUPPORTED_PLATFORMS
-            _plat_list = "、".join(SUPPORTED_PLATFORMS)
         except ImportError:
-            _plat_list = "飞书、企微、微信客服、QQ"
-        lines.append(
-            f"你能为客户开通新 bot 实例，支持的平台: {_plat_list}。"
-            "同一个企微自建应用下的多个客服账号可以 co-host 到同一个容器"
-            "（凭证复用，按 open_kfid 分发到不同人设）。"
-            "QQ 机器人必须独立实例（无 co-host）"
-        )
-    if "list_kf_accounts" in _tools and platform == "wecom_kf":
-        lines.append("你能查看和管理本企业的所有客服账号（list_kf_accounts）")
+            SUPPORTED_PLATFORMS = ["飞书", "企微", "微信客服", "QQ"]
+    else:
+        SUPPORTED_PLATFORMS = None
 
-    # 社媒 API 深度
-    if tenant.social_media_api_provider:
-        lines.append(f"社媒数据 API 已配置（{tenant.social_media_api_provider}），可获取精确粉丝数/互动数据")
-    elif "search_social_media" in _tools:
-        lines.append("社媒数据通过搜索引擎间接获取（无直连 API），数据精度有限")
-
-    if not lines:
-        return ""
-    result = "\n\n[你的能力] " + "。".join(lines) + "。"
-    result += "\n⚠️ 以上是你的全部能力，不要声称拥有上面没列出的能力。如果用户问你能否做某件事而你没有对应的工具，请如实说不能。"
-    return result
+    return build_capability_profile(
+        platform=platform,
+        actual_tool_names=_tools,
+        social_media_api_provider=tenant.social_media_api_provider,
+        supported_provision_platforms=SUPPORTED_PLATFORMS,
+    )
 
 
 def _build_deploy_quota_context(tenant, sender_id: str) -> str:

@@ -28,11 +28,12 @@ import os
 import re
 import threading
 import time
+import asyncio
 
 import httpx
 
 from app.tools.tool_result import ToolResult
-from app.tenant.context import get_current_tenant
+from app.tenant.context import get_current_sender, get_current_tenant
 from app.tools.feishu_api import _current_user_open_id
 from app.tools.source_registry import sanitize_urls_in_content
 
@@ -610,15 +611,25 @@ TOOL_DEFINITIONS = [
 ]
 
 
-async def _export_file(filename: str, content: str) -> ToolResult:
+async def _export_file_async(filename: str, content: str) -> ToolResult:
     """生成文件 → 上传 → 发送给用户（async，避免 WeasyPrint 阻塞事件循环）"""
     import asyncio as _aio
 
     tenant = get_current_tenant()
     platform = tenant.platform
+    sender = get_current_sender()
+    # file_export 仅支持企微/企微客服；这两条 webhook 链路都会显式设置
+    # _current_user_open_id。这里不再回退到 sender context，避免跨测试或
+    # 跨任务遗留的 sender context 误导发送目标。
     sender_id = _current_user_open_id.get("")
 
     if not sender_id:
+        logger.warning(
+            "export_file: sender_id is empty. tenant_id=%s, platform=%s, sender_ctx=%s",
+            tenant.tenant_id,
+            platform,
+            sender,
+        )
         return ToolResult.error("无法确定当前用户，无法发送文件", code="internal")
 
     # 飞书平台应使用云文档
@@ -709,8 +720,18 @@ async def _export_file(filename: str, content: str) -> ToolResult:
         return ToolResult.error(f"文件导出失败: {exc}", code="internal")
 
 
+def _export_file(filename: str, content: str) -> ToolResult:
+    """同步包装器，兼容直接调用的旧测试/旧用法。"""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(_export_file_async(filename, content))
+
+    raise RuntimeError("Use _export_file_async inside a running event loop")
+
+
 TOOL_MAP = {
-    "export_file": lambda args: _export_file(
+    "export_file": lambda args: _export_file_async(
         filename=args["filename"],
         content=args["content"],
     ),

@@ -1,5 +1,7 @@
 # Project: 4DGames Feishu Code Bot
 
+> ⚠️ Before coding, read `AGENTS.md` for dual-repo relationship, ownership, and porting policy.
+
 ## Overview
 Python 3.12 + FastAPI 多租户 AI Bot 平台，支持飞书/企业微信/微信客服三平台接入。
 核心 LLM: Gemini (Function Calling Agent)，默认 gemini-3-flash-preview，复杂任务自动升级 gemini-3.1-pro-preview。

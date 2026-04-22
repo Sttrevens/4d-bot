@@ -263,6 +263,9 @@ _DEFAULT_ALLOWED_WRITE_PATHS = (
     "app/knowledge/",  # 知识库 — bot 自我学习
 )
 
+# 向后兼容旧测试/旧调用方
+_ALLOWED_WRITE_PATHS = _DEFAULT_ALLOWED_WRITE_PATHS
+
 
 def _get_allowed_write_paths() -> tuple[str, ...]:
     """获取当前租户的 auto-fix 可写路径列表（per-tenant 策略引擎）。

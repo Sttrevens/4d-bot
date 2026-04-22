@@ -64,7 +64,7 @@ class AgentProfile:
     system_prompt: str = ""           # 覆盖 tenant 的 llm_system_prompt
     tools_enabled: list[str] = field(default_factory=list)  # 覆盖 tenant 的 tools_enabled
     model: str = ""                   # 覆盖 tenant 的 llm_model
-    custom_persona: bool = False      # 覆盖 tenant 的 custom_persona
+    custom_persona: bool = False      # 覆盖 tenant 的 custom_persona（仅影响身份模板，不跳过全局政策）
 
 
 @dataclass

@@ -464,6 +464,7 @@ def list_reminders(args: dict) -> ToolResult:
 
     # 直接从 per-user key 读取，无需 app 层过滤
     reminders = _get_all_reminders_for_user(tenant_id, user_id)
+    reminders = [r for r in reminders if r.get("user_id", user_id) == user_id]
 
     if not reminders:
         return ToolResult.success("当前没有设置任何提醒。")

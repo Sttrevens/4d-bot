@@ -252,9 +252,10 @@ class TestSetReminder:
         assert result.ok
         assert "交报告" in result.content
         assert "rem_" in result.content
-        mock_redis.execute.assert_called_once()
-        call_args = mock_redis.execute.call_args[0]
+        assert mock_redis.execute.call_count >= 1
+        call_args = mock_redis.execute.call_args_list[0][0]
         assert call_args[0] == "ZADD"
+        assert any(call[0][0] == "SADD" for call in mock_redis.execute.call_args_list[1:])
 
     @patch("app.tools.reminder_ops.redis_client")
     @patch("app.tools.reminder_ops._get_tenant_id", return_value="test-tenant")
@@ -325,12 +326,14 @@ class TestCancelReminder:
     def test_cancel_success(self, mock_tid, mock_redis):
         from app.tools.reminder_ops import cancel_reminder
         reminder = json.dumps({"id": "rem_aaa", "text": "测试", "user_id": "u1", "next_trigger": "2026-03-11T09:00:00+08:00"})
-        # First call: ZRANGEBYSCORE to find; second call: ZREM
+        # First call: ZRANGEBYSCORE to find; second call: ZREM; then cleanup checks
         mock_redis.execute.side_effect = [
             [reminder],  # find
             1,           # ZREM success
+            0,           # ZCARD after removal
+            1,           # SREM cleanup
         ]
-        result = cancel_reminder({"reminder_id": "rem_aaa"})
+        result = cancel_reminder({"reminder_id": "rem_aaa", "user_id": "u1"})
         assert result.ok
         assert "测试" in result.content
 
@@ -339,7 +342,7 @@ class TestCancelReminder:
     def test_cancel_not_found(self, mock_tid, mock_redis):
         from app.tools.reminder_ops import cancel_reminder
         mock_redis.execute.return_value = []
-        result = cancel_reminder({"reminder_id": "rem_nonexist"})
+        result = cancel_reminder({"reminder_id": "rem_nonexist", "user_id": "u1"})
         assert not result.ok
         assert result.code == "not_found"
 
