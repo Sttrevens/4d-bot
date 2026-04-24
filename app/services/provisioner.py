@@ -898,6 +898,46 @@ def _get_co_tenants_from_registry(primary_tid: str, platform: str) -> list[dict]
         return []
 
 
+def _get_co_tenants_for_instance(instance_id: str, platform: str) -> list[dict]:
+    """Return co-hosted tenant entries for an instance from file and registry."""
+    co_tenants = []
+    inst_tenants = INSTANCES_DIR / instance_id / "tenants.json"
+    if inst_tenants.exists():
+        try:
+            data = json.loads(inst_tenants.read_text())
+            for t in data.get("tenants", []):
+                if t.get("tenant_id") != instance_id:
+                    co_tenants.append({
+                        "tenant_id": t.get("tenant_id", ""),
+                        "name": t.get("name", ""),
+                        "wecom_kf_open_kfid": t.get("wecom_kf_open_kfid", ""),
+                    })
+        except Exception:
+            logger.debug("failed to read co-tenants for %s", instance_id, exc_info=True)
+
+    registry_co = _get_co_tenants_from_registry(instance_id, platform)
+    existing_ids = {ct["tenant_id"] for ct in co_tenants}
+    for rct in registry_co:
+        if rct["tenant_id"] not in existing_ids:
+            co_tenants.append(rct)
+            existing_ids.add(rct["tenant_id"])
+    return co_tenants
+
+
+def find_log_host_instance_id(tenant_id: str) -> str:
+    """Resolve the physical instance whose logs contain tenant_id."""
+    if not tenant_id:
+        return ""
+    _auto_discover()
+    if _registry.get(tenant_id):
+        return tenant_id
+    for host_tid, info in _registry.list_all().items():
+        for co_tenant in _get_co_tenants_for_instance(host_tid, info.platform):
+            if co_tenant.get("tenant_id") == tenant_id:
+                return host_tid
+    return ""
+
+
 def list_instances() -> list[dict]:
     """列出所有已供应实例（含实时容器状态 + co-hosted 租户）
 
@@ -924,30 +964,7 @@ def list_instances() -> list[dict]:
             "created_at": info.created_at,
             "co_tenants": [],
         }
-        # Read co-hosted tenants from instance's tenants.json
-        inst_tenants = INSTANCES_DIR / tid / "tenants.json"
-        if inst_tenants.exists():
-            try:
-                data = json.loads(inst_tenants.read_text())
-                tenants = data.get("tenants", [])
-                for t in tenants:
-                    if t.get("tenant_id") != tid:
-                        entry["co_tenants"].append({
-                            "tenant_id": t["tenant_id"],
-                            "name": t.get("name", ""),
-                            "wecom_kf_open_kfid": t.get("wecom_kf_open_kfid", ""),
-                        })
-            except Exception:
-                pass
-
-        # Also check tenant_registry for co-tenants added via Redis sync
-        # (may not be in the file if _cohost_tenant failed or bridge network)
-        registry_co = _get_co_tenants_from_registry(tid, info.platform)
-        existing_ct_ids = {ct["tenant_id"] for ct in entry["co_tenants"]}
-        for rct in registry_co:
-            if rct["tenant_id"] not in existing_ct_ids:
-                entry["co_tenants"].append(rct)
-                existing_ct_ids.add(rct["tenant_id"])
+        entry["co_tenants"] = _get_co_tenants_for_instance(tid, info.platform)
 
         result.append(entry)
 
@@ -1223,9 +1240,12 @@ def get_instance_logs(tenant_id: str, lines: int = 200, since: str = "",
         grep: 日志内容过滤关键词
         level: 日志级别过滤（ERROR, WARNING, INFO 等）
     """
-    info = _registry.get(tenant_id)
+    requested_tenant_id = tenant_id
+    host_tenant_id = find_log_host_instance_id(tenant_id) or tenant_id
+    info = _registry.get(host_tenant_id)
     if not info:
         return {"ok": False, "error": f"Instance {tenant_id} not found"}
+    is_co_tenant = host_tenant_id != requested_tenant_id
 
     lines = min(max(lines, 10), 2000)
     log_lines = None
@@ -1241,18 +1261,20 @@ def get_instance_logs(tenant_id: str, lines: int = 200, since: str = "",
                      tenant_id, info.port)
         return {
             "ok": True,
-            "tenant_id": tenant_id,
+            "tenant_id": requested_tenant_id,
+            "host_tenant_id": host_tenant_id,
+            "is_co_tenant": is_co_tenant,
             "container": info.container_name,
             "log_source": http_result.get("log_source", f"http:port-{info.port}"),
             "buffer_size": http_result.get("buffer_size", -1),
             "log_meta": http_result.get("log_meta", {}),
             **{k: v for k, v in http_result.items()
-               if k not in ("log_meta", "log_source", "buffer_size")},
+               if k not in ("tenant_id", "container", "log_meta", "log_source", "buffer_size")},
         }
     errors_tried.append("HTTP proxy failed (ADMIN_TOKEN missing or target unreachable)")
 
     # 方案2: 读本地日志文件（宿主机上或挂载了 instances volume 时可用）
-    log_file = INSTANCES_DIR / tenant_id / "logs" / "bot.log"
+    log_file = INSTANCES_DIR / host_tenant_id / "logs" / "bot.log"
     if log_file.exists():
         try:
             fd = os.open(str(log_file), os.O_RDONLY)
@@ -1321,7 +1343,9 @@ def get_instance_logs(tenant_id: str, lines: int = 200, since: str = "",
 
     return {
         "ok": True,
-        "tenant_id": tenant_id,
+        "tenant_id": requested_tenant_id,
+        "host_tenant_id": host_tenant_id,
+        "is_co_tenant": is_co_tenant,
         "container": info.container_name,
         "log_source": log_source,
         "buffer_size": -1,  # file/docker fallback, no buffer

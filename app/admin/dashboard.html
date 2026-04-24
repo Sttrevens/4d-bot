@@ -1942,6 +1942,7 @@ function renderInstances() {
         <td class="py-1.5 px-3 font-mono text-[10px] text-gray-400">${ct.wecom_kf_open_kfid || '-'}</td>
         <td class="py-1.5 px-3"></td>
         <td class="py-1.5 px-3 text-right">
+          <button onclick="viewInstanceLogs('${ct.tenant_id}')" class="text-xs bg-gray-50 text-gray-600 px-2 py-0.5 rounded hover:bg-gray-100">Logs</button>
           <button onclick="removeCoTenant('${inst.tenant_id}','${ct.tenant_id}')" class="text-xs bg-red-50 text-red-500 px-2 py-0.5 rounded hover:bg-red-100">Remove</button>
         </td>
       </tr>`).join('');
@@ -2297,9 +2298,16 @@ async function initLogsTab() {
     try {
       const res = await api('/instances');
       const instances = res.instances || [];
-      sel.innerHTML = instances.map(i =>
-        `<option value="${i.tenant_id}">${escapeHtml(i.name || i.tenant_id)} (${i.tenant_id})</option>`
-      ).join('');
+      const options = [];
+      instances.forEach(i => {
+        options.push(`<option value="${i.tenant_id}">${escapeHtml(i.name || i.tenant_id)} (${i.tenant_id})</option>`);
+        (i.co_tenants || []).forEach(ct => {
+          options.push(
+            `<option value="${ct.tenant_id}" data-host-tenant="${i.tenant_id}">&boxur; ${escapeHtml(ct.name || ct.tenant_id)} (${ct.tenant_id}, on ${i.tenant_id})</option>`
+          );
+        });
+      });
+      sel.innerHTML = options.join('');
       // Also add self (current container) option at the top
       if (instances.length) {
         sel.insertAdjacentHTML('afterbegin', '<option value="_self">This container (self)</option>');
@@ -2316,6 +2324,8 @@ async function loadLogs() {
   logsLoading = true;
 
   const tid = document.getElementById('logs-instance-select').value;
+  const selectedOpt = document.getElementById('logs-instance-select').selectedOptions[0];
+  const hostTenant = selectedOpt?.dataset?.hostTenant || '';
   const lines = document.getElementById('logs-lines').value;
   const since = document.getElementById('logs-since').value;
   const level = document.getElementById('logs-level').value;
@@ -2345,6 +2355,10 @@ async function loadLogs() {
     // Show real-time diagnostics
     let statsText = `${logData.total_lines} lines`;
     if (logData.log_source) statsText += ` | ${logData.log_source}`;
+    if (hostTenant || logData.host_tenant_id) {
+      const host = logData.host_tenant_id || hostTenant;
+      if (host && host !== tid) statsText += ` | host: ${host}`;
+    }
     if (logData.buffer_size >= 0) statsText += ` | buf: ${logData.buffer_size}`;
     if (logData.errors_tried && logData.errors_tried.length > 0) {
       statsText += ` | fallback: ${logData.errors_tried.join('; ')}`;

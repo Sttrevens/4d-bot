@@ -1,10 +1,9 @@
+import asyncio
 import json
 
-import pytest
 
 
-@pytest.mark.asyncio
-async def test_instance_logs_uses_full_source_when_redis_snapshot_is_short(monkeypatch):
+def test_instance_logs_uses_full_source_when_redis_snapshot_is_short(monkeypatch):
     from app.admin import routes
     from app.tenant.registry import tenant_registry
     from app.services import provisioner
@@ -36,7 +35,7 @@ async def test_instance_logs_uses_full_source_when_redis_snapshot_is_short(monke
 
     monkeypatch.setattr(provisioner, "get_instance_logs", fake_get_instance_logs)
 
-    response = await routes.api_instance_logs("kf-steven-ai", lines=20, _token="test-token")
+    response = asyncio.run(routes.api_instance_logs("kf-steven-ai", lines=20, _token="test-token"))
     data = json.loads(response.body)
 
     assert provisioner_calls == [("kf-steven-ai", 20)]
@@ -45,8 +44,7 @@ async def test_instance_logs_uses_full_source_when_redis_snapshot_is_short(monke
     assert data["logs"].splitlines() == full_lines
 
 
-@pytest.mark.asyncio
-async def test_instance_logs_do_not_treat_synced_tenant_registry_as_local(monkeypatch):
+def test_instance_logs_do_not_treat_synced_tenant_registry_as_local(monkeypatch):
     from types import SimpleNamespace
 
     from app.admin import routes
@@ -77,8 +75,49 @@ async def test_instance_logs_do_not_treat_synced_tenant_registry_as_local(monkey
     monkeypatch.setattr(routes.redis, "available", lambda: False)
     monkeypatch.setattr(provisioner, "get_instance_logs", fake_get_instance_logs)
 
-    response = await routes.api_instance_logs("kf-steven-ai", lines=20, _token="test-token")
+    response = asyncio.run(routes.api_instance_logs("kf-steven-ai", lines=20, _token="test-token"))
     data = json.loads(response.body)
 
     assert data["log_source"] == "http:8103"
     assert data["logs"] == "remote-kf-line"
+
+
+def test_instance_logs_for_co_tenant_use_host_instance_not_self(monkeypatch):
+    from types import SimpleNamespace
+
+    from app.admin import routes
+    from app.tenant.registry import tenant_registry
+    from app.services import provisioner
+
+    async def fail_if_self_logs_used(**_kwargs):
+        raise AssertionError("co-hosted tenant logs must be resolved through the host instance")
+
+    def fake_get_instance_logs(tenant_id: str, lines: int = 200, **_kwargs):
+        assert tenant_id == "kf-heng"
+        return {
+            "ok": True,
+            "tenant_id": tenant_id,
+            "host_tenant_id": "kf-steven-ai",
+            "is_co_tenant": True,
+            "container": "bot-kf-steven-ai",
+            "log_source": "http:8103",
+            "buffer_size": 20000,
+            "total_lines": 1,
+            "logs": "cohost-line",
+            "error_count": 0,
+            "recent_errors": "",
+        }
+
+    monkeypatch.setattr(tenant_registry, "get", lambda _tenant_id: SimpleNamespace(tenant_id="kf-heng"))
+    monkeypatch.setattr(provisioner._registry, "get", lambda _tenant_id: None)
+    monkeypatch.setattr(provisioner, "find_log_host_instance_id", lambda _tenant_id: "kf-steven-ai")
+    monkeypatch.setattr(routes, "api_self_logs", fail_if_self_logs_used)
+    monkeypatch.setattr(routes.redis, "available", lambda: False)
+    monkeypatch.setattr(provisioner, "get_instance_logs", fake_get_instance_logs)
+
+    response = asyncio.run(routes.api_instance_logs("kf-heng", lines=20, _token="test-token"))
+    data = json.loads(response.body)
+
+    assert data["tenant_id"] == "kf-heng"
+    assert data["host_tenant_id"] == "kf-steven-ai"
+    assert data["logs"] == "cohost-line"

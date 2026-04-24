@@ -77,6 +77,17 @@ _FOCUS_FILLER_WORDS = {
 }
 
 _STEAM_HINT_RE = re.compile(r"(steam|游戏|发售|wishlist|愿望单)", re.IGNORECASE)
+_CORPORATE_REPORT_RE = re.compile(
+    r"(财报|财务报告|年报|年度报告|年度业绩|中期报告|中期业绩|业绩公告|公告与通函|公告及通函|"
+    r"投资者关系|报告|annual\s+report|annual\s+results?|interim\s+(?:report|results?)|"
+    r"financial\s+report|earnings\s+release|results?\s+announcement|investor\s+relations)",
+    re.IGNORECASE,
+)
+_XD_INC_RE = re.compile(r"(心动|心動|xd\s*inc|xd\s+network|2400(?:\.hk)?|02400)", re.IGNORECASE)
+_HK_MARKET_RE = re.compile(
+    r"(港股|香港交易所|联交所|聯交所|hkex|hkexnews|hong\s+kong|2400(?:\.hk)?|02400)",
+    re.IGNORECASE,
+)
 _YEAR_RE = re.compile(r"\b((?:19|20)\d{2})\b")
 _SEASON_RE = re.compile(r"\b((?:19|20)\d{2})\s*[-/]\s*(\d{2,4})\b")
 _TEMPORAL_NOW_RE = re.compile(
@@ -247,6 +258,7 @@ def _inject_temporal_anchor(query: str, user_text: str, *, current_year: int) ->
         or _FINANCE_RE.search(context)
         or _WEATHER_RE.search(context)
         or _POLICY_RE.search(context)
+        or _CORPORATE_REPORT_RE.search(context)
     ):
         return query
     return f"{query} {current_year}".strip()
@@ -257,6 +269,11 @@ def _inject_domain_hint(query: str, user_text: str) -> str:
     if "site:" in lower:
         return query
     context = f"{user_text} {query}".strip()
+    if _CORPORATE_REPORT_RE.search(context):
+        if _XD_INC_RE.search(context):
+            return f"{query} (site:2400.hk OR site:hkexnews.hk)"
+        if _HK_MARKET_RE.search(context):
+            return f"{query} (site:hkexnews.hk OR site:irasia.com)"
     if _NBA_RE.search(context):
         return f"{query} (site:nba.com OR site:espn.com OR site:cbssports.com)"
     if _SPORTS_RE.search(context):
@@ -288,6 +305,9 @@ def rewrite_web_search_query(
 
     lower = raw.lower()
     if "site:" in lower or "store.steampowered.com" in lower:
+        return raw
+    context = f"{user_text} {raw}".strip()
+    if _CORPORATE_REPORT_RE.search(context) or _FINANCE_RE.search(context):
         return raw
     if _STEAM_HINT_RE.search(raw):
         return f"{raw} site:store.steampowered.com"

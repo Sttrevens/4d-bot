@@ -914,13 +914,17 @@ async def api_instance_logs(
     """
     lines = min(max(lines, 10), 2000)
 
-    # ── 单容器模式：如果没有独立 instance 记录，但 tenant 在当前容器中运行，直接读 LOG_BUFFER ──
+    from app.services.provisioner import find_log_host_instance_id
+    host_instance_id = find_log_host_instance_id(tenant_id)
+
+    # ── 单容器模式：如果没有独立 instance/co-host 记录，但 tenant 在当前容器中运行，直接读 LOG_BUFFER ──
     # 注意：tenant_sync 会把 dashboard/Redis 租户同步进每个容器的 tenant_registry；
     # 因此 “tenant_registry 有这个 tenant” 不能直接等价于“它运行在当前容器”。
-    from app.services.provisioner import _registry as _instance_registry
-    has_instance_record = _instance_registry.get(tenant_id) is not None
+    # co-hosted KF tenant（如 kf-heng）没有自己的容器，但有宿主 instance，
+    # 必须通过宿主实例日志读取，不能落到 dashboard 当前容器的 self logs。
+    has_routable_instance = bool(host_instance_id)
     from app.tenant.registry import tenant_registry
-    if not has_instance_record and tenant_registry.get(tenant_id) is not None:
+    if not has_routable_instance and tenant_registry.get(tenant_id) is not None:
         return await api_self_logs(lines=lines, since=since, grep=grep,
                                    level=level, _token=_token)
 
@@ -930,8 +934,13 @@ async def api_instance_logs(
         import json as _json
         from app.services import redis_client as redis
         if redis.available():
-            cached = redis.execute("GET", f"logs:{tenant_id}")
-            if cached:
+            cache_tenants = [tenant_id]
+            if host_instance_id and host_instance_id != tenant_id:
+                cache_tenants.append(host_instance_id)
+            for cache_tid in cache_tenants:
+                cached = redis.execute("GET", f"logs:{cache_tid}")
+                if not cached:
+                    continue
                 data = _json.loads(cached)
                 cached_lines = data.get("lines", [])
                 if cached_lines:
@@ -955,6 +964,8 @@ async def api_instance_logs(
                         content={
                             "ok": True,
                             "tenant_id": tenant_id,
+                            "host_tenant_id": host_instance_id or tenant_id,
+                            "is_co_tenant": bool(host_instance_id and host_instance_id != tenant_id),
                             "container": "redis-cache",
                             "log_source": "redis",
                             "buffer_size": data.get("count", len(cached_lines)),
