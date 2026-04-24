@@ -914,13 +914,18 @@ async def api_instance_logs(
     """
     lines = min(max(lines, 10), 2000)
 
-    # ── 优先：如果 tenant 在当前容器中运行，直接读 LOG_BUFFER（零延迟、实时）──
+    # ── 单容器模式：如果没有独立 instance 记录，但 tenant 在当前容器中运行，直接读 LOG_BUFFER ──
+    # 注意：tenant_sync 会把 dashboard/Redis 租户同步进每个容器的 tenant_registry；
+    # 因此 “tenant_registry 有这个 tenant” 不能直接等价于“它运行在当前容器”。
+    from app.services.provisioner import _registry as _instance_registry
+    has_instance_record = _instance_registry.get(tenant_id) is not None
     from app.tenant.registry import tenant_registry
-    if tenant_registry.get(tenant_id) is not None:
+    if not has_instance_record and tenant_registry.get(tenant_id) is not None:
         return await api_self_logs(lines=lines, since=since, grep=grep,
                                    level=level, _token=_token)
 
     # ── 非本容器的 tenant：优先从 Redis 读取（_log_push_loop 每 30s 推送）──
+    cached_log_response: JSONResponse | None = None
     try:
         import json as _json
         from app.services import redis_client as redis
@@ -946,7 +951,7 @@ async def api_instance_logs(
                     error_lines = [l for l in log_lines if "ERROR" in l or "CRITICAL" in l
                                    or "Traceback" in l or "Exception" in l]
                     from datetime import datetime, timezone
-                    return JSONResponse(
+                    cached_log_response = JSONResponse(
                         content={
                             "ok": True,
                             "tenant_id": tenant_id,
@@ -961,6 +966,13 @@ async def api_instance_logs(
                         },
                         headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"},
                     )
+                    cached_count = int(data.get("count", len(cached_lines)) or len(cached_lines))
+                    if cached_count >= lines:
+                        return cached_log_response
+                    logger.info(
+                        "Redis log cache for %s has only %d lines (< requested %d); trying full source",
+                        tenant_id, cached_count, lines,
+                    )
     except Exception:
         logger.warning("Redis log cache read failed for %s, falling back to provisioner", tenant_id, exc_info=True)
 
@@ -969,6 +981,8 @@ async def api_instance_logs(
     result = get_instance_logs(tenant_id, lines=lines, since=since,
                                 grep=grep, level=level)
     if not result.get("ok"):
+        if cached_log_response is not None:
+            return cached_log_response
         # 不要 404，返回 200 + 错误信息让前端能显示
         error_msg = result.get("error", "Not found")
         return {

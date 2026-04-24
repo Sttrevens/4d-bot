@@ -621,7 +621,7 @@ async def _log_push_loop() -> None:
     from app.tenant.registry import tenant_registry
 
     _PUSH_INTERVAL = 30  # 秒
-    _PUSH_LINES = 300    # 推最近 300 行
+    _PUSH_LINES = 1000   # 与 dashboard Lines 下拉上限一致，避免跨容器刷新只剩短尾巴
 
     await asyncio.sleep(15)  # 等启动完成，LOG_BUFFER 有内容
 
