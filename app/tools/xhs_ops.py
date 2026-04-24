@@ -1554,7 +1554,7 @@ async def _handle_xhs_login(args: dict) -> ToolResult:
             logger.info("xhs_ops: using full page screenshot as QR image (%d bytes)", len(qr_screenshot))
 
         # 4. 发送二维码图片给用户
-        sent = _send_qr_image_to_user(qr_screenshot)
+        sent = await _send_qr_image_to_user(qr_screenshot)
         if sent:
             logger.info("xhs_ops: QR code image sent to user for %s", tenant_id)
             qr_delivery_msg = (
@@ -1606,7 +1606,7 @@ async def _handle_xhs_login(args: dict) -> ToolResult:
                         await asyncio.sleep(3)
                         # 重新截图发送
                         new_screenshot = await page.screenshot(type="png", full_page=False)
-                        _send_qr_image_to_user(new_screenshot)
+                        await _send_qr_image_to_user(new_screenshot)
                 except Exception:
                     pass
 
@@ -2645,7 +2645,7 @@ async def _handle_xhs_publish(args: dict) -> ToolResult:
                 )
 
             # 发送 QR 给用户
-            sent = _send_qr_image_to_user(qr_screenshot)
+            sent = await _send_qr_image_to_user(qr_screenshot)
             qr_msg = "二维码已发送" if sent else "无法发送二维码图片"
 
             # 轮询等待用户扫码（最多 90 秒）
