@@ -105,11 +105,11 @@ _FINANCE_RE = re.compile(
     re.IGNORECASE,
 )
 _WEATHER_RE = re.compile(
-    r"(天气|气温|降雨|台风|预警|空气质量|weather|forecast|temperature|rain|storm)",
+    r"(天气|气温|降雨|台风|预警|空气质量|weather|temperature|rain|storm)",
     re.IGNORECASE,
 )
 _POLICY_RE = re.compile(
-    r"(政策|法规|法案|监管|公告|白皮书|行政令|law|regulation|policy|act|guideline)",
+    r"(政策|法规|法案|监管|公告|白皮书|行政令|\b(?:law|regulation|policy|act|guideline)s?\b)",
     re.IGNORECASE,
 )
 _FUTURE_SCOPE_RE = re.compile(

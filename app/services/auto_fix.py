@@ -28,7 +28,9 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
+from dataclasses import dataclass
 
 from openai import AsyncOpenAI, RateLimitError
 
@@ -62,6 +64,41 @@ _CLASSIFY_CATEGORIES = frozenset({"tool_error", "api_error", "timeout"})
 # 只有这些类别才值得触发自我修复（真正的代码 bug），其余属于业务层/外部错误。
 _CODE_BUG_CATEGORIES = frozenset({"unhandled", "tool_exception", "startup_check"})
 
+_TRANSIENT_ERROR_PATTERNS = (
+    "page.goto: timeout",
+    "timeout 30000ms exceeded",
+    "timed out after",
+    "httpx.connecttimeout",
+    "httpcore.connecttimeout",
+    "connecttimeout",
+    "readtimeout",
+    "remoteprotocolerror",
+    "server disconnected without sending a response",
+    "proxyerror",
+    "web_search 连续失败",
+    "auto-lesson for web_search",
+    "network is unreachable",
+    "temporary failure",
+    "connection reset",
+    "connection aborted",
+    "send msg session status invalid",
+    "conversation end",
+    "errcode=95018",
+    "errcode=95013",
+    "login wall",
+)
+_TRANSIENT_TOOL_NAMES = frozenset({
+    "browser_open",
+    "browser_read",
+    "web_search",
+    "fetch_url",
+    "search_social_media",
+    "xhs_search",
+    "xhs_playwright_search",
+    "send_text",
+    "reply_text",
+})
+
 
 def _is_serving_other_repo() -> bool:
     """判断 bot 当前服务的 repo 是否不是自身 repo（即 GITHUB_REPO != SELF_REPO）"""
@@ -75,6 +112,41 @@ def _is_serving_other_repo() -> bool:
 def _is_framework_error(error: "ErrorRecord") -> bool:
     """判断错误是否属于 bot 框架自身的 bug（而非业务逻辑/外部 API 错误）。"""
     return error.category in _CODE_BUG_CATEGORIES
+
+
+def _errors_are_transient_only(errors: list) -> bool:
+    """Return True when all triage errors are external/runtime transients.
+
+    These should not reach the self-fix LLM because it may overfit a temporary
+    network failure into risky source edits and deployments.
+    """
+    if not errors:
+        return False
+
+    for err in errors:
+        category = str(getattr(err, "category", "") or "")
+        if category not in _CLASSIFY_CATEGORIES:
+            return False
+
+        text = "\n".join([
+            str(getattr(err, "summary", "") or ""),
+            str(getattr(err, "detail", "") or ""),
+            str(getattr(err, "tool_name", "") or ""),
+            str(getattr(err, "tool_args", "") or ""),
+        ]).lower()
+
+        if "unknown tool" in text:
+            return False
+        if "syntaxerror" in text or "modulenotfounderror" in text or "importerror" in text:
+            return False
+
+        tool_name = str(getattr(err, "tool_name", "") or "")
+        has_transient_pattern = any(pattern in text for pattern in _TRANSIENT_ERROR_PATTERNS)
+        has_transient_tool = tool_name in _TRANSIENT_TOOL_NAMES
+        if not (has_transient_pattern or (category == "timeout" and has_transient_tool)):
+            return False
+
+    return True
 
 # ── 自我修复专用工具集（比正常对话少很多，只保留诊断和修复相关）──
 
@@ -785,6 +857,7 @@ _CLASSIFY_USER = """\
 不可修复的例子：
 - LLM 一次性传了格式不对的参数（如日期写错）且不是代码逻辑导致
 - 外部 API 临时 500/限流、网络超时（偶发，非系统性）
+- browser_open / web_search / xhs_search / 企微发送出现偶发 timeout、login wall、会话窗口过期
 - 用户权限不足（99991679）— 需要用户重新授权，不是代码 bug
 - 错误消息中包含「不需要自我修复」「这不是代码bug」的提示 — 直接 NO
 
@@ -794,12 +867,71 @@ _CLASSIFY_USER = """\
 是否有可通过修改 bot 代码修复的？只回复 YES 或 NO。"""
 
 
+@dataclass(frozen=True)
+class TransientClassification:
+    is_all_transient: bool
+    reasons: str
+    matched_count: int
+
+
+_TRANSIENT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("browser_open", re.compile(r"Page\.goto: Timeout|Timeout \d+ms exceeded", re.I)),
+    ("httpx", re.compile(r"httpx\\.ConnectTimeout|httpcore\\.ConnectTimeout|ConnectTimeout", re.I)),
+    ("remote_protocol", re.compile(r"RemoteProtocolError|Server disconnected without sending a response|ProxyError", re.I)),
+    ("web_search", re.compile(r"web_search 连续失败|auto-lesson for web_search|web_search.*(timeout|timed out|failed|失败)", re.I)),
+    ("xhs_search", re.compile(r"xhs_search timed out|xhs_ops: search .* timed out|login wall|验证码|CAPTCHA", re.I)),
+    ("search_social_media", re.compile(r"search_social_media.*timeout|social_media.*timeout", re.I)),
+    ("wecom_kf", re.compile(r"95018|send msg session status invalid|95007|invalid msg token|95013|conversation end", re.I)),
+    ("third_party_api", re.compile(r"\b(429|500|502|503|504)\b|rate limit|temporar", re.I)),
+)
+
+
+def _classify_transient_errors(errors: list) -> TransientClassification:
+    """Deterministically identify non-fixable transient/platform failures."""
+    if not errors:
+        return TransientClassification(False, "", 0)
+
+    reasons: list[str] = []
+    matched = 0
+    for e in errors:
+        blob = "\n".join([
+            str(getattr(e, "category", "")),
+            str(getattr(e, "tool_name", "")),
+            str(getattr(e, "summary", "")),
+            str(getattr(e, "detail", "")),
+        ])
+        hit = ""
+        for label, pattern in _TRANSIENT_PATTERNS:
+            if pattern.search(blob):
+                hit = label
+                break
+        if hit:
+            matched += 1
+            reasons.append(hit)
+        else:
+            reasons.append(f"unmatched:{getattr(e, 'tool_name', '') or getattr(e, 'category', '')}")
+
+    return TransientClassification(
+        is_all_transient=matched == len(errors),
+        reasons=", ".join(dict.fromkeys(reasons)),
+        matched_count=matched,
+    )
+
+
 async def _classify_errors_fixable(errors: list) -> bool:
     """用轻量 LLM 判断 tool_error/api_error 是否包含可修复的代码 bug。
 
     fail-closed: 分类失败或超时 → 返回 False（不触发修复，保守策略）。
     """
     global _last_classify_time
+
+    transient = _classify_transient_errors(errors)
+    if transient.is_all_transient:
+        logger.info(
+            "auto_fix classify: %d errors are transient/platform failures (%s), skipping",
+            len(errors), transient.reasons,
+        )
+        return False
 
     now = time.time()
     if now - _last_classify_time < _CLASSIFY_COOLDOWN:

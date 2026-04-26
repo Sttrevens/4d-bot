@@ -31,6 +31,7 @@ from app.services.base_agent import (
     _CUSTOM_TOOL_META_NAMES,
     _get_tenant_tools,
     _to_openai_tools,
+    build_unknown_tool_result,
     ALL_OPENAI_TOOLS,
     # System prompt
     _build_system_prompt,
@@ -331,7 +332,12 @@ async def handle_message(
 
             handler = tool_map.get(func_name)
             if handler is None:
-                result = ToolResult.error(f"unknown tool: {func_name}", code="not_found")
+                result = build_unknown_tool_result(
+                    func_name,
+                    tenant=tenant,
+                    available_tool_names=set(tool_map.keys()),
+                    platform=tenant.platform,
+                )
             else:
                 # 自定义工具风险确认：yellow/red 级别需用户在消息中明确同意
                 risk = _get_custom_tool_risk(tenant.tenant_id, func_name)

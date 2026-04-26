@@ -57,6 +57,7 @@ from app.services.base_agent import (
     should_delegate_to_sub_agent,
     build_sub_agent_system_prompt,
     get_sub_agent_config,
+    build_unknown_tool_result,
     ALL_TOOL_MAP,
     _MAX_ROUNDS,
     _MAX_TOOL_RESULT_LEN,
@@ -2196,7 +2197,12 @@ async def handle_message(
 
             handler = tool_map.get(func_name)
             if handler is None:
-                result = ToolResult.error(f"unknown tool: {func_name}", code="not_found")
+                result = build_unknown_tool_result(
+                    func_name,
+                    tenant=tenant,
+                    available_tool_names=set(tool_map.keys()),
+                    platform=tenant.platform,
+                )
             else:
                 # ── URL 溯源验证：写操作中的 URL 必须来自已见数据 ──
                 if _followup_focus_terms and _search_probe and is_query_off_topic(
