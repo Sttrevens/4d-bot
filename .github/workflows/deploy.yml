@@ -24,7 +24,31 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Check deploy secrets
+        id: deploy_config
+        env:
+          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+        run: |
+          missing=()
+          for v in DEPLOY_KEY DEPLOY_HOST DEPLOY_USER DEPLOY_PATH; do
+            if [ -z "${!v}" ]; then
+              missing+=("$v")
+            fi
+          done
+
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "Deploy skipped: missing GitHub Actions secrets: ${missing[*]}"
+            exit 0
+          fi
+
+          echo "configured=true" >> "$GITHUB_OUTPUT"
+
       - name: Deploy code via tar+ssh
+        if: steps.deploy_config.outputs.configured == 'true'
         env:
           DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
@@ -67,6 +91,7 @@ jobs:
              rm -f /tmp/.env.deploy.bak"
 
       - name: Rebuild and restart
+        if: steps.deploy_config.outputs.configured == 'true'
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.DEPLOY_HOST }}
@@ -178,3 +203,8 @@ jobs:
             docker image prune -f
 
             echo ">>> deploy done at $(date)"
+
+      - name: Deploy skipped
+        if: steps.deploy_config.outputs.configured != 'true'
+        run: |
+          echo "Deploy was skipped because this repository/environment has no deploy secrets configured."
