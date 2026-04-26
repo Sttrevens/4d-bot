@@ -24,7 +24,7 @@ import re
 import time
 import contextvars
 from dataclasses import dataclass
-from typing import Callable, Awaitable
+from typing import Any, Callable, Awaitable
 
 from app.harness import (
     DEFAULT_COMPACTION_AFTER_ROUND,
@@ -76,7 +76,7 @@ def build_timeout_message() -> str:
 
     if tool_set & {"web_search", "fetch_url", "browser_open", "search_social_media",
                    "xhs_search", "xhs_playwright_search"}:
-        parts.append("资料已经帮你查好了")
+        parts.append("还在查资料或等待外部平台返回")
     if tool_set & {"export_file"}:
         parts.append("文件正在生成中，但花的时间比预期长")
     if tool_set & {"create_calendar_event", "update_calendar_event"}:
@@ -85,14 +85,14 @@ def build_timeout_message() -> str:
     if tool_set & {"create_feishu_task"}:
         n = progress.count("create_feishu_task")
         parts.append(f"已经帮你创建了 {n} 个任务")
-    if tool_set & {"send_feishu_message", "send_message_to_user", "reply_feishu_message"}:
-        parts.append("消息已经发出去了")
+    if tool_set & {"send_feishu_message", "send_message_to_user", "send_message_to_group", "reply_feishu_message"}:
+        parts.append("正在处理消息发送相关步骤")
 
     if parts:
         summary = "，".join(parts)
-        return f"抱歉没能一口气做完~ 不过{summary}。你发个「继续」我接着帮你搞定剩下的！"
+        return f"抱歉这次没能一次性完成，不过{summary}。我会自动续跑并在完成后主动把结果发给你。"
     else:
-        return f"抱歉，处理时间太长了，但我已经做了一部分工作。你发个「继续」我接着帮你做~"
+        return "抱歉，这次处理时间超出预期，但我已经完成了一部分并会自动继续处理。"
 
 
 def reset_agent_progress() -> None:
@@ -100,6 +100,7 @@ def reset_agent_progress() -> None:
     _agent_progress.set([])
 
 from app.config import settings
+from app.tools.tool_result import ToolResult
 from app.tools.file_ops import (
     TOOL_DEFINITIONS as FILE_TOOLS,
     TOOL_MAP as FILE_TOOL_MAP,
@@ -354,11 +355,87 @@ ALL_TOOL_MAP = {
     **CRON_AGENT_TOOL_MAP,
 }
 
+
+def build_unknown_tool_result(
+    func_name: str,
+    tenant: Any | None = None,
+    available_tools: set[str] | None = None,
+    *,
+    available_tool_names: set[str] | frozenset[str] | None = None,
+    platform: str = "",
+) -> ToolResult:
+    """Build a customer-safe correction for an unavailable tool call.
+
+    Unknown tool does not mean "the toolbox is locked". In multi-tenant mode it
+    usually means one of: platform mismatch, tenant not authorized, lazy tool
+    group not loaded, or the tool simply does not exist. The returned message is
+    written for the model, but deliberately avoids customer-facing internal ops.
+    """
+    name = (func_name or "").strip()
+    available = set(available_tool_names or available_tools or set())
+    tenant_id = getattr(tenant, "tenant_id", "") if tenant is not None else ""
+    platform = platform or (getattr(tenant, "platform", "") if tenant is not None else "")
+    platform_label = {
+        "wecom_kf": "企微客服",
+        "wecom": "企业微信",
+        "feishu": "飞书",
+        "qq": "QQ",
+    }.get(platform, platform or "当前平台")
+    prefix = f"工具 `{name}` 当前不可用。"
+
+    fallback_bits: list[str] = []
+    if "notify_admin" in available or "notify_admin" in ALL_TOOL_MAP:
+        fallback_bits.append("notify_admin 创建管理员告警")
+    if "set_reminder" in available or "set_reminder" in ALL_TOOL_MAP:
+        fallback_bits.append("set_reminder 创建提醒")
+    if "request_provision" in available or "request_provision" in ALL_TOOL_MAP:
+        fallback_bits.append("request_provision 提交开通申请")
+    fallback = "；可改用：" + " / ".join(fallback_bits) if fallback_bits else ""
+
+    if name in {"send_feishu_message", "send_message_to_user", "send_message_to_group", "reply_feishu_message"} and platform != "feishu":
+        channel_note = "（微信客服通道）" if platform == "wecom_kf" else ""
+        return ToolResult.error(
+            f"{prefix}当前{platform_label}租户{channel_note}（tenant={tenant_id or 'unknown'}）不支持飞书私信/群消息工具，"
+            f"这属于平台能力边界，不是工具系统故障，也不是全局故障。{fallback}。"
+            "如果只是需要让管理员知道，请创建后台告警或提醒；不要对客户说已经私信 Steven。",
+            code="tool_unavailable",
+            retry_hint="改用 notify_admin 或 set_reminder；客户侧只说明“已创建后台提醒/待管理员处理”。",
+        )
+
+    if name in {"create_pull_request", "commit_changes", "push_branch"} or name.startswith("github_"):
+        return ToolResult.error(
+            f"{prefix}这是内部工程操作能力，当前客户对话不可用。"
+            "不要向客户暴露分支、代码评审、部署流水线或自动修复细节，也不要请求客户手动转发内部部署信息。"
+            f"{fallback}。",
+            code="tool_unavailable",
+            retry_hint="面向客户只说明业务状态；如需人工介入，用 notify_admin 或 set_reminder 生成后台待办。",
+        )
+
+    if name in ALL_TOOL_MAP:
+        return ToolResult.error(
+            f"{prefix}该工具存在，但当前{platform_label}租户/已加载工具组没有授权或尚未加载。"
+            "请先使用当前可见工具完成任务，必要时用 request_more_tools 请求非受限工具组；"
+            "不要把它解释成系统故障。"
+            f"{fallback}。",
+            code="tool_unavailable",
+            retry_hint="检查当前 tenant 的 tools_enabled、platform 和已加载工具组；使用可见替代工具。",
+        )
+
+    return ToolResult.error(
+        f"{prefix}系统中没有这个工具名。请根据当前可用工具重新规划，不要声称工具系统锁死。{fallback}。",
+        code="tool_not_found",
+        retry_hint="选择当前工具列表中的真实工具；如果是内部需求，用 notify_admin 或 set_reminder 生成后台待办。",
+    )
+
 # 自我迭代相关工具名（客户租户禁用）
 _SELF_ITERATION_TOOLS = frozenset(SELF_TOOL_MAP.keys()) | frozenset(SERVER_TOOL_MAP.keys())
 
 # 实例管理工具名（仅 instance_management_enabled 租户可用）
-_INSTANCE_MGMT_TOOLS = frozenset(PROVISION_TOOL_MAP.keys()) | frozenset(CUSTOMER_TOOL_MAP.keys())
+_PUBLIC_CUSTOMER_TOOLS = frozenset({"notify_admin"})
+_INSTANCE_MGMT_TOOLS = (
+    frozenset(PROVISION_TOOL_MAP.keys())
+    | (frozenset(CUSTOMER_TOOL_MAP.keys()) - _PUBLIC_CUSTOMER_TOOLS)
+)
 
 # 自定义工具元操作名（需要自动注入 tenant_id）
 _CUSTOM_TOOL_META_NAMES = frozenset(CUSTOM_TOOL_MAP.keys()) | frozenset(SKILL_TOOL_MAP.keys()) | frozenset(SKILL_MGMT_TOOL_MAP.keys())
@@ -2229,8 +2306,9 @@ _ACTION_CLAIM_PATTERNS: list[tuple[_re.Pattern, frozenset[str]]] = [
      frozenset({"create_calendar_event", "create_document", "create_feishu_doc",
                 "add_bitable_record", "add_bitable_records"})),
     # "已经发送了/发了/寄了" → 需要 send 类工具
-    (_re.compile(r"(已经|已).{0,15}(发送|发了|发出|寄了|寄出)"),
-     frozenset({"send_mail", "send_feishu_message"})),
+    (_re.compile(r"(已经|已).{0,15}(发送|发了|发出|发到|发给|寄了|寄出)"),
+     frozenset({"send_mail", "send_feishu_message", "send_message_to_user",
+                "send_message_to_group", "reply_feishu_message"})),
     # "已经修改了/更新了/编辑了" → 需要 update/edit 类工具
     (_re.compile(r"(已经|已|都|全部).{0,15}(修改|更新|编辑|改好|改了)"),
      frozenset({"update_calendar_event", "edit_feishu_doc", "update_bitable_record",
@@ -2247,6 +2325,9 @@ _ACTION_CLAIM_PATTERNS: list[tuple[_re.Pattern, frozenset[str]]] = [
     # "我去做/马上/这就/立刻/先去" → 承诺要做（还没做）
     (_re.compile(r"(我[去就来]|马上|这就|立刻|先去|我现在|接下来我).{0,10}(做|处理|执行|操作|开始|修复|修改|删|加|创建|发送)"),
      frozenset()),  # 空集 = 任何工具都不满足 = 一定是空承诺
+    # "通知/转告 Steven/管理员" 必须有真正的管理员通知工具成功支撑，提醒不等于私信。
+    (_re.compile(r"(通知|转告|告诉|私信).{0,18}(Steven|steven|吴天骄|管理员|admin|后台|老板)", _re.IGNORECASE),
+     frozenset({"notify_admin"})),
 ]
 
 # 例外：这些短语看起来像承诺但实际是在描述过去的动作或结果
@@ -2292,6 +2373,22 @@ def _export_file_sent_successfully(
     return False
 
 
+def _required_action_failed(
+    required_tools: frozenset[str],
+    action_outcomes: list[tuple[str, str]] | None,
+) -> bool:
+    if not action_outcomes:
+        return False
+    failure_markers = ("→ 失败", "失败", "error", "[ERROR]", "权限不足", "暂未送达", "failed")
+    for func_name, outcome in action_outcomes:
+        if func_name not in required_tools:
+            continue
+        lowered = outcome.lower()
+        if any(marker.lower() in lowered for marker in failure_markers):
+            return True
+    return False
+
+
 def detect_action_claims(
     reply_text: str,
     tool_names_called: list[str],
@@ -2323,6 +2420,12 @@ def detect_action_claims(
     if _FILE_SENT_CLAIM.search(reply_text) and not _export_file_sent_successfully(action_outcomes):
         logger.info("action claim detected (file-send claim without confirmed export success): %s", reply_text[:80])
         return True
+
+    for pattern, required_tools in _ACTION_CLAIM_PATTERNS:
+        if required_tools and pattern.search(reply_text) and called & required_tools:
+            if _required_action_failed(required_tools, action_outcomes):
+                logger.info("action claim detected (claim with failed tool outcome): %s", reply_text[:80])
+                return True
 
     # 如果模型已经在积极工作（≥3 次工具调用），跳过所有检测。
     # 模型在做了实际工作后的文本回复（中间汇报/结果报告/完成总结）
@@ -3048,6 +3151,53 @@ _PROGRESS_PROMPT = """\
 - 直接输出这句话，不要任何解释"""
 
 
+_PROGRESS_ADMIN_NOTIFY_CLAIM = re.compile(
+    r"((正在|准备|马上|这就|已经|已|帮你|替你|给你).{0,18}(同步|通知|转告|告诉|私信).{0,18}"
+    r"(Steven|steven|吴天骄|管理员|admin|后台|老板)"
+    r"|((Steven|steven|吴天骄|管理员|admin|后台|老板).{0,18}(确认|知道|收到|处理)))",
+    re.IGNORECASE,
+)
+
+
+def _notify_admin_succeeded(action_outcomes: list[tuple[str, str]] | None) -> bool:
+    if not action_outcomes:
+        return False
+    success_markers = ("delivered_channels", "admin_alerts", "super_admin", "alert_id", "成功")
+    failure_markers = ("failed_channels", "失败", "error", "暂未送达")
+    for func_name, outcome in action_outcomes:
+        if func_name != "notify_admin":
+            continue
+        lowered = outcome.lower()
+        if any(marker.lower() in lowered for marker in failure_markers):
+            return False
+        if any(marker.lower() in lowered for marker in success_markers):
+            return True
+    return False
+
+
+def _sanitize_progress_hint(
+    text: str | None,
+    tool_names: list[str],
+    *,
+    user_text: str = "",
+    action_outcomes: list[tuple[str, str]] | None = None,
+) -> str | None:
+    """Reject progress hints that make unsupported external-action claims."""
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return None
+
+    if _PROGRESS_ADMIN_NOTIFY_CLAIM.search(cleaned) and not _notify_admin_succeeded(action_outcomes):
+        logger.info("progress hint rejected: unsupported admin notify claim: %s", cleaned)
+        return None
+
+    if detect_action_claims(cleaned, tool_names, user_text=user_text, action_outcomes=action_outcomes):
+        logger.info("progress hint rejected: unsupported action claim: %s", cleaned)
+        return None
+
+    return cleaned
+
+
 def _extract_persona_hint() -> str:
     """从当前租户的 system prompt 中提取简短人设描述（约 100 字以内）。
 
@@ -3135,7 +3285,7 @@ async def _generate_progress_hint(
                     break
             else:
                 text = text[:50]
-        return text
+        return _sanitize_progress_hint(text, tool_names, user_text=user_text)
 
     except Exception as e:
         logger.info("progress hint LLM failed: %s", e)

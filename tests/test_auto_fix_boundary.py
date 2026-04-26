@@ -8,6 +8,7 @@
 
 from unittest.mock import patch, MagicMock
 
+from app.services.error_log import ErrorRecord
 from app.services.auto_fix import _ALLOWED_WRITE_PATHS, _execute_tool
 
 
@@ -201,3 +202,86 @@ class TestAllowlist:
             tool_map,
         )
         assert "不允许修改" in result
+
+
+class TestTransientErrorContainment:
+    def test_network_timeouts_are_not_self_fixable(self):
+        from app.services.auto_fix import _errors_are_transient_only
+
+        errors = [
+            ErrorRecord(
+                time="2026-04-26T01:27:06",
+                category="timeout",
+                summary="Page.goto: Timeout 30000ms exceeded",
+                detail="playwright._impl._errors.TimeoutError: Page.goto: Timeout 30000ms exceeded",
+                tool_name="browser_open",
+                tool_args='{"url":"https://news.qq.com/rain/a/20251222A07HXX00"}',
+            ),
+            ErrorRecord(
+                time="2026-04-26T01:57:46",
+                category="api_error",
+                summary="httpx.ConnectTimeout while sending wecom kf progress",
+                detail="httpcore.ConnectTimeout\nhttpx.ConnectTimeout",
+                tool_name="reply_text",
+            ),
+            ErrorRecord(
+                time="2026-04-26T01:29:34",
+                category="timeout",
+                summary="xhs_search timed out after 120s",
+                detail="app.tools.xhs_ops: xhs_ops: search '游戏开发 AI 工作流 痛点' timed out after 120s",
+                tool_name="xhs_search",
+            ),
+        ]
+
+        assert _errors_are_transient_only(errors)
+
+    def test_unknown_tool_is_not_transient(self):
+        from app.services.auto_fix import _errors_are_transient_only
+
+        errors = [
+            ErrorRecord(
+                time="2026-04-26T02:00:00",
+                category="tool_error",
+                summary="unknown tool: send_feishu_message",
+                detail="unknown tool: send_feishu_message",
+                tool_name="send_feishu_message",
+            )
+        ]
+
+        assert not _errors_are_transient_only(errors)
+
+    def test_remote_protocol_disconnect_is_transient(self):
+        from app.services.auto_fix import _classify_transient_errors, _errors_are_transient_only
+
+        errors = [
+            ErrorRecord(
+                time="2026-04-26T05:39:02",
+                category="api_error",
+                summary="auto_fix gemini API call failed",
+                detail="httpx.RemoteProtocolError: Server disconnected without sending a response.",
+                tool_name="gemini",
+            )
+        ]
+
+        classification = _classify_transient_errors(errors)
+        assert classification.is_all_transient
+        assert "remote_protocol" in classification.reasons
+        assert _errors_are_transient_only(errors)
+
+    def test_repeated_web_search_failure_is_transient(self):
+        from app.services.auto_fix import _classify_transient_errors, _errors_are_transient_only
+
+        errors = [
+            ErrorRecord(
+                time="2026-04-26T05:35:58",
+                category="tool_error",
+                summary="web_search 连续失败3次，考虑换一种方式或工具",
+                detail="tool_tracker: auto-lesson for web_search: web_search 连续失败3次",
+                tool_name="web_search",
+            )
+        ]
+
+        classification = _classify_transient_errors(errors)
+        assert classification.is_all_transient
+        assert "web_search" in classification.reasons
+        assert _errors_are_transient_only(errors)

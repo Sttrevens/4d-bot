@@ -76,6 +76,39 @@ def test_rewrite_xd_annual_results_query_avoids_us_finance_domains():
     assert "site:sec.gov" not in rewritten
 
 
+def test_ai_market_forecast_does_not_trigger_weather_domains():
+    rewritten = rewrite_web_search_query(
+        "IDC AI agent market forecast and business impact",
+        user_text="帮我梳理智能体商业化和获客雷达的真实市场判断",
+        current_year=2026,
+    )
+    assert "weather.com" not in rewritten
+    assert "noaa.gov" not in rewritten
+
+
+def test_ai_roi_report_does_not_trigger_finance_or_gov_domains():
+    rewritten = rewrite_web_search_query(
+        "McKinsey 2024 2025 AI agent business impact report ROI",
+        user_text="客户想理解智能体业务规划和商业回报",
+        current_year=2026,
+    )
+    assert "finance.yahoo.com" not in rewritten
+    assert "investing.com" not in rewritten
+    assert "site:sec.gov" not in rewritten
+    assert "site:.gov" not in rewritten
+
+
+def test_creator_economy_ai_report_keeps_general_query():
+    rewritten = rewrite_web_search_query(
+        "2026 creator economy trends AI monetization knowledge IP report",
+        user_text="帮我找知识IP用AI分身变现的真实趋势",
+        current_year=2026,
+    )
+    assert "weather.com" not in rewritten
+    assert "finance.yahoo.com" not in rewritten
+    assert "site:.gov" not in rewritten
+
+
 def test_temporal_scope_drift_query_detects_future_projection_on_now_turn():
     user_text = "现在NBA季后赛正式出炉了，给我做每轮比分预测"
     assert is_temporal_scope_drift_query(

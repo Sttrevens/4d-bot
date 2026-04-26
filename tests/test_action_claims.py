@@ -5,7 +5,7 @@ actions in text but didn't actually call the corresponding tools.
 """
 
 import pytest
-from app.services.base_agent import detect_action_claims
+from app.services.base_agent import _sanitize_progress_hint, detect_action_claims
 
 
 class TestDeleteClaims:
@@ -52,6 +52,20 @@ class TestSendClaims:
     def test_claimed_send_with_actual_tool(self):
         assert not detect_action_claims("已经发送了邮件", ["send_mail"])
 
+    def test_claimed_send_with_failed_outcome(self):
+        assert detect_action_claims(
+            "已经发到群里了",
+            ["send_message_to_group"],
+            action_outcomes=[("send_message_to_group", "→ 失败: [ERROR] 权限不足")],
+        )
+
+    def test_claimed_send_with_success_outcome(self):
+        assert not detect_action_claims(
+            "已经发到群里了",
+            ["send_message_to_group"],
+            action_outcomes=[("send_message_to_group", "→ 成功 message_id=om_xxx")],
+        )
+
     def test_file_sent_claim_requires_confirmed_export_success(self):
         assert detect_action_claims(
             "文件已经发你了，记得看。",
@@ -64,6 +78,13 @@ class TestSendClaims:
             "文件已经发你了，记得看。",
             ["export_file"],
             action_outcomes=[("export_file", "文件 食堂减脂指南.md 已发送给用户（1.2KB）。用户可在聊天中直接下载。")],
+        )
+
+    def test_pdf_generated_claim_allows_export_success(self):
+        assert not detect_action_claims(
+            "PDF 已经生成，可以直接下载。",
+            ["export_file"],
+            action_outcomes=[("export_file", "文件 DaiLing_AI_Growth_v1.0.pdf 已发送给用户（75KB）。用户可在聊天中直接下载。")],
         )
 
 
@@ -101,6 +122,9 @@ class TestPromisePatterns:
     def test_promise_even_with_tools(self):
         # "我去做" patterns are ALWAYS empty promises (bot should call tools, not announce)
         assert detect_action_claims("我去删一下", ["fetch_url", "web_search"])
+
+    def test_transfer_message_to_steven_is_action_promise(self):
+        assert detect_action_claims("明白了，我这就转告Steven让他去后台处理", [])
 
 
 class TestFalsePositives:
@@ -180,3 +204,19 @@ class TestEdgeCases:
             [],
             user_text="今晚提醒我报销",
         )
+
+
+class TestProgressHintSanitizer:
+    def test_rejects_admin_sync_claim_without_notify_success(self):
+        assert _sanitize_progress_hint(
+            "文件我看到了，正在同步给 Steven 确认你的想法呢",
+            ["export_file"],
+            user_text="把方案转成 PDF",
+        ) is None
+
+    def test_allows_neutral_progress_hint(self):
+        assert _sanitize_progress_hint(
+            "我先把这份方案整理成更清楚的版本",
+            ["export_file"],
+            user_text="把方案转成 PDF",
+        ) == "我先把这份方案整理成更清楚的版本"
