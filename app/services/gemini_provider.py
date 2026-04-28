@@ -14,12 +14,14 @@ import logging
 import os
 import re
 import time
+from dataclasses import dataclass
 from typing import Callable, Awaitable
 
 from google import genai
 from google.genai import types
 
 from app.harness import (
+    build_stable_common_knowledge_search_nudge,
     build_tool_domain_nudge,
     build_tool_settle_nudge,
     compress_gemini_function_results,
@@ -83,6 +85,109 @@ from app.services.tool_tracker import (
 )
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_MODEL = "gemini-3-flash-preview"
+_DEFAULT_STRONG_MODEL = "gemini-3.1-pro-preview-customtools"
+_LEGACY_STRONG_MODELS = frozenset({"gemini-2.5-pro"})
+_TRUE_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
+
+
+def _default_gemini_model() -> str:
+    return os.getenv("GEMINI_DEFAULT_MODEL", _DEFAULT_MODEL).strip() or _DEFAULT_MODEL
+
+
+def _default_gemini_strong_model() -> str:
+    return os.getenv("GEMINI_STRONG_MODEL", _DEFAULT_STRONG_MODEL).strip() or _DEFAULT_STRONG_MODEL
+
+
+@dataclass(frozen=True)
+class GeminiModelConfig:
+    base_model: str
+    strong_model: str
+    base_model_source: str
+    strong_model_source: str
+    strong_model_replaced: bool = False
+    tenant_base_model: str = ""
+    tenant_strong_model: str = ""
+    env_base_model: str = ""
+    env_strong_model: str = ""
+
+
+def _env_truthy(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in _TRUE_ENV_VALUES
+
+
+def _resolve_gemini_model_config(tenant) -> GeminiModelConfig:
+    """Resolve Gemini base/strong models and guard against stale 2.5 Pro pins."""
+    tenant_base = str(getattr(tenant, "llm_model", "") or "").strip()
+    tenant_strong = str(getattr(tenant, "llm_model_strong", "") or "").strip()
+    env_base = os.getenv("GEMINI_DEFAULT_MODEL", "").strip()
+    env_strong = os.getenv("GEMINI_STRONG_MODEL", "").strip()
+
+    if tenant_base:
+        base_model = tenant_base
+        base_source = "tenant.llm_model"
+    elif env_base:
+        base_model = env_base
+        base_source = "GEMINI_DEFAULT_MODEL"
+    else:
+        base_model = _DEFAULT_MODEL
+        base_source = "default"
+
+    if tenant_strong:
+        strong_model = tenant_strong
+        strong_source = "tenant.llm_model_strong"
+    elif env_strong:
+        strong_model = env_strong
+        strong_source = "GEMINI_STRONG_MODEL"
+    else:
+        strong_model = _DEFAULT_STRONG_MODEL
+        strong_source = "default"
+
+    replaced = False
+    if strong_model in _LEGACY_STRONG_MODELS and not _env_truthy("GEMINI_ALLOW_LEGACY_25_PRO"):
+        strong_model = _DEFAULT_STRONG_MODEL
+        strong_source = f"{strong_source}(stale-replaced)"
+        replaced = True
+
+    return GeminiModelConfig(
+        base_model=base_model,
+        strong_model=strong_model,
+        base_model_source=base_source,
+        strong_model_source=strong_source,
+        strong_model_replaced=replaced,
+        tenant_base_model=tenant_base,
+        tenant_strong_model=tenant_strong,
+        env_base_model=env_base,
+        env_strong_model=env_strong,
+    )
+
+
+def _is_voice_turn(user_text: str) -> bool:
+    text = user_text or ""
+    return "[语音消息]" in text or "[音频]" in text
+
+
+def _should_start_strong_model(
+    *,
+    user_text: str,
+    task_type: str,
+    groups: set[str] | None,
+    sub_agent_type: str | None,
+    base_model: str,
+    strong_model: str,
+) -> bool:
+    if sub_agent_type or not strong_model or strong_model == base_model:
+        return False
+    if _is_voice_turn(user_text):
+        return True
+    strong_start_groups = {"leadgen", "admin", "devops", "code_dev", "research"}
+    active_groups = set(groups or set())
+    return bool(
+        task_type in {"deep", "research"}
+        or (active_groups & strong_start_groups)
+        or len(active_groups - {"core"}) >= 2
+    )
 
 # ── LLM 意图分类（替代硬编码关键词） ──
 
@@ -1178,20 +1283,41 @@ async def handle_message(
         _client_args["proxy"] = _effective_proxy
     http_options["async_client_args"] = _client_args
     http_options["timeout"] = 120_000  # SDK 层总超时 ms
+    model_config = _resolve_gemini_model_config(tenant)
+    if model_config.strong_model_replaced:
+        logger.warning(
+            "gemini model config: stale strong model replaced tenant=%s env=%s strong=%s",
+            model_config.tenant_strong_model,
+            model_config.env_strong_model,
+            model_config.strong_model,
+        )
     logger.info(
         "gemini client route: base_url=%s(base=%s) proxy=%s trust_env=%s model=%s",
         http_options.get("base_url", "(direct)"),
         _base_url_source,
         "on" if _effective_proxy else "off",
         _client_args.get("trust_env"),
-        tenant.llm_model or "gemini-3-flash-preview",
+        model_config.base_model,
+    )
+    logger.info(
+        "gemini model config: tenant_base=%s tenant_strong=%s env_base=%s env_strong=%s "
+        "base=%s(source=%s) strong=%s(source=%s replaced=%s)",
+        model_config.tenant_base_model or "(empty)",
+        model_config.tenant_strong_model or "(empty)",
+        model_config.env_base_model or "(empty)",
+        model_config.env_strong_model or "(empty)",
+        model_config.base_model,
+        model_config.base_model_source,
+        model_config.strong_model,
+        model_config.strong_model_source,
+        model_config.strong_model_replaced,
     )
     client = genai.Client(
         api_key=tenant.llm_api_key,
         http_options=http_options,
     )
-    model_name = tenant.llm_model or "gemini-3-flash-preview"
-    strong_model = tenant.llm_model_strong  # 复杂任务自动升级（如 gemini-2.5-pro）
+    model_name = model_config.base_model
+    strong_model = model_config.strong_model
 
     # ── LLM 意图分类（在加载工具之前，用分类结果指导工具组选择）──
     _intent = await _classify_intent_llm(client, model_name, user_text)
@@ -1519,11 +1645,17 @@ async def handle_message(
     # ── Hybrid Model 路由（GTC AI-Q 模式）──
     # 子 agent 已经委托走了 → Flash 足够（子 agent 自己有 Pro 升级逻辑）
     # 主 agent 处理多域任务（未委托）→ 提前用 Pro（编排决策需要更强推理）
-    if (not _sub_agent_type and _task_type in ("deep", "normal")
-            and _llm_groups and len(_llm_groups - {"core"}) >= 2
-            and strong_model and strong_model != model_name):
-        logger.info("hybrid routing: multi-domain task (%s), starting with Pro for orchestration",
-                    _llm_groups)
+    _should_start_strong = _should_start_strong_model(
+        user_text=user_text,
+        task_type=_task_type,
+        groups=_llm_groups,
+        sub_agent_type=_sub_agent_type,
+        base_model=model_name,
+        strong_model=strong_model,
+    )
+    if _should_start_strong:
+        logger.info("hybrid routing: task=%s groups=%s, starting with strong model %s",
+                    _task_type, _llm_groups, strong_model)
         _escalated = True  # 直接用 Pro，不等 round 6
     _nudged = False  # 标记是否已追加过 unfulfilled promise 催促
     _deliverable_nudge_count = 0  # 交付物催促计数（允许最多 2 次）
@@ -1565,7 +1697,14 @@ async def handle_message(
         elif _pro_ok and (_escalated or round_num >= 6):
             current_model = strong_model
 
-        logger.info("gemini agent round %d (model=%s)", round_num + 1, current_model)
+        logger.info(
+            "gemini agent round %d (model=%s base=%s strong=%s voice=%s)",
+            round_num + 1,
+            current_model,
+            model_name,
+            strong_model,
+            _is_voice_turn(user_text),
+        )
 
         # 连接错误 / 服务端错误自动重试（应对间歇性 DNS 污染 / 网络抖动 / 500）
         # 如果当前用的是升级后的强模型，重试耗尽后 fallback 回基础模型再试一次
@@ -2032,6 +2171,23 @@ async def handle_message(
                     logger.info("progress hint: LLM returned None (generation failed or text invalid)")
 
         proposed_tool_names = [fc.function_call.name for fc in function_calls]
+        stable_common_nudge = build_stable_common_knowledge_search_nudge(
+            user_text,
+            proposed_tool_names,
+        )
+        if stable_common_nudge:
+            logger.info(
+                "stable common knowledge nudge at round %d (proposed=%s, task_type=%s)",
+                round_num + 1,
+                proposed_tool_names,
+                _task_type,
+            )
+            contents.append(content_obj)
+            contents.append(types.Content(
+                role="user",
+                parts=[types.Part(text=stable_common_nudge)],
+            ))
+            continue
         domain_nudge = build_tool_domain_nudge(
             user_text,
             proposed_tool_names,

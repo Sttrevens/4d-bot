@@ -14,6 +14,22 @@ _EXPLICIT_HEAVY_RESEARCH_RE = re.compile(
     r"一定要小红书|必须用浏览器|逐条核对)",
     re.IGNORECASE,
 )
+_STABLE_COMMON_KNOWLEDGE_RE = re.compile(
+    r"(热量|卡路里|大卡|千卡|kcal|calorie|calories|"
+    r"酒精度|abv|单位换算|换算|多少克|多少毫升|ml|g)",
+    re.IGNORECASE,
+)
+_STABLE_COMMON_FOOD_RE = re.compile(
+    r"(清酒|威士忌|啤酒|红酒|白酒|烧酒|米饭|面包|鸡蛋|牛奶|咖啡|茶|"
+    r"鱼腥草|刺身|三文鱼|牛肉|鸡胸|豆腐|苹果|香蕉|饮料|食物|酒)",
+    re.IGNORECASE,
+)
+_EXPLICIT_SOURCE_OR_FRESHNESS_RE = re.compile(
+    r"(搜|搜索|查|查询|来源|链接|出处|引用|最新|目前|现在|今年|今日|今天|"
+    r"官方|精确|准确|某品牌|品牌|营养表|配料表|价格|报价|政策|法规|医疗|药|病|"
+    r"source|link|latest|current|official|brand|nutrition facts|price)",
+    re.IGNORECASE,
+)
 
 _PUBLIC_INFO_TOOLS = frozenset({
     "web_search",
@@ -77,6 +93,26 @@ def is_light_advice_turn(user_text: str) -> bool:
     if _EXPLICIT_HEAVY_RESEARCH_RE.search(text):
         return False
     return bool(_LIGHT_ADVICE_RE.search(text))
+
+
+def build_stable_common_knowledge_search_nudge(
+    user_text: str,
+    proposed_tools: list[str] | tuple[str, ...],
+) -> str | None:
+    """Block web search for stable nutrition/unit common-knowledge turns."""
+    text = (user_text or "").strip()
+    proposed = set(proposed_tools or [])
+    if not text or proposed != {"web_search"}:
+        return None
+    if not (_STABLE_COMMON_KNOWLEDGE_RE.search(text) and _STABLE_COMMON_FOOD_RE.search(text)):
+        return None
+    if _EXPLICIT_SOURCE_OR_FRESHNESS_RE.search(text):
+        return None
+    return (
+        "POLICY BLOCK: 这是稳定常识/常见营养热量类问题，不需要 web_search。"
+        "请直接基于常识给大概范围，并说明会随品牌、度数、做法或份量浮动；"
+        "不要声称查过来源，也不要编造链接。"
+    )
 
 
 def _is_success_outcome(outcome: str) -> bool:

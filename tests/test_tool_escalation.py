@@ -1,4 +1,28 @@
-from app.harness.tool_escalation import build_tool_domain_nudge, build_tool_settle_nudge
+from app.harness.tool_escalation import (
+    build_stable_common_knowledge_search_nudge,
+    build_tool_domain_nudge,
+    build_tool_settle_nudge,
+)
+
+
+def test_stable_calorie_common_knowledge_blocks_web_search():
+    nudge = build_stable_common_knowledge_search_nudge(
+        "清酒热量和威士忌比怎么样",
+        ["web_search"],
+    )
+
+    assert nudge is not None
+    assert "稳定常识" in nudge
+    assert "大概范围" in nudge
+
+
+def test_explicit_source_request_allows_calorie_web_search():
+    nudge = build_stable_common_knowledge_search_nudge(
+        "清酒热量和威士忌比怎么样，给我来源",
+        ["web_search"],
+    )
+
+    assert nudge is None
 
 
 def test_light_advice_stops_browser_escalation_after_enough_web_info():
