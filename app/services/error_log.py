@@ -28,11 +28,11 @@ _MAX_RECORDS = 50
 _buffer: deque[ErrorRecord] = deque(maxlen=_MAX_RECORDS)
 
 # 错误回调：record_error 时自动调用，用于触发自动修复
-# 签名: callback(category: str) -> None
-_on_error_callback: Callable[[str], None] | None = None
+# 签名: callback(record: ErrorRecord) -> None
+_on_error_callback: Callable[[ErrorRecord], None] | None = None
 
 
-def set_error_callback(callback: Callable[[str], None]) -> None:
+def set_error_callback(callback: Callable[[ErrorRecord], None]) -> None:
     """设置错误回调（由 main.py 启动时注入 auto_fix.maybe_trigger_fix）"""
     global _on_error_callback
     _on_error_callback = callback
@@ -65,19 +65,20 @@ def record_error(
         except Exception:
             args_str = str(tool_args)[:500]
 
-    _buffer.append(ErrorRecord(
+    record = ErrorRecord(
         time=datetime.now().isoformat(timespec="seconds"),
         category=category,
         summary=summary[:500],
         detail=detail[:2000],
         tool_name=tool_name,
         tool_args=args_str,
-    ))
+    )
+    _buffer.append(record)
 
     # 通知自动修复模块
     if _on_error_callback:
         try:
-            _on_error_callback(category)
+            _on_error_callback(record)
         except Exception:
             pass  # 回调失败不影响主流程
 

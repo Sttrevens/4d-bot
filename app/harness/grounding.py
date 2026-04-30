@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from urllib.parse import urlparse
 
+from app.harness.common_knowledge import should_relax_common_knowledge_grounding
 from app.harness.turn_mode import infer_turn_mode, is_non_actionable_turn
 
 _EXPLICIT_RESEARCH_RE = re.compile(
@@ -310,6 +311,8 @@ def requires_external_grounding(user_text: str) -> bool:
         return False
     if _is_first_party_context_turn(text):
         return False
+    if should_relax_common_knowledge_grounding(text):
+        return False
     return bool(
         _EXPLICIT_RESEARCH_RE.search(text)
         or _PRICING_RE.search(text)
@@ -447,6 +450,8 @@ def should_relax_fact_grounding(user_text: str) -> bool:
     text = (user_text or "").strip()
     if not text:
         return False
+    if should_relax_common_knowledge_grounding(text):
+        return True
     if _PRICING_RE.search(text) or _PUBLIC_ENTITY_FACT_RE.search(text):
         return False
     if is_non_actionable_turn(text) and _CONCEPTUAL_TOPICS_RE.search(text):

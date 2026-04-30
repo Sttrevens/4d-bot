@@ -35,6 +35,12 @@ from dataclasses import dataclass
 from openai import AsyncOpenAI, RateLimitError
 
 from app.config import settings
+from app.harness.runtime_errors import (
+    NEEDS_TRIAGE,
+    TRANSIENT_UPSTREAM,
+    classify_runtime_error,
+    classify_runtime_error_batch,
+)
 from app.services.kimi import _is_k2_model, _extra_body
 
 logger = logging.getLogger(__name__)
@@ -114,6 +120,15 @@ def _is_framework_error(error: "ErrorRecord") -> bool:
     return error.category in _CODE_BUG_CATEGORIES
 
 
+@dataclass(frozen=True)
+class AutoFixSelection:
+    should_run: bool
+    relevant_errors: list
+    triage_errors: list
+    transient_count: int
+    manual_count: int
+
+
 def _errors_are_transient_only(errors: list) -> bool:
     """Return True when all triage errors are external/runtime transients.
 
@@ -123,30 +138,19 @@ def _errors_are_transient_only(errors: list) -> bool:
     if not errors:
         return False
 
-    for err in errors:
-        category = str(getattr(err, "category", "") or "")
-        if category not in _CLASSIFY_CATEGORIES:
-            return False
+    return all(classify_runtime_error(err).kind == TRANSIENT_UPSTREAM for err in errors)
 
-        text = "\n".join([
-            str(getattr(err, "summary", "") or ""),
-            str(getattr(err, "detail", "") or ""),
-            str(getattr(err, "tool_name", "") or ""),
-            str(getattr(err, "tool_args", "") or ""),
-        ]).lower()
 
-        if "unknown tool" in text:
-            return False
-        if "syntaxerror" in text or "modulenotfounderror" in text or "importerror" in text:
-            return False
-
-        tool_name = str(getattr(err, "tool_name", "") or "")
-        has_transient_pattern = any(pattern in text for pattern in _TRANSIENT_ERROR_PATTERNS)
-        has_transient_tool = tool_name in _TRANSIENT_TOOL_NAMES
-        if not (has_transient_pattern or (category == "timeout" and has_transient_tool)):
-            return False
-
-    return True
+def _select_autofix_relevant_errors(errors: list) -> AutoFixSelection:
+    """Select only deterministic auto-fixable code errors from a recent batch."""
+    batch = classify_runtime_error_batch(errors)
+    return AutoFixSelection(
+        should_run=batch.should_autofix,
+        relevant_errors=list(batch.autofixable_errors),
+        triage_errors=list(batch.triage_errors),
+        transient_count=batch.transient_count,
+        manual_count=batch.manual_count,
+    )
 
 # ── 自我修复专用工具集（比正常对话少很多，只保留诊断和修复相关）──
 
@@ -894,20 +898,27 @@ def _classify_transient_errors(errors: list) -> TransientClassification:
     reasons: list[str] = []
     matched = 0
     for e in errors:
-        blob = "\n".join([
-            str(getattr(e, "category", "")),
-            str(getattr(e, "tool_name", "")),
-            str(getattr(e, "summary", "")),
-            str(getattr(e, "detail", "")),
-        ])
-        hit = ""
-        for label, pattern in _TRANSIENT_PATTERNS:
-            if pattern.search(blob):
-                hit = label
-                break
-        if hit:
+        decision = classify_runtime_error(e)
+        if decision.kind == TRANSIENT_UPSTREAM:
             matched += 1
-            reasons.append(hit)
+            reason = next(
+                (
+                    label for label in (
+                        "remote_protocol",
+                        "web_search",
+                        "xhs_search",
+                        "search_social_media",
+                        "browser_open",
+                        "wecom_kf",
+                        "third_party_api",
+                        "github",
+                        "gemini",
+                    )
+                    if label in decision.labels
+                ),
+                decision.reason,
+            )
+            reasons.append(reason)
         else:
             reasons.append(f"unmatched:{getattr(e, 'tool_name', '') or getattr(e, 'category', '')}")
 
@@ -1031,9 +1042,16 @@ async def _classify_openai(user_msg: str) -> str:
 # ── 触发入口 ──
 
 
-def maybe_trigger_fix(error_category: str = "") -> None:
+def maybe_trigger_fix(error_record_or_category="") -> None:
     """由 error_log.record_error 回调调用。检查防护条件后调度去抖修复。"""
     global _debounce_handle, _hourly_fix_count, _hourly_reset_time
+
+    error_record = error_record_or_category if hasattr(error_record_or_category, "category") else None
+    error_category = (
+        str(getattr(error_record, "category", "") or "")
+        if error_record is not None
+        else str(error_record_or_category or "")
+    )
 
     # 基本前置条件
     if not settings.github.token or not settings.self_repo_owner:
@@ -1049,6 +1067,35 @@ def maybe_trigger_fix(error_category: str = "") -> None:
         except RuntimeError:
             pass
         return
+
+    if error_record is not None:
+        decision = classify_runtime_error(error_record)
+        if decision.kind == TRANSIENT_UPSTREAM:
+            logger.info(
+                "auto_fix: skip transient runtime error before debounce category=%s tool=%s reason=%s labels=%s",
+                error_category,
+                getattr(error_record, "tool_name", ""),
+                decision.reason,
+                ",".join(sorted(decision.labels)),
+            )
+            return
+        if decision.diagnostic_only:
+            logger.info(
+                "auto_fix: diagnostic-only runtime error before debounce category=%s tool=%s reason=%s labels=%s",
+                error_category,
+                getattr(error_record, "tool_name", ""),
+                decision.reason,
+                ",".join(sorted(decision.labels)),
+            )
+            return
+        if not decision.autofix_allowed and decision.kind != NEEDS_TRIAGE:
+            logger.info(
+                "auto_fix: fail-closed runtime error before debounce category=%s tool=%s reason=%s",
+                error_category,
+                getattr(error_record, "tool_name", ""),
+                decision.reason,
+            )
+            return
 
     # 多租户安全：仅允许开启自我迭代的租户（平台管理员）触发修复
     try:
@@ -1114,35 +1161,39 @@ async def _debounced_fix() -> None:
         from app.services.error_log import get_recent_errors, format_errors
         errors = get_recent_errors(10)
 
-        # Phase 1: 确定需要修复的错误（unhandled / tool_exception / startup_check）
-        definite = [e for e in errors if e.category not in _SKIP_CATEGORIES
-                    and e.category not in _CLASSIFY_CATEGORIES]
+        selection = _select_autofix_relevant_errors(errors)
+        relevant = list(selection.relevant_errors)
 
-        # Phase 2: 需要 LLM 分类的错误（tool_error / api_error / timeout）
-        needs_triage = [e for e in errors if e.category in _CLASSIFY_CATEGORIES]
+        if selection.transient_count:
+            logger.info(
+                "auto_fix: batch classifier ignored %d transient/platform errors",
+                selection.transient_count,
+            )
+        if selection.manual_count:
+            logger.info(
+                "auto_fix: batch classifier marked %d errors diagnostic-only",
+                selection.manual_count,
+            )
 
-        # 多 repo 安全过滤（只对 definite 类别，triage 由分类器决定）
-        if _is_serving_other_repo():
-            definite = [e for e in definite if _is_framework_error(e)]
-
-        # 决策逻辑：
-        # - 有确定的 bug → 直接修（把 triage 错误也带上作为上下文）
-        # - 只有 triage 错误 → 先用 LLM 分类，确认是代码 bug 才修
-        if definite:
-            relevant = definite + needs_triage
-        elif needs_triage:
-            is_fixable = await _classify_errors_fixable(needs_triage)
-            if not is_fixable:
+        if not relevant and selection.triage_errors:
+            if _errors_are_transient_only(selection.triage_errors):
                 logger.info(
-                    "auto_fix: %d tool/api errors classified as non-fixable, skipping",
-                    len(needs_triage),
+                    "auto_fix: %d triage errors look transient, skipping code self-fix",
+                    len(selection.triage_errors),
                 )
                 return
-            logger.info("auto_fix: %d errors classified as FIXABLE, proceeding",
-                         len(needs_triage))
-            relevant = needs_triage
-        else:
-            return
+            is_fixable = await _classify_errors_fixable(selection.triage_errors)
+            if not is_fixable:
+                logger.info(
+                    "auto_fix: %d triage errors classified as non-fixable, skipping",
+                    len(selection.triage_errors),
+                )
+                return
+            logger.info(
+                "auto_fix: %d triage errors classified as FIXABLE, proceeding",
+                len(selection.triage_errors),
+            )
+            relevant = selection.triage_errors
 
         if not relevant:
             return

@@ -20,6 +20,12 @@ from app.harness.context import (
     append_openai_inbox_messages,
     normalize_inbox_item,
 )
+from app.harness.common_knowledge import (
+    CommonKnowledgeDecision,
+    build_common_knowledge_search_block_message,
+    classify_common_knowledge_turn,
+    should_relax_common_knowledge_grounding,
+)
 from app.harness.grounding import (
     detect_evidence_contract_gap,
     build_grounding_nudge,
@@ -78,6 +84,17 @@ from app.harness.tool_escalation import (
     is_light_advice_turn,
 )
 from app.harness.tool_runtime import invoke_tool_handler
+from app.harness.runtime_errors import (
+    CODE_BUG,
+    IGNORED,
+    MANUAL_DIAGNOSTIC,
+    NEEDS_TRIAGE,
+    TRANSIENT_UPSTREAM,
+    RuntimeErrorBatchDecision,
+    RuntimeErrorDecision,
+    classify_runtime_error,
+    classify_runtime_error_batch,
+)
 
 __all__ = [
     "DEFAULT_COMPACTION_AFTER_ROUND",
@@ -90,6 +107,10 @@ __all__ = [
     "should_plan_before_coding",
     "append_openai_inbox_messages",
     "normalize_inbox_item",
+    "CommonKnowledgeDecision",
+    "build_common_knowledge_search_block_message",
+    "classify_common_knowledge_turn",
+    "should_relax_common_knowledge_grounding",
     "build_grounding_nudge",
     "detect_evidence_contract_gap",
     "build_temporal_grounding_nudge",
@@ -134,4 +155,13 @@ __all__ = [
     "build_tool_settle_nudge",
     "is_light_advice_turn",
     "invoke_tool_handler",
+    "CODE_BUG",
+    "IGNORED",
+    "MANUAL_DIAGNOSTIC",
+    "NEEDS_TRIAGE",
+    "TRANSIENT_UPSTREAM",
+    "RuntimeErrorBatchDecision",
+    "RuntimeErrorDecision",
+    "classify_runtime_error",
+    "classify_runtime_error_batch",
 ]

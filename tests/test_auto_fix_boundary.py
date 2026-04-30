@@ -285,3 +285,64 @@ class TestTransientErrorContainment:
         assert classification.is_all_transient
         assert "web_search" in classification.reasons
         assert _errors_are_transient_only(errors)
+
+    def test_runtime_classifier_blocks_network_only_autofix_batch(self):
+        from app.services.auto_fix import _select_autofix_relevant_errors
+
+        errors = [
+            ErrorRecord(
+                time="2026-04-30T14:00:00",
+                category="api_error",
+                summary="Gemini API call failed (round 3)",
+                detail="httpcore.ReadError\nhttpx.ReadError",
+                tool_name="gemini",
+            )
+        ]
+
+        selection = _select_autofix_relevant_errors(errors)
+
+        assert not selection.should_run
+        assert selection.relevant_errors == []
+        assert selection.transient_count == 1
+
+    def test_runtime_classifier_keeps_only_allowed_code_bug_in_mixed_batch(self):
+        from app.services.auto_fix import _select_autofix_relevant_errors
+
+        network = ErrorRecord(
+            time="2026-04-30T14:00:00",
+            category="api_error",
+            summary="_self_get connection error: https://api.github.com/repos/Sttrevens/4d-bot/contents/app/app/services/gemini_provider.py",
+            detail="httpx.ConnectTimeout",
+            tool_name="self_read_file",
+        )
+        tool_bug = ErrorRecord(
+            time="2026-04-30T14:00:01",
+            category="tool_exception",
+            summary="web_search 异常",
+            detail='File "/app/app/tools/web_search.py", line 88, in web_search\nValueError: bad parser',
+            tool_name="web_search",
+        )
+
+        selection = _select_autofix_relevant_errors([network, tool_bug])
+
+        assert selection.should_run
+        assert selection.relevant_errors == [tool_bug]
+        assert selection.transient_count == 1
+
+    def test_autofix_self_failure_is_never_autofixable(self):
+        from app.services.auto_fix import _select_autofix_relevant_errors
+
+        errors = [
+            ErrorRecord(
+                time="2026-04-30T14:00:00",
+                category="self_fix_error",
+                summary="自我修复流程异常: httpx.ConnectError",
+                detail="auto_fix gemini API call failed\nhttpx.ConnectError",
+                tool_name="auto_fix",
+            )
+        ]
+
+        selection = _select_autofix_relevant_errors(errors)
+
+        assert not selection.should_run
+        assert selection.relevant_errors == []

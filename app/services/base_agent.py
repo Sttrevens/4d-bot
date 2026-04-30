@@ -30,6 +30,7 @@ from app.harness import (
     DEFAULT_COMPACTION_AFTER_ROUND,
     DEFAULT_COMPACTION_KEEP_RECENT,
     build_coding_workflow_instructions,
+    classify_common_knowledge_turn,
     detect_evidence_contract_gap,
     build_grounding_nudge,
     detect_temporal_grounding_issue,
@@ -3186,6 +3187,12 @@ def _sanitize_progress_hint(
     cleaned = (text or "").strip()
     if not cleaned:
         return None
+
+    common_knowledge = classify_common_knowledge_turn(user_text)
+    if common_knowledge.blocks_search and not (set(tool_names) & _GROUNDING_TOOLS):
+        if re.search(r"(查|搜索|检索|收集资料|资料|数据|来源|网页|网上)", cleaned, re.IGNORECASE):
+            logger.info("progress hint rewrote common-knowledge search claim: %s", cleaned)
+            return "我给你拆一下这个营养思路"
 
     if _PROGRESS_ADMIN_NOTIFY_CLAIM.search(cleaned) and not _notify_admin_succeeded(action_outcomes):
         logger.info("progress hint rejected: unsupported admin notify claim: %s", cleaned)

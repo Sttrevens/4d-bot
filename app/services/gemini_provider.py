@@ -86,6 +86,49 @@ from app.services.tool_tracker import (
 
 logger = logging.getLogger(__name__)
 
+
+def _is_network_like_error(exc: Exception, exc_msg: str = "") -> bool:
+    exc_name = type(exc).__name__.lower()
+    if any(
+        key in exc_name
+        for key in (
+            "connecterror",
+            "connecttimeout",
+            "readerror",
+            "readtimeout",
+            "remoteprotocolerror",
+            "protocolerror",
+            "pooltimeout",
+            "proxyerror",
+        )
+    ):
+        return True
+    text = (exc_msg or str(exc) or "").lower()
+    network_keywords = (
+        "connect",
+        "connection",
+        "dns",
+        "name resolution",
+        "temporary failure",
+        "network",
+        "tls handshake",
+        "ssl",
+        "proxy",
+        "timed out",
+        "readerror",
+        "protocolerror",
+        "connection refused",
+        "connection reset",
+        "econnreset",
+        "econnrefused",
+        "no route to host",
+        "service unavailable",
+        "gateway timeout",
+        "server disconnected without sending a response",
+    )
+    return any(keyword in text for keyword in network_keywords)
+
+
 _DEFAULT_MODEL = "gemini-3-flash-preview"
 _DEFAULT_STRONG_MODEL = "gemini-3.1-pro-preview-customtools"
 _LEGACY_STRONG_MODELS = frozenset({"gemini-2.5-pro"})
@@ -1800,6 +1843,7 @@ async def handle_message(
                     any(kw in exc_msg for kw in _server_keywords)
                     or type(exc).__name__ == "ServerError"
                 )
+                _is_network_error = _is_network_like_error(exc, exc_msg)
                 # 服务端错误（500/503/504）可重试
                 if _attempt < _max_retries and _is_server_error:
                     wait = 2 ** (_attempt + 1)
@@ -1848,6 +1892,14 @@ async def handle_message(
                             "AI 服务暂时不可用，但之前的操作已完成：",
                         )
                     return "AI 服务暂时不可用，请稍后再试。"
+                if _is_network_error:
+                    logger.warning("Gemini network error exhausted all retries (round %d): %s", round_num + 1, exc)
+                    if tool_names_called:
+                        return _build_factual_summary(
+                            tool_names_called, action_outcomes,
+                            "AI 服务连接不稳定，但之前的操作已完成：",
+                        )
+                    return "AI 服务连接不稳定（可能是网络或代理临时波动），请稍后再试。"
                 logger.exception("Gemini API call failed (round %d)", round_num + 1)
                 # 不向用户暴露原始错误细节
                 return "AI 调用出了点问题，请稍后再试。如果持续出现，请联系管理员~"
