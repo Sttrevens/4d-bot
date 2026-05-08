@@ -23,6 +23,12 @@ from app.services.wecom_crypto import decrypt_callback, verify_signature, decryp
 from app.tenant.context import get_current_tenant, set_current_tenant, set_current_channel
 from app.tenant.registry import tenant_registry
 from app.services.error_log import record_error
+from app.services.latency_trace import (
+    LatencyTrace,
+    reset_current_trace,
+    set_current_trace,
+    trace_span,
+)
 from app.webhook.base import (
     MessageDedup, UserStateManager,
     split_reply, strip_markdown, handle_mode_command, handle_status_command,
@@ -249,6 +255,15 @@ async def _process_and_reply(userid: str, text: str) -> None:
     if len(text) > _MAX_USER_TEXT_LEN:
         text = text[:_MAX_USER_TEXT_LEN] + "\n(消息过长已截断)"
 
+    tenant = get_current_tenant()
+    _latency_trace = LatencyTrace(
+        tenant_id=tenant.tenant_id,
+        request_key=f"wecom:{userid}",
+        metadata={"platform": "wecom"},
+    )
+    _latency_token = set_current_trace(_latency_trace)
+    _latency_outcome = "unknown"
+
     async with _state.get_lock(userid):
         try:
             reply = await asyncio.wait_for(
@@ -259,22 +274,30 @@ async def _process_and_reply(userid: str, text: str) -> None:
             # 企微不渲染 markdown，发送前清洗
             display_reply = strip_markdown(reply) if reply else reply
             for chunk in split_reply(display_reply, _MAX_REPLY_LEN, max_bytes=_MAX_REPLY_BYTES):
-                await wecom_client.reply_text(userid, chunk)
+                with trace_span("reply_send", channel="wecom"):
+                    await wecom_client.reply_text(userid, chunk)
+            _latency_outcome = "success"
 
         except asyncio.TimeoutError:
             logger.error("wecom: processing timeout for user=%s", userid)
+            _latency_outcome = "timeout"
             record_error("timeout", f"wecom message timeout user={userid}")
             from app.services.base_agent import build_timeout_message
             await wecom_client.reply_text(userid, build_timeout_message())
         except Exception as exc:
             logger.exception("wecom: process error for user=%s", userid)
+            _latency_outcome = "exception"
             record_error("unhandled", f"wecom process error user={userid}", exc=exc)
             await wecom_client.reply_text(userid, "不好意思出了点小状况~ 你再发一遍试试？")
+        finally:
+            _latency_trace.finish(_latency_outcome)
+            reset_current_trace(_latency_token)
 
 
 async def _do_agent_work(userid: str, text: str) -> str:
     """调用 LLM agent 处理消息"""
-    sender_name = await wecom_client.get_user_name(userid)
+    with trace_span("sender_lookup"):
+        sender_name = await wecom_client.get_user_name(userid)
     if sender_name:
         from app.services.user_registry import register as register_user
         register_user(userid, sender_name)
@@ -293,13 +316,14 @@ async def _do_agent_work(userid: str, text: str) -> str:
             await wecom_client.reply_text(userid, chunk)
 
     from app.router.intent import route_message
-    return await route_message(
-        user_text=text,
-        sender_id=userid,
-        sender_name=sender_name,
-        on_progress=_send_progress,
-        mode=mode,
-    )
+    with trace_span("route_message"):
+        return await route_message(
+            user_text=text,
+            sender_id=userid,
+            sender_name=sender_name,
+            on_progress=_send_progress,
+            mode=mode,
+        )
 
 
 def _xml_text(root: ET.Element, tag: str) -> str:

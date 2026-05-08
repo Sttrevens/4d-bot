@@ -69,7 +69,7 @@ from app.services.base_agent import (
     _COMPRESS_KEEP_RECENT,
     _COMPRESS_AFTER_ROUND,
     _drain_inbox,
-    _generate_progress_hint,
+    generate_progress_hint_with_budget,
     _strip_hallucinated_code_blocks,
     _extract_outcome,
     ProgressCallback,
@@ -79,6 +79,14 @@ from app.services.base_agent import (
     record_agent_progress,
     reset_agent_progress,
     build_timeout_message,
+)
+from app.services.latency_trace import (
+    env_mode,
+    fastpath_enabled,
+    get_intent_classifier_timeout_seconds,
+    record_round as trace_record_round,
+    record_tool as trace_record_tool,
+    trace_span,
 )
 from app.tools.tool_result import ToolResult
 from app.services.error_log import record_error
@@ -273,6 +281,57 @@ def _should_start_strong_model(
         or len(active_groups - {"core"}) >= 2
     )
 
+
+# 触发立即升级的工具：涉及代码修改、部署、复杂推理
+_ESCALATION_TOOLS = frozenset({
+    "self_write_file", "self_edit_file", "self_safe_deploy", "self_rollback",
+    "bash_execute", "anthropic_code",
+    "github_create_pr", "github_push_files",
+    "create_plan",
+})
+
+_CONTEXT_LIGHT_TOOLS = frozenset({
+    "recall_memory",
+    "fetch_chat_history",
+    "read_feishu_doc",
+    "read_feishu_wiki",
+    "get_feishu_minute_transcript",
+    "list_bot_groups",
+})
+
+
+def _should_escalate_after_tools(
+    round_tool_names: list[str] | tuple[str, ...],
+    *,
+    task_type: str = "",
+) -> bool:
+    names = set(round_tool_names or [])
+    if not names:
+        return False
+    if names & _ESCALATION_TOOLS:
+        return True
+    non_context_names = names - _CONTEXT_LIGHT_TOOLS
+    if not non_context_names:
+        return False
+    return (task_type or "").strip().lower() in {"deep", "research", "provision"} and len(names) >= 2
+
+
+def _max_output_tokens_for_task(task_type: str, *, has_media: bool = False) -> int:
+    override = os.getenv("BOT_GEMINI_MAX_OUTPUT_TOKENS", "").strip()
+    if override:
+        try:
+            return max(512, min(32768, int(override)))
+        except ValueError:
+            pass
+    task = (task_type or "").strip().lower()
+    if task == "quick":
+        return 2048
+    if task == "normal" and not has_media:
+        return 8192
+    if task == "normal" and has_media:
+        return 12288
+    return 32768
+
 # ── LLM 意图分类（替代硬编码关键词） ──
 
 # 快速消息关键词（这些不需要 LLM 判断，直接走 quick 路径）
@@ -386,6 +445,66 @@ def _classify_intent_keywords(user_text: str) -> dict:
     if len(groups) == 1 and _needs_feishu_collab_context(user_text):
         groups.append("feishu_collab")
     return {"type": inferred.task_type, "groups": list(dict.fromkeys(groups))}
+
+
+def _adaptive_intent_fastpath(user_text: str, *, has_media: bool = False) -> dict | None:
+    """Return a deterministic intent when confidence is high enough to skip LLM."""
+    if not fastpath_enabled():
+        return None
+    mode = env_mode("BOT_INTENT_CLASSIFIER_MODE", "adaptive")
+    if mode in {"always", "llm", "legacy"}:
+        return None
+
+    text = (user_text or "").strip()
+    if not text:
+        return {"type": "quick", "groups": ["core"]}
+
+    if mode in {"off", "keyword", "keywords", "deterministic"}:
+        return _classify_intent_keywords(user_text)
+
+    text_lower = text.lower()
+    if len(text) < 5:
+        return {"type": "quick", "groups": ["core"]}
+    for kw in _QUICK_KEYWORDS:
+        if text_lower == kw or (len(text_lower) < 15 and kw in text_lower):
+            return {"type": "quick", "groups": ["core"]}
+
+    if has_media and re.search(r"(看|查看|分析|识别|图片|图|截图|照片|image|photo|screenshot)", text, re.IGNORECASE):
+        return {"type": "normal", "groups": ["core"]}
+
+    inferred = infer_turn_mode(user_text)
+    groups = list(dict.fromkeys(sanitize_suggested_groups(user_text, inferred.groups)))
+    if "core" not in groups:
+        groups.insert(0, "core")
+
+    low_risk_groups = {"core", "feishu_collab", "content"}
+    if inferred.task_type == "normal" and set(groups).issubset(low_risk_groups):
+        return {"type": "normal", "groups": groups}
+    return None
+
+
+async def _classify_intent_adaptive(
+    client: genai.Client,
+    model_name: str,
+    user_text: str,
+    *,
+    has_media: bool = False,
+) -> dict:
+    fast = _adaptive_intent_fastpath(user_text, has_media=has_media)
+    if fast:
+        logger.info("LLM intent classification skipped by adaptive fastpath: %s", fast)
+        return fast
+
+    timeout_s = get_intent_classifier_timeout_seconds()
+    try:
+        with trace_span("intent_classify", mode=env_mode("BOT_INTENT_CLASSIFIER_MODE", "adaptive")):
+            return await asyncio.wait_for(
+                _classify_intent_llm(client, model_name, user_text),
+                timeout=timeout_s,
+            ) or _classify_intent_keywords(user_text)
+    except asyncio.TimeoutError:
+        logger.warning("LLM intent classification timeout after %.2fs, using keyword fallback", timeout_s)
+        return _classify_intent_keywords(user_text)
 
 
 async def _classify_intent_llm(
@@ -1236,7 +1355,7 @@ async def _run_sub_agent(
         _real_tools = [n for n, _, _ in _fc_items if n != "think"]
         if on_progress and _real_tools and round_num >= 5 and round_num % 6 == 5:
             try:
-                _progress_msg = await _generate_progress_hint(
+                _progress_msg = await generate_progress_hint_with_budget(
                     tool_names_called, round_num // 6,
                     gemini_client=client,
                     user_text=user_text,
@@ -1438,7 +1557,12 @@ async def handle_message(
     strong_model = model_config.strong_model
 
     # ── LLM 意图分类（在加载工具之前，用分类结果指导工具组选择）──
-    _intent = await _classify_intent_llm(client, model_name, user_text)
+    _intent = await _classify_intent_adaptive(
+        client,
+        model_name,
+        user_text,
+        has_media=bool(image_urls),
+    )
     _llm_groups: set[str] | None = None
     if _intent:
         _task_type = _intent["type"]
@@ -1457,11 +1581,12 @@ async def handle_message(
     _loaded_tool_names: set[str] = {
         t["function"]["name"] for t in openai_tools if "function" in t
     }
-    system_prompt = await _build_system_prompt(
-        mode, sender_id=sender_id, sender_name=sender_name,
-        user_text=user_text, chat_id=chat_id, chat_type=chat_type,
-        task_type=_task_type, actual_tool_names=_loaded_tool_names,
-    )
+    with trace_span("prompt_build"):
+        system_prompt = await _build_system_prompt(
+            mode, sender_id=sender_id, sender_name=sender_name,
+            user_text=user_text, chat_id=chat_id, chat_type=chat_type,
+            task_type=_task_type, actual_tool_names=_loaded_tool_names,
+        )
     # 注入工具使用经验（基于历史调用成功/失败率 + 经验教训 + 常用组合）
     try:
         exp_hint = build_experience_hint(tenant.tenant_id, _loaded_tool_names)
@@ -1646,7 +1771,7 @@ async def handle_message(
         system_instruction=system_prompt,
         tools=[types.Tool(function_declarations=gemini_decls)],
         temperature=1.0,
-        max_output_tokens=32768,
+        max_output_tokens=_max_output_tokens_for_task(_task_type, has_media=bool(image_urls)),
         thinking_config=types.ThinkingConfig(include_thoughts=False),
     )
     _progress_count = 0
@@ -1790,14 +1915,6 @@ async def handle_message(
     _total_input_tokens = 0   # 跨轮次累计 input tokens
     _total_output_tokens = 0  # 跨轮次累计 output tokens
 
-    # 触发立即升级的工具：涉及代码修改、部署、复杂推理
-    _ESCALATION_TOOLS = frozenset({
-        "self_write_file", "self_edit_file", "self_safe_deploy", "self_rollback",
-        "bash_execute", "anthropic_code",
-        "github_create_pr", "github_push_files",
-        "create_plan",
-    })
-
     for round_num in range(_MAX_ROUNDS):
         # 模型升级策略：
         # 1. 主动升级：首轮发现 3+ 并行工具调用或重活工具 → 立即切强模型
@@ -1824,6 +1941,7 @@ async def handle_message(
             strong_model,
             _is_voice_turn(user_text),
         )
+        trace_record_round(current_model)
 
         # 连接错误 / 服务端错误自动重试（应对间歇性 DNS 污染 / 网络抖动 / 500）
         # 如果当前用的是升级后的强模型，重试耗尽后 fallback 回基础模型再试一次
@@ -1836,14 +1954,15 @@ async def handle_message(
                     # asyncio 级别超时兜底（独立于 SDK 的 HTTP timeout）
                     # 防止 CF Worker 代理导致 SDK timeout 不生效
                     _call_timeout = 90 if _model_for_call == model_name else 120
-                    response = await asyncio.wait_for(
-                        client.aio.models.generate_content(
-                            model=_model_for_call,
-                            contents=contents,
-                            config=config,
-                        ),
-                        timeout=_call_timeout,
-                    )
+                    with trace_span("gemini_generate", model=_model_for_call, round=round_num + 1):
+                        response = await asyncio.wait_for(
+                            client.aio.models.generate_content(
+                                model=_model_for_call,
+                                contents=contents,
+                                config=config,
+                            ),
+                            timeout=_call_timeout,
+                        )
                 if _model_for_call != current_model:
                     # fallback 成功，后续轮次也用基础模型
                     current_model = _model_for_call
@@ -2322,7 +2441,7 @@ async def handle_message(
             if send_progress:
                 logger.info("progress hint: attempting (round=%d, elapsed=%.0fs, count=%d)",
                            round_num + 1, _elapsed, _progress_count)
-                msg = await _generate_progress_hint(
+                msg = await generate_progress_hint_with_budget(
                     tool_names_called, _progress_count,
                     gemini_client=client,
                     user_text=user_text,
@@ -2440,6 +2559,7 @@ async def handle_message(
             logger.info("tool call: %s(%s)", func_name, func_args)
             if func_name != "think":
                 tool_names_called.append(func_name)
+                trace_record_tool(func_name)
 
             # ── 硬限制：create_custom_tool 每对话最多 1 次 ──
             if func_name == "create_custom_tool":
@@ -2579,10 +2699,11 @@ async def handle_message(
                         )
                     else:
                         try:
-                            result = handler(func_args)
-                            # 支持 async 工具（如 analyze_video_url）
-                            if asyncio.iscoroutine(result):
-                                result = await result
+                            with trace_span("tool_execute", tool=func_name):
+                                result = handler(func_args)
+                                # 支持 async 工具（如 analyze_video_url）
+                                if asyncio.iscoroutine(result):
+                                    result = await result
                         except Exception as exc:
                             logger.exception("tool %s failed", func_name)
                             result = ToolResult.error(str(exc), code="internal")
@@ -2722,12 +2843,11 @@ async def handle_message(
         if strong_model and not _escalated and strong_model != model_name:
             round_tool_names = [fc.function_call.name for fc in function_calls]
             has_heavy = bool(set(round_tool_names) & _ESCALATION_TOOLS)
-            many_parallel = len(function_calls) >= 3
-            if has_heavy or many_parallel:
+            if _should_escalate_after_tools(round_tool_names, task_type=_task_type):
                 _escalated = True
                 logger.info(
-                    "early model escalation after round %d: %d calls, heavy=%s → %s",
-                    round_num + 1, len(function_calls), has_heavy, strong_model,
+                    "early model escalation after round %d: %d calls, heavy=%s task=%s → %s",
+                    round_num + 1, len(function_calls), has_heavy, _task_type, strong_model,
                 )
 
         # 压缩旧工具结果，防止 context 膨胀

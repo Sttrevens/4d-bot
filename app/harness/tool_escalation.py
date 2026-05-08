@@ -35,6 +35,23 @@ _HEAVY_DOWNSTREAM_TOOLS = frozenset({
 })
 _SOCIAL_CHAIN_TOOLS = _PUBLIC_INFO_TOOLS | _HEAVY_DOWNSTREAM_TOOLS
 
+_CURRENT_IMAGE_TURN_RE = re.compile(
+    r"(这张图|这张图片|这张照片|这个截图|请查看.{0,6}(图|图片|照片|截图)|"
+    r"帮我看.{0,6}(图|图片|照片|截图)|看一下.{0,6}(图|图片|照片|截图))",
+    re.IGNORECASE,
+)
+_IMAGE_DETOUR_TOOLS = frozenset({
+    "web_search",
+    "fetch_url",
+    "search_social_media",
+    "browser_open",
+    "browser_read",
+    "list_bot_groups",
+    "fetch_chat_history",
+    "list_feishu_tasks",
+    "list_calendar_events",
+})
+
 _FAILURE_RE = re.compile(r"(失败|超时|error|timeout|登录墙|需要登录|blocked)", re.IGNORECASE)
 _TASK_CALENDAR_INTENT_RE = re.compile(
     r"(任务|待办|todo|task|tasklist|日程|日历|calendar|提醒|会议|安排|排期|报销单)",
@@ -178,6 +195,17 @@ def build_tool_domain_nudge(
     turn_type = (task_type or "").strip().lower()
     if turn_type not in {"research", "normal"}:
         return None
+
+    if _CURRENT_IMAGE_TURN_RE.search(user_text or ""):
+        detours = proposed & _IMAGE_DETOUR_TOOLS
+        if detours:
+            blocked_names = "、".join(sorted(detours))
+            return (
+                "⚠️ 当前用户要你查看当前图片/截图。"
+                f"不要先调用这些绕路工具：{blocked_names}。"
+                "请直接基于当前图片内容回答；只有用户明确要求查网、查历史或查任务时，"
+                "才调用外部检索/历史/任务工具。"
+            )
 
     off_domain = proposed & _TASK_CALENDAR_TOOLS
     if off_domain and not _TASK_CALENDAR_INTENT_RE.search(user_text or ""):

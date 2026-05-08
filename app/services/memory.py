@@ -27,6 +27,7 @@ from app.harness import (
     sanitize_memory_text,
 )
 from app.services import memory_store
+from app.services.latency_trace import env_mode, fastpath_enabled, trace_span
 
 logger = logging.getLogger(__name__)
 
@@ -1264,42 +1265,62 @@ async def build_memory_context(
         if len(profile_lines) > 1:
             parts.append("\n".join(profile_lines))
 
-    # 2. LLM 智能回忆决策：判断要不要回忆 + 搜什么标签
+    # 2. 自适应回忆决策：普通轮次不再阻塞式调用 LLM 判断是否回忆。
     recalled = False
     decision = None
     if current_text:
-        try:
-            decision = await asyncio.wait_for(
-                _llm_recall_decision(current_text), timeout=3.0
-            )
-        except (asyncio.TimeoutError, Exception):
-            decision = None
+        recall_mode = env_mode("BOT_MEMORY_RECALL_MODE", "adaptive")
+        use_adaptive = fastpath_enabled() and recall_mode == "adaptive"
+        if use_adaptive:
+            plan = build_memory_recall_plan(user_text=current_text, limit=8)
+            if plan.deep_scan:
+                with trace_span("memory_recall", mode="deterministic_deep"):
+                    relevant = recall(
+                        user_id=user_id,
+                        limit=8,
+                        query_text=current_text,
+                    )
+                if relevant:
+                    memory_lines = [_format_memory_entry(e) for e in relevant]
+                    parts.append("相关记忆(自动召回):\n" + "\n".join(memory_lines))
+                    recalled = True
+        else:
+            try:
+                with trace_span("memory_recall_decision", mode=recall_mode):
+                    decision = await asyncio.wait_for(
+                        _llm_recall_decision(current_text), timeout=3.0
+                    )
+            except (asyncio.TimeoutError, Exception):
+                decision = None
 
-        if decision and decision.get("r"):
+        if not recalled and decision and decision.get("r"):
             tags = decision.get("t", [])
             keyword = decision.get("k", "")
             if tags or keyword:
                 # 先搜索索引（轻量级），看是否有相关记忆
-                index_hits = search_index(keyword=keyword, tags=tags, limit=8)
+                with trace_span("memory_index_search", mode="llm_decision"):
+                    index_hits = search_index(keyword=keyword, tags=tags, limit=8)
                 if index_hits:
                     # 索引命中 → 加载完整 journal 做精确匹配
                     # 注意：必须传 user_id 做用户隔离，否则会召回其他用户的记忆
-                    relevant = recall(
-                        user_id=user_id,
-                        tags=tags,
-                        keyword=keyword,
-                        limit=8,
-                        query_text=current_text,
-                    )
+                    with trace_span("memory_recall", mode="index_hit"):
+                        relevant = recall(
+                            user_id=user_id,
+                            tags=tags,
+                            keyword=keyword,
+                            limit=8,
+                            query_text=current_text,
+                        )
                 else:
                     # 索引未命中 → 仍尝试 journal 搜索（兼容旧数据无索引）
-                    relevant = recall(
-                        user_id=user_id,
-                        tags=tags,
-                        keyword=keyword,
-                        limit=5,
-                        query_text=current_text,
-                    )
+                    with trace_span("memory_recall", mode="journal_fallback"):
+                        relevant = recall(
+                            user_id=user_id,
+                            tags=tags,
+                            keyword=keyword,
+                            limit=5,
+                            query_text=current_text,
+                        )
                 if relevant:
                     memory_lines = [_format_memory_entry(e) for e in relevant]
                     label = ", ".join(tags)

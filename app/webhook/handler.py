@@ -27,6 +27,13 @@ from app.services.feishu import FeishuClient, FileTooLargeError
 from app.services.user_registry import register as register_user, register_p2p_chat
 from app.services.oauth_store import build_auth_url, is_authorized, get_token_info, clear_user_token
 from app.services.error_log import record_error
+from app.services.latency_trace import (
+    LatencyTrace,
+    get_webhook_batch_wait_seconds,
+    reset_current_trace,
+    set_current_trace,
+    trace_span,
+)
 from app.tools.message_ops import fetch_chat_history
 from app.tenant.context import get_current_tenant, set_current_tenant, set_current_channel, set_current_chat_id
 from app.tenant.registry import tenant_registry
@@ -221,7 +228,7 @@ _MAX_REPLY_LEN = 4000
 _PROCESS_TIMEOUT = 600
 
 # ── 消息合并：用户连发多条时攒在一起处理 ──
-_BATCH_WAIT = 1.5  # 秒，等新消息的窗口期
+_BATCH_WAIT = get_webhook_batch_wait_seconds()  # 秒，等新消息的窗口期
 _user_pending: dict[str, list[dict]] = {}   # sender_id → 待处理消息列表
 _batch_timers: dict[str, asyncio.Task] = {}  # sender_id → 定时器任务
 
@@ -1393,6 +1400,15 @@ async def _process_and_reply_inner(
 
     # 截断过长输入
     user_text = _truncate_user_text(user_text)
+    tenant = get_current_tenant()
+    _latency_trace = LatencyTrace(
+        tenant_id=tenant.tenant_id,
+        request_key=f"feishu:{message_id}",
+        metadata={"platform": "feishu", "chat_type": chat_type or ""},
+    )
+    _latency_trace.add_span("webhook.batch_wait", int(_BATCH_WAIT * 1000))
+    _latency_token = set_current_trace(_latency_trace)
+    _latency_outcome = "unknown"
 
     # 拉取聊天记录作为上下文
     # - 群聊：bot 可能漏掉 @mention 间隙的消息，需要从飞书 API 补上下文
@@ -1402,9 +1418,10 @@ async def _process_and_reply_inner(
     context_image_refs: list[dict] = []
     if chat_id and chat_type == "group":
         try:
-            result = await asyncio.get_event_loop().run_in_executor(
-                None, fetch_chat_history, chat_id,
-            )
+            with trace_span("history_fetch", source="feishu_group"):
+                result = await asyncio.get_event_loop().run_in_executor(
+                    None, fetch_chat_history, chat_id,
+                )
             chat_context = result.get("text", "")
             context_image_refs = result.get("image_refs", [])
             # 权限不足等错误时 fetch_chat_history 返回 [ERROR] 字符串
@@ -1422,15 +1439,16 @@ async def _process_and_reply_inner(
     # 下载聊天记录中的图片（最多 5 张），让 LLM 能真正看到历史图片
     if context_image_refs:
         history_images: list[str] = []
-        for ref in context_image_refs[:5]:
-            try:
-                data_url = await feishu_client.download_image(
-                    ref["message_id"], ref["image_key"],
-                )
-                if data_url:
-                    history_images.append(data_url)
-            except Exception:
-                logger.debug("failed to download history image %s", ref.get("image_key", ""))
+        with trace_span("history_image_download", count=len(context_image_refs[:5])):
+            for ref in context_image_refs[:5]:
+                try:
+                    data_url = await feishu_client.download_image(
+                        ref["message_id"], ref["image_key"],
+                    )
+                    if data_url:
+                        history_images.append(data_url)
+                except Exception:
+                    logger.debug("failed to download history image %s", ref.get("image_key", ""))
         if history_images:
             # 历史图片放在用户图片之前，与聊天记录中的 [图片N] 编号对应
             image_urls = history_images + (image_urls or [])
@@ -1440,7 +1458,8 @@ async def _process_and_reply_inner(
         await feishu_client.reply_text(message_id, text)
 
     async def _do_work() -> str:
-        sender_name = await feishu_client.get_user_name(sender_id)
+        with trace_span("sender_lookup"):
+            sender_name = await feishu_client.get_user_name(sender_id)
         if sender_name:
             register_user(sender_id, sender_name)
         elif sender_id:
@@ -1451,18 +1470,19 @@ async def _process_and_reply_inner(
         inbox = _state.activate(sender_id)
 
         try:
-            return await route_message(
-                user_text,
-                sender_id,
-                sender_name,
-                on_progress=_send_progress,
-                image_urls=image_urls,
-                mode=mode,
-                chat_context=chat_context,
-                chat_id=chat_id,
-                chat_type=chat_type,
-                inbox=inbox,
-            )
+            with trace_span("route_message"):
+                return await route_message(
+                    user_text,
+                    sender_id,
+                    sender_name,
+                    on_progress=_send_progress,
+                    image_urls=image_urls,
+                    mode=mode,
+                    chat_context=chat_context,
+                    chat_id=chat_id,
+                    chat_type=chat_type,
+                    inbox=inbox,
+                )
         finally:
             _state.deactivate(sender_id)
 
@@ -1473,10 +1493,13 @@ async def _process_and_reply_inner(
         try:
             reply = await asyncio.wait_for(_do_work(), timeout=_PROCESS_TIMEOUT)
             reply = _truncate_reply(reply)
-            await _send_as_bubbles(reply, message_id, chat_id)
+            with trace_span("reply_send", channel="feishu"):
+                await _send_as_bubbles(reply, message_id, chat_id)
+            _latency_outcome = "success"
         except RateLimitError:
             logger.warning("Kimi API rate limit hit for user %s", sender_id)
             record_error("api_error", "Kimi API 每日 token 上限触发 RateLimitError")
+            _latency_outcome = "rate_limit"
             await feishu_client.reply_text(
                 message_id,
                 "今日 AI 额度已用完（Kimi API 每日 token 上限），请明天再试。\n"
@@ -1484,6 +1507,7 @@ async def _process_and_reply_inner(
             )
         except asyncio.TimeoutError:
             logger.error("processing timed out after %ds for sender=%s", _PROCESS_TIMEOUT, sender_id)
+            _latency_outcome = "timeout"
             record_error(
                 "timeout",
                 f"消息处理超时 ({_PROCESS_TIMEOUT}s) sender={sender_id} text={user_text[:200]}",
@@ -1495,6 +1519,7 @@ async def _process_and_reply_inner(
                 logger.exception("timeout reply failed")
         except Exception as exc:
             logger.exception("failed to process message")
+            _latency_outcome = "exception"
             record_error(
                 "unhandled",
                 f"消息处理异常 sender={sender_id} text={user_text[:200]}",
@@ -1506,3 +1531,6 @@ async def _process_and_reply_inner(
                 )
             except Exception:
                 logger.exception("error reply failed")
+        finally:
+            _latency_trace.finish(_latency_outcome)
+            reset_current_trace(_latency_token)

@@ -323,10 +323,21 @@ def _record(tenant_id: str, sender_id: str, model: str, provider: str, t_start: 
         latency_ms = int((time.monotonic() - t_start) * 1000)
         in_tok, out_tok = last_usage_tokens.get((0, 0))
         last_usage_tokens.set((0, 0))
+        rounds = 0
+        tool_calls = 0
+        try:
+            from app.services.latency_trace import get_current_trace
+            trace = get_current_trace()
+            if trace is not None:
+                rounds = trace.rounds
+                tool_calls = len(trace.tools)
+        except Exception:
+            pass
         record_usage(UsageRecord(
             tenant_id=tenant_id, sender_id=sender_id, model=model or "",
             provider=provider or "", api_calls=1, input_tokens=in_tok,
             output_tokens=out_tok, latency_ms=latency_ms,
+            rounds=rounds, tool_calls=tool_calls,
         ))
         total_tokens = in_tok + out_tok
         if total_tokens > 0:

@@ -2981,6 +2981,14 @@ async def evaluate_exit_governor(
     if not enable_llm_judge:
         return ExitGovernorDecision(verdict="pass", reason="llm_judge_disabled")
 
+    if not _should_run_llm_exit_judge(
+        reply_text,
+        user_text,
+        tool_names_called,
+        action_outcomes=action_outcomes,
+    ):
+        return ExitGovernorDecision(verdict="pass", reason="llm_judge_skipped")
+
     verdict, judge_context = await _llm_exit_review_detailed(
         reply_text,
         user_text,
@@ -3011,6 +3019,56 @@ async def evaluate_exit_governor(
         ),
         judge_context=judge_context,
     )
+
+
+def _should_run_llm_exit_judge(
+    reply_text: str,
+    user_text: str,
+    tool_names_called: list[str],
+    *,
+    action_outcomes: list[tuple[str, str]] | None = None,
+) -> bool:
+    """Adaptive gate for the expensive neutral LLM judge.
+
+    Deterministic exit checks run before this function. The LLM judge is kept
+    for higher-risk public replies where its quality benefit is worth another
+    model call.
+    """
+    from app.services.latency_trace import env_mode, fastpath_enabled
+
+    if not fastpath_enabled():
+        return True
+    mode = env_mode("BOT_EXIT_JUDGE_MODE", "adaptive")
+    if mode in {"0", "off", "disabled", "deterministic"}:
+        return False
+    if mode in {"always", "llm", "legacy"}:
+        return True
+    if not reply_text or len(reply_text.strip()) < 8:
+        return False
+
+    called = set(tool_names_called or [])
+    text = user_text or ""
+    reply = reply_text or ""
+    outcomes = action_outcomes or []
+
+    high_risk_tools = (
+        _WRITE_INTENT_VERIFY_TOOLS
+        | _URL_CHECK_WRITE_TOOLS
+        | {"export_file", "create_pull_request", "request_provision", "provision_tenant"}
+    )
+    if called & high_risk_tools:
+        return True
+    if _PROMISE_COMMITMENT_RE.search(reply) and not called:
+        return True
+    if _HISTORY_ASSERTION_USER_CHALLENGE_RE.search(text):
+        return True
+    if re.search(r"(之前|上次|刚才|历史|记得|回忆)", text, re.IGNORECASE):
+        return True
+    if requires_external_grounding(text) and not (called & _GROUNDING_TOOLS):
+        return True
+    if len(reply) >= 900 and (called & _GROUNDING_TOOLS or len(outcomes) >= 2):
+        return True
+    return False
 
 
 def _drain_inbox(inbox: asyncio.Queue) -> list[dict]:
@@ -3412,6 +3470,41 @@ async def _generate_progress_hint(
 
     except Exception as e:
         logger.info("progress hint LLM failed: %s", e)
+        return None
+
+
+async def generate_progress_hint_with_budget(
+    tool_names: list[str],
+    progress_count: int = 0,
+    *,
+    gemini_client=None,
+    user_text: str = "",
+    binding_context=None,
+    max_wait_s: float | None = None,
+) -> str | None:
+    """Generate a progress hint without letting the hint block the main loop."""
+    from app.services.latency_trace import get_progress_hint_budget_seconds, trace_span
+
+    del binding_context
+    budget = get_progress_hint_budget_seconds() if max_wait_s is None else max_wait_s
+    task = asyncio.create_task(
+        _generate_progress_hint(
+            tool_names,
+            progress_count,
+            gemini_client=gemini_client,
+            user_text=user_text,
+        )
+    )
+    try:
+        with trace_span("progress_hint", budget_ms=int(budget * 1000)):
+            return await asyncio.wait_for(task, timeout=budget)
+    except asyncio.TimeoutError:
+        logger.info("progress hint skipped after %.2fs budget", budget)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
         return None
 
 

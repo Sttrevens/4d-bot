@@ -30,6 +30,13 @@ from app.services.wecom_crypto import decrypt_callback, verify_signature, decryp
 from app.tenant.context import get_current_tenant, set_current_tenant, set_current_channel
 from app.tenant.registry import tenant_registry
 from app.services.error_log import record_error
+from app.services.latency_trace import (
+    LatencyTrace,
+    get_webhook_batch_wait_seconds,
+    reset_current_trace,
+    set_current_trace,
+    trace_span,
+)
 from app.webhook.base import (
     MessageDedup, UserStateManager, tuk,
     split_reply, strip_markdown, handle_mode_command, handle_status_command,
@@ -128,7 +135,7 @@ _MAX_REPLY_BYTES = 3800  # 企微 API text 字段字节限制（~4096 减去 JSO
 _STALE_MSG_THRESHOLD = 300  # 5 分钟
 
 # ── 消息合并：用户连发多条时攒在一起处理 ──
-_BATCH_WAIT = 1.5  # 秒，等新消息的窗口期
+_BATCH_WAIT = get_webhook_batch_wait_seconds()  # 秒，等新消息的窗口期
 _user_pending: dict[str, list[dict]] = {}   # tuk → 待处理消息列表
 _batch_timers: dict[str, asyncio.Task] = {}  # tuk → 定时器任务
 
@@ -1051,6 +1058,15 @@ async def _process_and_reply(
 
     # 共享标志：一旦某次发送触发 95001，后续发送全部跳过
     hit_send_limit: list[bool] = [False]
+    tenant = get_current_tenant()
+    _latency_trace = LatencyTrace(
+        tenant_id=tenant.tenant_id,
+        request_key=request_id or f"wecom_kf:{external_userid}",
+        metadata={"platform": "wecom_kf"},
+    )
+    _latency_trace.add_span("webhook.batch_wait", int(_BATCH_WAIT * 1000))
+    _latency_token = set_current_trace(_latency_trace)
+    _latency_outcome = "unknown"
 
     # 趁机清理不活跃的用户状态
     _state.cleanup_idle()
@@ -1094,18 +1110,24 @@ async def _process_and_reply(
 
             display_reply = strip_markdown(reply) if reply else reply
             for chunk in split_reply(display_reply, _MAX_REPLY_LEN, max_bytes=_MAX_REPLY_BYTES):
-                await _safe_send(external_userid, chunk, hit_send_limit)
+                with trace_span("reply_send", channel="wecom_kf"):
+                    await _safe_send(external_userid, chunk, hit_send_limit)
+            _latency_outcome = "success"
 
         except asyncio.TimeoutError:
             logger.error("wecom_kf: processing timeout for user=%s", external_userid)
+            _latency_outcome = "timeout"
             record_error("timeout", f"wecom_kf timeout user={external_userid}")
             from app.services.base_agent import build_timeout_message
             await _safe_send(external_userid, build_timeout_message(), hit_send_limit)
         except Exception as exc:
             logger.exception("wecom_kf: process error for user=%s", external_userid)
+            _latency_outcome = "exception"
             record_error("unhandled", f"wecom_kf process error user={external_userid}", exc=exc)
             await _safe_send(external_userid, "不好意思出了点小状况~ 你再发一遍试试？", hit_send_limit)
         finally:
+            _latency_trace.finish(_latency_outcome)
+            reset_current_trace(_latency_token)
             _in_flight.pop(inflight_id, None)
             _state.deactivate(external_userid)
 
@@ -1118,7 +1140,8 @@ async def _do_agent_work(
     inbox: asyncio.Queue | None = None,
 ) -> str:
     """调用 LLM agent 处理消息"""
-    sender_name = await wecom_kf_client.get_customer_name(external_userid)
+    with trace_span("sender_lookup"):
+        sender_name = await wecom_kf_client.get_customer_name(external_userid)
     if not sender_name:
         sender_name = f"微信用户({external_userid[:8]})"
     # 无论名字来自 API 还是 fallback，都注册到 user_registry（持久化到 Redis）
@@ -1156,15 +1179,16 @@ async def _do_agent_work(
             await _safe_send(external_userid, chunk, _hit_send_limit)
 
     from app.router.intent import route_message
-    return await route_message(
-        user_text=text,
-        sender_id=sender_id,
-        sender_name=sender_name,
-        on_progress=_send_progress,
-        image_urls=image_urls,
-        mode=mode,
-        inbox=inbox,
-    )
+    with trace_span("route_message"):
+        return await route_message(
+            user_text=text,
+            sender_id=sender_id,
+            sender_name=sender_name,
+            on_progress=_send_progress,
+            image_urls=image_urls,
+            mode=mode,
+            inbox=inbox,
+        )
 
 
 def _xml_text(root: ET.Element, tag: str) -> str:
