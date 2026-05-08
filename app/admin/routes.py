@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -567,13 +568,196 @@ async def api_tenant_memory_recall_preview(
         limit=limit,
         query_text=query_text,
     )
+    harness = memory.build_recall_harness(
+        user_id=user_id,
+        query_text=query_text,
+        keyword=keyword,
+        limit=limit,
+    )
 
     return JSONResponse({
         "ok": True,
         "tenant_id": tenant_id,
         "formatted": formatted,
         "entries": [_serialize_memory_entry(entry) for entry in entries],
+        "profile_context": harness.get("profile_context", ""),
+        "short_term_context": harness.get("short_term_context", ""),
+        "journal_entries": harness.get("journal_entries", []),
+        "selection_reasons": harness.get("selection_reasons", []),
     })
+
+
+@router.get("/api/tenants/{tenant_id}/memory/quality")
+async def api_tenant_memory_quality(
+    tenant_id: str,
+    user_id: str = "",
+    _token: str = Depends(_verify_token),
+):
+    """Inspect Memory V2 user-model quality for one user."""
+    if not redis.available():
+        return JSONResponse({
+            "ok": False,
+            "tenant_id": tenant_id,
+            "error": "Redis unavailable",
+            "profile": None,
+            "quality": {},
+        })
+    if not user_id:
+        raise HTTPException(400, "Missing user_id")
+
+    _set_memory_tenant_context(tenant_id)
+    user_prefix = user_id[:12]
+    profile = memory_store.read_json(f"users/{user_prefix}") or {}
+    return JSONResponse({
+        "ok": True,
+        "tenant_id": tenant_id,
+        "user_id": user_prefix,
+        "profile": profile,
+        "quality": memory.memory_quality_report(profile),
+    })
+
+
+@router.post("/api/tenants/{tenant_id}/memory/recall-harness")
+async def api_tenant_memory_recall_harness(
+    tenant_id: str,
+    request: Request,
+    _token: str = Depends(_verify_token),
+):
+    """Structured recall preview for dashboard harnessing."""
+    if not redis.available():
+        return JSONResponse({
+            "ok": False,
+            "tenant_id": tenant_id,
+            "error": "Redis unavailable",
+            "profile_context": "",
+            "short_term_context": "",
+            "journal_entries": [],
+            "selection_reasons": [],
+        })
+
+    body = await request.json()
+    _set_memory_tenant_context(tenant_id)
+    limit = min(max(int(body.get("limit") or 10), 1), 50)
+    harness = memory.build_recall_harness(
+        user_id=str(body.get("user_id") or ""),
+        query_text=str(body.get("query_text") or ""),
+        keyword=str(body.get("keyword") or ""),
+        tags=body.get("tags") if isinstance(body.get("tags"), list) else None,
+        limit=limit,
+    )
+    return JSONResponse({
+        "ok": True,
+        "tenant_id": tenant_id,
+        **harness,
+    })
+
+
+@router.post("/api/tenants/{tenant_id}/memory/rebuild-profile")
+async def api_tenant_memory_rebuild_profile(
+    tenant_id: str,
+    request: Request,
+    _token: str = Depends(_verify_token),
+):
+    """Rebuild one or all user profiles from journal without deleting raw entries."""
+    if not redis.available():
+        return JSONResponse({
+            "ok": False,
+            "tenant_id": tenant_id,
+            "error": "Redis unavailable",
+            "users_rebuilt": 0,
+            "profiles": {},
+        })
+
+    body = await request.json()
+    _set_memory_tenant_context(tenant_id)
+    target_user = str(body.get("user_id") or "").strip()[:12]
+    entries = memory_store.read_journal_all()
+    users = [target_user] if target_user else [u["user_id"] for u in _memory_users_from_entries(entries)]
+    profiles: dict[str, dict] = {}
+    for uid in users:
+        if not uid:
+            continue
+        existing = memory_store.read_json(f"users/{uid}") or {}
+        rebuilt = memory.rebuild_user_profile_from_entries(uid, entries, existing_profile=existing)
+        memory_store.write_json(f"users/{uid}", rebuilt)
+        profiles[uid] = rebuilt
+
+    memory_store.append_journal({
+        "type": "memory_admin",
+        "action": f"rebuild_profile users={len(profiles)}",
+        "tags": ["memory", "admin", "rebuild"],
+        "time": datetime.now(timezone.utc).isoformat(),
+    })
+    return JSONResponse({
+        "ok": True,
+        "tenant_id": tenant_id,
+        "users_rebuilt": len(profiles),
+        "profiles": profiles,
+    })
+
+
+@router.patch("/api/tenants/{tenant_id}/memory/profile/{user_id}")
+async def api_tenant_memory_patch_profile(
+    tenant_id: str,
+    user_id: str,
+    request: Request,
+    _token: str = Depends(_verify_token),
+):
+    """Admin-only lightweight profile patch."""
+    if not redis.available():
+        return JSONResponse({"ok": False, "tenant_id": tenant_id, "error": "Redis unavailable"})
+
+    body = await request.json()
+    _set_memory_tenant_context(tenant_id)
+    allowed = {
+        "identity_facts", "current_goals", "open_loops", "important_entities",
+        "communication_style", "support_preferences", "relationship_notes",
+        "emotional_patterns", "preferences", "last_user_need",
+    }
+    updates = {k: v for k, v in body.items() if k in allowed}
+    if not updates:
+        raise HTTPException(400, "No editable profile fields provided")
+    memory.update_user_profile(user_id, updates)
+    profile = memory_store.read_json(f"users/{user_id[:12]}") or {}
+    memory_store.append_journal({
+        "type": "memory_admin",
+        "user_id": user_id[:12],
+        "action": f"patch_profile fields={','.join(sorted(updates))}",
+        "tags": ["memory", "admin", "patch"],
+        "time": datetime.now(timezone.utc).isoformat(),
+    })
+    return JSONResponse({"ok": True, "tenant_id": tenant_id, "profile": profile})
+
+
+@router.post("/api/tenants/{tenant_id}/memory/quarantine")
+async def api_tenant_memory_quarantine(
+    tenant_id: str,
+    request: Request,
+    _token: str = Depends(_verify_token),
+):
+    """Mark a memory as quarantined without deleting raw journal."""
+    if not redis.available():
+        return JSONResponse({"ok": False, "tenant_id": tenant_id, "error": "Redis unavailable"})
+
+    body = await request.json()
+    user_id = str(body.get("user_id") or "").strip()
+    if not user_id:
+        raise HTTPException(400, "Missing user_id")
+    _set_memory_tenant_context(tenant_id)
+    item = {
+        "text": str(body.get("text") or body.get("summary") or ""),
+        "reason": str(body.get("reason") or "admin quarantine"),
+        "time": datetime.now(timezone.utc).isoformat(),
+    }
+    memory.update_user_profile(user_id, {"quarantined_memory": [item]})
+    memory_store.append_journal({
+        "type": "memory_admin",
+        "user_id": user_id[:12],
+        "action": f"quarantine_memory: {item['reason']}",
+        "tags": ["memory", "admin", "quarantine"],
+        "time": item["time"],
+    })
+    return JSONResponse({"ok": True, "tenant_id": tenant_id, "quarantined": item})
 
 
 @router.put("/api/tenants/{tenant_id}/config")

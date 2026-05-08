@@ -1002,16 +1002,24 @@
           <h3 class="font-semibold text-gray-800 mb-3">User Profile</h3>
           <div id="memory-profile" class="text-sm text-gray-500">Select a user to view profile.</div>
         </div>
-        <div class="bg-white rounded-xl shadow-sm p-5 lg:col-span-2">
+        <div class="bg-white rounded-xl shadow-sm p-5">
+          <div class="flex items-center justify-between mb-3">
+            <h3 class="font-semibold text-gray-800">User Model Quality</h3>
+            <button data-action="rebuild-memory-profile"
+              class="text-xs bg-amber-50 text-amber-700 px-2 py-1 rounded hover:bg-amber-100">Rebuild Profile</button>
+          </div>
+          <div id="memory-quality" class="text-sm text-gray-500">Select a user to inspect quality.</div>
+        </div>
+        <div class="bg-white rounded-xl shadow-sm p-5">
           <div class="flex flex-wrap items-end gap-3 mb-3">
             <div class="flex-1 min-w-72">
-              <label class="block text-xs text-gray-500 mb-1">Recall Preview</label>
+              <label class="block text-xs text-gray-500 mb-1">Recall Harness</label>
               <input id="memory-preview-query" type="text" placeholder="你之前猜outbound是40-60w，你记得么？"
                 class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none"
                 data-enter-action="preview-memory-recall">
             </div>
             <button data-action="preview-memory-recall"
-              class="bg-gray-800 text-white px-4 py-2 rounded-lg hover:bg-gray-700 text-sm">Preview</button>
+              class="bg-gray-800 text-white px-4 py-2 rounded-lg hover:bg-gray-700 text-sm">Run</button>
           </div>
           <pre id="memory-preview-output"
             class="bg-gray-50 border rounded-lg p-3 text-xs whitespace-pre-wrap overflow-auto max-h-44 text-gray-700">Enter a recall question to preview what the bot would see.</pre>
@@ -1429,6 +1437,7 @@ function runDashboardAction(action, target, event) {
     case 'scroll-logs-bottom': return scrollLogsToBottom();
     case 'load-memory': return loadMemory(ds.refreshUsers === 'true');
     case 'preview-memory-recall': return previewMemoryRecall();
+    case 'rebuild-memory-profile': return rebuildMemoryProfile();
     case 'create-leadgen-project': return createLeadgenProject();
     case 'load-leadgen-projects': return loadLeadgenProjects();
     case 'show-link-identity-modal': return showLinkIdentityModal();
@@ -2996,6 +3005,48 @@ function renderMemoryProfile(profile, selectedUserId) {
     </div>`);
 }
 
+function renderMemoryQuality(data, selectedUserId) {
+  const el = document.getElementById('memory-quality');
+  if (!selectedUserId) {
+    setTrustedMarkup(el, '<div class="text-gray-400">Select a user to inspect quality.</div>');
+    return;
+  }
+  if (!data || !data.ok) {
+    setTrustedMarkup(el, `<div class="text-amber-600">${escapeHtml(String(data?.error || 'No quality data'))}</div>`);
+    return;
+  }
+  const profile = data.profile || {};
+  const quality = data.quality || {};
+  const shortTerm = Array.isArray(profile.short_term_state) ? profile.short_term_state : [];
+  const supportPrefs = Array.isArray(profile.support_preferences) ? profile.support_preferences : [];
+  const relationshipNotes = Array.isArray(profile.relationship_notes) ? profile.relationship_notes : [];
+  const lowConfidence = Array.isArray(profile.low_confidence_candidates) ? profile.low_confidence_candidates : [];
+  const listHtml = items => items.length ? items.map(item => `<div>• ${escapeHtml(String(item.text || item))}</div>`).join('') : '-';
+  setTrustedMarkup(el, `
+    <div class="space-y-3">
+      <div class="grid grid-cols-2 gap-2 text-xs">
+        <div class="bg-gray-50 rounded p-2">Short-term<br><span class="font-semibold text-gray-800">${Number.parseInt(quality.short_term_count || 0) || 0}</span></div>
+        <div class="bg-gray-50 rounded p-2">Low confidence<br><span class="font-semibold text-gray-800">${Number.parseInt(quality.low_confidence_count || 0) || 0}</span></div>
+      </div>
+      <div>
+        <div class="text-xs text-gray-400">Short-term State</div>
+        <div class="text-gray-700">${listHtml(shortTerm)}</div>
+      </div>
+      <div>
+        <div class="text-xs text-gray-400">Support Preferences</div>
+        <div class="text-gray-700">${listHtml(supportPrefs)}</div>
+      </div>
+      <div>
+        <div class="text-xs text-gray-400">Relationship Notes</div>
+        <div class="text-gray-700">${listHtml(relationshipNotes)}</div>
+      </div>
+      <div>
+        <div class="text-xs text-gray-400">Low-confidence Candidates</div>
+        <div class="text-gray-700">${listHtml(lowConfidence)}</div>
+      </div>
+    </div>`);
+}
+
 function renderMemoryEntries(entries) {
   const container = document.getElementById('memory-results');
   document.getElementById('memory-entry-count').textContent = `${entries.length} shown`;
@@ -3055,6 +3106,8 @@ async function loadMemory(refreshUsers = false) {
     }
     if (refreshUsers || memoryLastUsers.length === 0) renderMemoryUsers(data.users || [], userId);
     renderMemoryProfile(data.profile, userId);
+    if (userId) loadMemoryQuality(userId);
+    else renderMemoryQuality(null, '');
     renderMemoryEntries(data.entries || []);
     const stats = data.stats || {};
     document.getElementById('memory-stats').textContent =
@@ -3065,6 +3118,19 @@ async function loadMemory(refreshUsers = false) {
       document.getElementById('memory-results'),
       `<div class="text-red-500 text-sm p-4">Failed to load memory: ${escapeHtml(String(e.message || e))}</div>`
     );
+  }
+}
+
+async function loadMemoryQuality(userId) {
+  const tid = document.getElementById('memory-tenant-select').value;
+  if (!tid || !userId) return;
+  const params = new URLSearchParams();
+  params.set('user_id', userId);
+  try {
+    const data = await api(`/tenants/${encodeURIComponent(tid)}/memory/quality?${params.toString()}`);
+    renderMemoryQuality(data, userId);
+  } catch (e) {
+    renderMemoryQuality({ ok: false, error: e.message }, userId);
   }
 }
 
@@ -3084,9 +3150,46 @@ async function previewMemoryRecall() {
   output.textContent = 'Loading preview...';
   try {
     const data = await api(`/tenants/${encodeURIComponent(tid)}/memory/recall-preview?${params.toString()}`);
-    output.textContent = data.formatted || '(no recall output)';
+    const harness = await api(`/tenants/${encodeURIComponent(tid)}/memory/recall-harness`, {
+      method: 'POST',
+      body: JSON.stringify({ user_id: userId, query_text: query, keyword, limit: 10 }),
+    });
+    output.textContent = [
+      'Formatted:',
+      data.formatted || '(no recall output)',
+      '',
+      'Profile Context:',
+      harness.profile_context || data.profile_context || '-',
+      '',
+      'Short-term Context:',
+      harness.short_term_context || data.short_term_context || '-',
+      '',
+      'Selection Reasons:',
+      (harness.selection_reasons || data.selection_reasons || []).join('\\n') || '-',
+    ].join('\\n');
   } catch (e) {
     output.textContent = `Failed: ${e.message}`;
+  }
+}
+
+async function rebuildMemoryProfile() {
+  const tid = document.getElementById('memory-tenant-select').value;
+  const userId = document.getElementById('memory-user-select').value;
+  const status = document.getElementById('memory-stats');
+  if (!tid || !userId) {
+    status.textContent = 'Select a tenant and user first.';
+    return;
+  }
+  status.textContent = 'Rebuilding profile...';
+  try {
+    await api(`/tenants/${encodeURIComponent(tid)}/memory/rebuild-profile`, {
+      method: 'POST',
+      body: JSON.stringify({ user_id: userId }),
+    });
+    status.textContent = 'Profile rebuilt.';
+    await loadMemory(false);
+  } catch (e) {
+    status.textContent = `Rebuild failed: ${e.message}`;
   }
 }
 

@@ -105,6 +105,16 @@ from app.harness.runtime_errors import (
     classify_runtime_error,
     classify_runtime_error_batch,
 )
+from app.harness.memory_recall import (
+    MemoryRecallPlan,
+    build_memory_recall_plan,
+)
+from app.harness.memory_quality import (
+    MemoryQualityDecision,
+    MemoryScope,
+    classify_memory_candidate,
+    sanitize_memory_text,
+)
 
 __all__ = [
     "DEFAULT_COMPACTION_AFTER_ROUND",
@@ -182,4 +192,10 @@ __all__ = [
     "RuntimeErrorDecision",
     "classify_runtime_error",
     "classify_runtime_error_batch",
+    "MemoryRecallPlan",
+    "build_memory_recall_plan",
+    "MemoryQualityDecision",
+    "MemoryScope",
+    "classify_memory_candidate",
+    "sanitize_memory_text",
 ]

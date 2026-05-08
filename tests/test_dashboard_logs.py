@@ -82,6 +82,13 @@ def test_dashboard_memory_profile_shows_rich_user_model_fields():
     assert "Open Loops" in dashboard
     assert "Important Entities" in dashboard
     assert "Communication Style" in dashboard
+    assert "User Model Quality" in dashboard
+    assert "Recall Harness" in dashboard
+    assert "Rebuild Profile" in dashboard
+    assert "/tenants/${encodeURIComponent(tid)}/memory/quality?" in dashboard
+    assert "/tenants/${encodeURIComponent(tid)}/memory/recall-harness" in dashboard
+    assert "/tenants/${encodeURIComponent(tid)}/memory/rebuild-profile" in dashboard
+    assert "escapeHtml(String(item.text || item))" in dashboard
 
 
 def test_dashboard_log_colorizer_uses_text_nodes_not_markup_fragments():

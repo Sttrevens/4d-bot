@@ -29,9 +29,14 @@ def save_memory(args: dict) -> ToolResult:
     tags = args.get("tags", [])
     outcome = args.get("outcome", "")
     solution = args.get("solution", False)
+    kind = args.get("kind", "")
+    confidence = args.get("confidence", None)
+    scope = args.get("scope", "")
+    source = args.get("source", "tool")
 
     ok = mem.remember(user_id, user_name, action, outcome, tags,
-                      solution=solution)
+                      solution=solution, kind=kind, confidence=confidence,
+                      scope=scope, source=source)
     if ok:
         return ToolResult.success("已保存到记忆。")
     return ToolResult.error("保存失败（GitHub 写入错误）。", code="api_error")
@@ -238,6 +243,22 @@ TOOL_DEFINITIONS = [
                     "description": "这条记忆是否是可复用的解决方案（修 bug、排错、配置等）。"
                                    "标记为 true 后，组织内其他用户遇到类似问题时可以检索到。",
                     "default": False,
+                },
+                "kind": {
+                    "type": "string",
+                    "description": "可选的记忆类型，如 support_style、emotional_state、numeric_commitment。",
+                },
+                "confidence": {
+                    "type": "number",
+                    "description": "可选置信度 0-1。",
+                },
+                "scope": {
+                    "type": "string",
+                    "description": "可选作用域：short_term、profile、journal、review。",
+                },
+                "source": {
+                    "type": "string",
+                    "description": "可选来源标记，如 user_explicit、tool、admin。",
                 },
             },
             "required": ["what"],

@@ -339,14 +339,16 @@ def _phase_prune_and_index(journal: list[dict], consolidation: dict) -> dict:
                 journal[idx][field] = value
             updated_count += 1
 
-    # 删除条目（从后往前删，保持索引稳定）
+    # 默认不物理删除原始 journal，只标记为被 dream 废弃，保留审计痕迹。
     removed_count = 0
     new_journal = []
     for idx, entry in enumerate(journal):
         if idx in entries_to_remove:
+            entry = dict(entry)
+            entry["memory_status"] = "superseded_by_dream"
+            entry["memory_status_reason"] = consolidation.get("summary", "dream consolidation")
             removed_count += 1
-        else:
-            new_journal.append(entry)
+        new_journal.append(entry)
 
     # 重写 journal
     if removed_count > 0 or updated_count > 0:
@@ -366,6 +368,22 @@ def _phase_prune_and_index(journal: list[dict], consolidation: dict) -> dict:
             profile_updated += 1
         except Exception:
             logger.debug("dream/prune: profile update failed for %s", uid, exc_info=True)
+
+    # Memory V2: rebuild the richer user model from journal after every dream run.
+    rebuilt_uids = {
+        str(entry.get("user_id") or "")[:12]
+        for entry in new_journal
+        if entry.get("user_id")
+    }
+    for uid in rebuilt_uids:
+        try:
+            from app.services.memory import rebuild_user_profile_from_entries
+            existing = memory_store.read_json(f"users/{uid}") or {}
+            rebuilt = rebuild_user_profile_from_entries(uid, new_journal, existing_profile=existing)
+            memory_store.write_json(f"users/{uid}", rebuilt)
+            profile_updated += 1
+        except Exception:
+            logger.debug("dream/prune: profile rebuild failed for %s", uid, exc_info=True)
 
     stats = {
         "removed": removed_count,
