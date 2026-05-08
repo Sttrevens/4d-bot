@@ -26,8 +26,8 @@
     <h1 class="text-2xl font-bold text-gray-800 mb-6 text-center">Bot Admin</h1>
     <input id="token-input" type="password" placeholder="Admin Token"
       class="w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none mb-4"
-      onkeydown="if(event.key==='Enter')login()">
-    <button onclick="login()"
+      data-enter-action="login">
+    <button data-action="login"
       class="w-full bg-blue-600 text-white py-3 rounded-lg hover:bg-blue-700 transition font-medium">
       Login
     </button>
@@ -42,8 +42,8 @@
     <div class="max-w-7xl mx-auto px-4 py-3 flex justify-between items-center">
       <h1 class="text-xl font-bold text-gray-800">Bot Admin Dashboard</h1>
       <div class="flex items-center gap-4">
-        <button onclick="refreshAll()" class="text-gray-500 hover:text-blue-600 text-sm">Refresh</button>
-        <button onclick="logout()" class="text-gray-500 hover:text-red-500 text-sm">Logout</button>
+        <button data-action="refresh-all" class="text-gray-500 hover:text-blue-600 text-sm">Refresh</button>
+        <button data-action="logout" class="text-gray-500 hover:text-red-500 text-sm">Logout</button>
       </div>
     </div>
   </nav>
@@ -51,35 +51,39 @@
   <div class="max-w-7xl mx-auto px-4 py-6">
     <!-- Tabs -->
     <div class="flex gap-2 mb-6">
-      <button onclick="switchTab('overview')" id="tab-overview"
+      <button data-action="switch-tab" data-tab="overview" id="tab-overview"
         class="tab-btn px-4 py-2 rounded-lg font-medium text-sm bg-blue-100 text-blue-700">
         Overview
       </button>
-      <button onclick="switchTab('users')" id="tab-users"
+      <button data-action="switch-tab" data-tab="users" id="tab-users"
         class="tab-btn px-4 py-2 rounded-lg font-medium text-sm bg-gray-100 text-gray-600 hover:bg-gray-200">
         Users
       </button>
-      <button onclick="switchTab('usage')" id="tab-usage"
+      <button data-action="switch-tab" data-tab="usage" id="tab-usage"
         class="tab-btn px-4 py-2 rounded-lg font-medium text-sm bg-gray-100 text-gray-600 hover:bg-gray-200">
         Usage
       </button>
-      <button onclick="switchTab('instances')" id="tab-instances"
+      <button data-action="switch-tab" data-tab="instances" id="tab-instances"
         class="tab-btn px-4 py-2 rounded-lg font-medium text-sm bg-gray-100 text-gray-600 hover:bg-gray-200">
         Instances
       </button>
-      <button onclick="switchTab('logs')" id="tab-logs"
+      <button data-action="switch-tab" data-tab="logs" id="tab-logs"
         class="tab-btn px-4 py-2 rounded-lg font-medium text-sm bg-gray-100 text-gray-600 hover:bg-gray-200">
         Logs
       </button>
-      <button onclick="switchTab('memory')" id="tab-memory"
+      <button data-action="switch-tab" data-tab="memory" id="tab-memory"
         class="tab-btn px-4 py-2 rounded-lg font-medium text-sm bg-gray-100 text-gray-600 hover:bg-gray-200">
         Memory
       </button>
-      <button onclick="switchTab('identities')" id="tab-identities"
+      <button data-action="switch-tab" data-tab="leadgen" id="tab-leadgen"
+        class="tab-btn px-4 py-2 rounded-lg font-medium text-sm bg-gray-100 text-gray-600 hover:bg-gray-200">
+        Leadgen
+      </button>
+      <button data-action="switch-tab" data-tab="identities" id="tab-identities"
         class="tab-btn px-4 py-2 rounded-lg font-medium text-sm bg-gray-100 text-gray-600 hover:bg-gray-200">
         Identities
       </button>
-      <button onclick="switchTab('superadmin')" id="tab-superadmin"
+      <button data-action="switch-tab" data-tab="superadmin" id="tab-superadmin"
         class="tab-btn px-4 py-2 rounded-lg font-medium text-sm bg-gray-100 text-gray-600 hover:bg-gray-200">
         Super Admin
       </button>
@@ -97,7 +101,7 @@
       <div class="bg-white rounded-xl shadow-sm p-6">
         <div class="flex items-center gap-4 mb-4">
           <label class="text-sm font-medium text-gray-600">Tenant:</label>
-          <select id="user-tenant-select" onchange="loadUsers()"
+          <select id="user-tenant-select" data-change-action="load-users"
             class="border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
           </select>
           <span id="users-mode-badge" class="ml-2"></span>
@@ -106,22 +110,22 @@
 
         <!-- Filter buttons (trial mode only) -->
         <div id="users-filter-row" class="flex gap-2 mb-4">
-          <button onclick="filterUsers('all')" class="filter-btn text-xs px-3 py-1 rounded-full bg-gray-100 text-gray-600">All</button>
-          <button onclick="filterUsers('trial')" class="filter-btn text-xs px-3 py-1 rounded-full bg-blue-50 text-blue-600">Trial</button>
-          <button onclick="filterUsers('expired')" class="filter-btn text-xs px-3 py-1 rounded-full bg-orange-50 text-orange-600">Expired</button>
-          <button onclick="filterUsers('approved')" class="filter-btn text-xs px-3 py-1 rounded-full bg-green-50 text-green-600">Approved</button>
-          <button onclick="filterUsers('blocked')" class="filter-btn text-xs px-3 py-1 rounded-full bg-red-50 text-red-600">Blocked</button>
+          <button data-action="filter-users" data-status="all" class="filter-btn text-xs px-3 py-1 rounded-full bg-gray-100 text-gray-600">All</button>
+          <button data-action="filter-users" data-status="trial" class="filter-btn text-xs px-3 py-1 rounded-full bg-blue-50 text-blue-600">Trial</button>
+          <button data-action="filter-users" data-status="expired" class="filter-btn text-xs px-3 py-1 rounded-full bg-orange-50 text-orange-600">Expired</button>
+          <button data-action="filter-users" data-status="approved" class="filter-btn text-xs px-3 py-1 rounded-full bg-green-50 text-green-600">Approved</button>
+          <button data-action="filter-users" data-status="blocked" class="filter-btn text-xs px-3 py-1 rounded-full bg-red-50 text-red-600">Blocked</button>
         </div>
 
         <!-- Whitelist mode controls -->
         <div id="users-add-row" class="hidden mb-4">
           <div class="flex items-center gap-3 mb-2">
-            <button onclick="filterUsers('all')" class="filter-btn text-xs px-3 py-1 rounded-full bg-gray-100 text-gray-600 ring-2 ring-blue-400">All</button>
-            <button onclick="filterUsers('allowed')" class="filter-btn text-xs px-3 py-1 rounded-full bg-green-50 text-green-600">Allowed</button>
-            <button onclick="filterUsers('visitor')" class="filter-btn text-xs px-3 py-1 rounded-full bg-yellow-50 text-yellow-600">Visitor</button>
+            <button data-action="filter-users" data-status="all" class="filter-btn text-xs px-3 py-1 rounded-full bg-gray-100 text-gray-600 ring-2 ring-blue-400">All</button>
+            <button data-action="filter-users" data-status="allowed" class="filter-btn text-xs px-3 py-1 rounded-full bg-green-50 text-green-600">Allowed</button>
+            <button data-action="filter-users" data-status="visitor" class="filter-btn text-xs px-3 py-1 rounded-full bg-yellow-50 text-yellow-600">Visitor</button>
             <span class="border-l border-gray-200 h-4 mx-1"></span>
-            <button onclick="showUsersManualAdd()" class="text-xs bg-green-50 text-green-600 px-3 py-1.5 rounded-lg hover:bg-green-100 border border-green-200">+ Manual Add</button>
-            <button onclick="showUsersChatDropdown()" class="text-xs bg-blue-50 text-blue-600 px-3 py-1.5 rounded-lg hover:bg-blue-100 border border-blue-200">+ From Chat History</button>
+            <button data-action="show-users-manual-add" class="text-xs bg-green-50 text-green-600 px-3 py-1.5 rounded-lg hover:bg-green-100 border border-green-200">+ Manual Add</button>
+            <button data-action="show-users-chat-dropdown" class="text-xs bg-blue-50 text-blue-600 px-3 py-1.5 rounded-lg hover:bg-blue-100 border border-blue-200">+ From Chat History</button>
             <span class="text-[10px] text-gray-400 ml-auto">Empty whitelist = open access</span>
           </div>
           <!-- Manual add form -->
@@ -132,8 +136,8 @@
               <input id="users-manual-nickname" type="text" class="w-32 border rounded-lg px-2 py-1 text-sm" placeholder="Nickname">
             </div>
             <div class="flex gap-2">
-              <button onclick="addWhitelistManual()" class="text-xs bg-green-500 text-white px-3 py-1 rounded hover:bg-green-600">Add</button>
-              <button onclick="hideUsersManualAdd()" class="text-xs text-gray-500 px-3 py-1 rounded hover:bg-gray-200">Cancel</button>
+              <button data-action="add-whitelist-manual" class="text-xs bg-green-500 text-white px-3 py-1 rounded hover:bg-green-600">Add</button>
+              <button data-action="hide-users-manual-add" class="text-xs text-gray-500 px-3 py-1 rounded hover:bg-gray-200">Cancel</button>
             </div>
           </div>
           <!-- Chat history dropdown -->
@@ -143,8 +147,8 @@
               <option value="">Loading...</option>
             </select>
             <div class="flex gap-2">
-              <button onclick="addWhitelistFromChat()" class="text-xs bg-blue-500 text-white px-3 py-1 rounded hover:bg-blue-600">Add</button>
-              <button onclick="hideUsersChatDropdown()" class="text-xs text-gray-500 px-3 py-1 rounded hover:bg-gray-200">Cancel</button>
+              <button data-action="add-whitelist-from-chat" class="text-xs bg-blue-500 text-white px-3 py-1 rounded hover:bg-blue-600">Add</button>
+              <button data-action="hide-users-chat-dropdown" class="text-xs text-gray-500 px-3 py-1 rounded hover:bg-gray-200">Cancel</button>
             </div>
           </div>
         </div>
@@ -176,7 +180,7 @@
       <div class="bg-white rounded-xl shadow-sm p-6">
         <div class="flex items-center gap-4 mb-6">
           <label class="text-sm font-medium text-gray-600">Month:</label>
-          <input id="usage-month" type="month" onchange="loadUsage()"
+          <input id="usage-month" type="month" data-change-action="load-usage"
             class="border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
         </div>
         <div id="usage-content">
@@ -191,7 +195,7 @@
       <div id="instances-list-view">
         <div class="flex justify-between items-center mb-4">
           <h2 class="text-lg font-semibold text-gray-700">Bot Instances</h2>
-          <button onclick="showProvisionForm()"
+          <button data-action="show-provision-form"
             class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition text-sm font-medium">
             + New Instance
           </button>
@@ -218,11 +222,11 @@
       <!-- Provision Form (hidden by default) -->
       <div id="provision-form-view" class="hidden">
         <div class="flex items-center gap-3 mb-4">
-          <button onclick="hideProvisionForm()" class="text-gray-400 hover:text-gray-600">&larr; Back</button>
+          <button data-action="hide-provision-form" class="text-gray-400 hover:text-gray-600">&larr; Back</button>
           <h2 class="text-lg font-semibold text-gray-700">Create New Bot Instance</h2>
         </div>
         <div class="bg-white rounded-xl shadow-sm p-6 max-w-3xl">
-          <form onsubmit="submitProvision(event)">
+          <form data-submit-action="submit-provision">
             <!-- Basic Info -->
             <h3 class="font-semibold text-gray-700 mb-3 border-b pb-2">Basic Info</h3>
             <div class="grid grid-cols-2 gap-4 mb-6">
@@ -239,7 +243,7 @@
               </div>
               <div class="col-span-2">
                 <label class="block text-xs font-medium text-gray-500 mb-1">Platform *</label>
-                <select name="platform" required onchange="platformChanged(this.value)"
+                <select name="platform" required data-change-action="platform-changed"
                   class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
                   <option value="">-- Select Platform --</option>
                   <option value="feishu">Feishu (飞书)</option>
@@ -359,7 +363,7 @@
                 </div>
                 <div class="col-span-2">
                   <label class="block text-xs font-medium text-gray-500 mb-1">Webhook Token *</label>
-                  <input name="qq_token" placeholder="Webhook 回调验证 Token (Ed25519 seed)"
+                  <input name="qq_token" placeholder="QQ 开放平台 Token"
                     class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
                 </div>
               </div>
@@ -392,7 +396,7 @@
             <h3 class="font-semibold text-gray-700 mb-3 border-b pb-2">Trial & Quota</h3>
             <div class="grid grid-cols-2 gap-4 mb-6">
               <label class="flex items-center gap-2 text-sm text-gray-600 col-span-2">
-                <input name="trial_enabled" type="checkbox" class="rounded" onchange="document.getElementById('trial-opts').classList.toggle('hidden', !this.checked)">
+                <input name="trial_enabled" type="checkbox" class="rounded" data-change-action="toggle-trial-options">
                 Enable Trial Period (new users must be approved after trial expires)
               </label>
               <div id="trial-opts" class="hidden col-span-2 grid grid-cols-3 gap-4 pl-6 border-l-2 border-blue-200">
@@ -499,7 +503,7 @@
                 class="bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700 transition text-sm font-medium">
                 Create Instance
               </button>
-              <button type="button" onclick="hideProvisionForm()"
+              <button type="button" data-action="hide-provision-form"
                 class="text-gray-500 px-4 py-2 rounded-lg hover:bg-gray-100 text-sm">
                 Cancel
               </button>
@@ -511,7 +515,7 @@
       <!-- KF Bot Management Panel (hidden by default) -->
       <div id="kf-panel-view" class="hidden">
         <div class="flex items-center gap-3 mb-4">
-          <button onclick="hideKfPanel()" class="text-gray-400 hover:text-gray-600">&larr; Back</button>
+          <button data-action="hide-kf-panel" class="text-gray-400 hover:text-gray-600">&larr; Back</button>
           <h2 id="kf-panel-title" class="text-lg font-semibold text-gray-700">KF Accounts</h2>
         </div>
         <div class="bg-white rounded-xl shadow-sm p-6 mb-4">
@@ -536,7 +540,7 @@
           <h3 class="text-sm font-semibold text-gray-600 mb-3">
             Add Co-hosted Bot for: <span id="kf-add-kfname" class="text-purple-600"></span>
           </h3>
-          <form onsubmit="submitAddCoTenant(event)">
+          <form data-submit-action="submit-add-co-tenant">
             <input type="hidden" id="kf-add-open-kfid">
             <div class="grid grid-cols-2 gap-4 mb-4">
               <div>
@@ -704,7 +708,7 @@
                 class="bg-purple-600 text-white px-6 py-2 rounded-lg hover:bg-purple-700 transition text-sm font-medium">
                 Add Co-tenant
               </button>
-              <button type="button" onclick="document.getElementById('kf-add-form').classList.add('hidden')"
+              <button type="button" data-action="hide-kf-add-form"
                 class="text-gray-500 px-4 py-2 rounded-lg hover:bg-gray-100 text-sm">Cancel</button>
             </div>
           </form>
@@ -718,9 +722,9 @@
       <div class="bg-white rounded-xl shadow-2xl w-full max-w-2xl p-6 my-auto">
         <div class="flex justify-between items-center mb-4">
           <h3 class="text-lg font-semibold">Edit Tenant: <span id="edit-tid" class="text-blue-600"></span></h3>
-          <button onclick="closeEditModal()" class="text-gray-400 hover:text-gray-600 text-xl">&times;</button>
+          <button data-action="close-edit-modal" class="text-gray-400 hover:text-gray-600 text-xl">&times;</button>
         </div>
-        <form onsubmit="submitEditTenant(event)" class="space-y-5">
+        <form data-submit-action="submit-edit-tenant" class="space-y-5">
           <!-- Name -->
           <div>
             <label class="block text-xs font-medium text-gray-500 mb-1">Display Name</label>
@@ -861,7 +865,7 @@
               <input id="edit-access-deny-msg" type="text" class="w-full border rounded-lg px-3 py-2 text-sm"
                 placeholder="抱歉，您没有权限使用此助手。如需开通，请联系管理员。">
             </div>
-            <p class="text-[10px] text-gray-400">Manage whitelist users in the <a href="#" onclick="switchTab('users'); closeEditModal(); return false;" class="text-blue-500 hover:underline">Users tab</a>.</p>
+            <p class="text-[10px] text-gray-400">Manage whitelist users in the <a href="#" data-action="edit-modal-users-tab" class="text-blue-500 hover:underline">Users tab</a>.</p>
           </div>
           <!-- Submit -->
           <div class="flex items-center gap-3 pt-3 border-t">
@@ -869,7 +873,7 @@
               class="bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700 text-sm font-medium">
               Save Changes
             </button>
-            <button type="button" onclick="closeEditModal()" class="text-gray-500 px-4 py-2 rounded-lg hover:bg-gray-100 text-sm">Cancel</button>
+            <button type="button" data-action="close-edit-modal" class="text-gray-500 px-4 py-2 rounded-lg hover:bg-gray-100 text-sm">Cancel</button>
             <span id="edit-status" class="text-sm ml-auto"></span>
           </div>
         </form>
@@ -883,29 +887,29 @@
         <!-- Controls -->
         <div class="flex flex-wrap items-center gap-3 mb-4">
           <label class="text-sm font-medium text-gray-600">Instance:</label>
-          <select id="logs-instance-select" onchange="loadLogs()"
+          <select id="logs-instance-select" data-change-action="load-logs"
             class="border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
           </select>
           <label class="text-sm font-medium text-gray-600 ml-2">Lines:</label>
-          <select id="logs-lines" onchange="loadLogs()"
+          <select id="logs-lines" data-change-action="load-logs"
             class="border rounded-lg px-2 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
             <option value="100">100</option>
-            <option value="200" selected>200</option>
+            <option value="200">200</option>
             <option value="500">500</option>
-            <option value="1000">1000</option>
+            <option value="1000" selected>1000</option>
           </select>
           <label class="text-sm font-medium text-gray-600 ml-2">Since:</label>
-          <select id="logs-since" onchange="loadLogs()"
+          <select id="logs-since" data-change-action="load-logs"
             class="border rounded-lg px-2 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
             <option value="">All</option>
             <option value="5m">5 min</option>
-            <option value="30m" selected>30 min</option>
+            <option value="30m">30 min</option>
             <option value="1h">1 hour</option>
             <option value="6h">6 hours</option>
-            <option value="24h">24 hours</option>
+            <option value="24h" selected>24 hours</option>
           </select>
           <label class="text-sm font-medium text-gray-600 ml-2">Level:</label>
-          <select id="logs-level" onchange="loadLogs()"
+          <select id="logs-level" data-change-action="load-logs"
             class="border rounded-lg px-2 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
             <option value="">All</option>
             <option value="ERROR">ERROR</option>
@@ -914,8 +918,11 @@
           </select>
           <input id="logs-grep" type="text" placeholder="Search..."
             class="border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none w-40"
-            onkeydown="if(event.key==='Enter')loadLogs()">
-          <button onclick="loadLogs()" class="bg-blue-600 text-white px-3 py-2 rounded-lg hover:bg-blue-700 text-sm">Refresh</button>
+            data-enter-action="load-logs">
+          <button data-action="load-logs" data-force="true" class="bg-blue-600 text-white px-3 py-2 rounded-lg hover:bg-blue-700 text-sm">Refresh</button>
+          <label class="text-sm text-gray-500 ml-2">
+            <input type="checkbox" id="logs-force-refresh" class="mr-1">Force refresh
+          </label>
           <label class="text-sm text-gray-500 ml-2">
             <input type="checkbox" id="logs-auto-refresh" class="mr-1" checked>Auto (5s)
           </label>
@@ -924,7 +931,7 @@
         <div id="logs-error-summary" class="hidden mb-3 bg-red-50 border border-red-200 rounded-lg p-3">
           <div class="flex justify-between items-center">
             <span class="text-sm font-medium text-red-700" id="logs-error-count"></span>
-            <button onclick="toggleErrorPanel()" class="text-xs text-red-600 hover:underline" id="logs-error-toggle">Show errors</button>
+            <button data-action="toggle-error-panel" class="text-xs text-red-600 hover:underline" id="logs-error-toggle">Show errors</button>
           </div>
           <pre id="logs-error-detail" class="hidden mt-2 text-xs text-red-800 whitespace-pre-wrap max-h-40 overflow-y-auto"></pre>
         </div>
@@ -936,7 +943,7 @@
         <div class="relative">
           <pre id="logs-output" class="bg-gray-900 text-gray-100 rounded-lg p-4 text-xs font-mono overflow-auto whitespace-pre-wrap"
             style="max-height: 70vh; min-height: 300px;">Select an instance to view logs</pre>
-          <button onclick="scrollLogsToBottom()" title="Scroll to bottom"
+          <button data-action="scroll-logs-bottom" title="Scroll to bottom"
             class="absolute bottom-3 right-3 bg-gray-700 text-gray-300 px-2 py-1 rounded text-xs hover:bg-gray-600 opacity-70 hover:opacity-100">
             &darr; Bottom
           </button>
@@ -950,13 +957,13 @@
         <div class="flex flex-wrap items-end gap-3">
           <div>
             <label class="block text-xs text-gray-500 mb-1">Tenant</label>
-            <select id="memory-tenant-select" onchange="loadMemory()"
+            <select id="memory-tenant-select" data-change-action="load-memory" data-refresh-users="true"
               class="border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
             </select>
           </div>
           <div>
             <label class="block text-xs text-gray-500 mb-1">User</label>
-            <select id="memory-user-select" onchange="loadMemory(false)"
+            <select id="memory-user-select" data-change-action="load-memory"
               class="border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none min-w-48">
               <option value="">All users</option>
             </select>
@@ -965,17 +972,17 @@
             <label class="block text-xs text-gray-500 mb-1">Keyword</label>
             <input id="memory-query" type="text" placeholder="Outbound, 40-60w, 销量..."
               class="border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none w-56"
-              onkeydown="if(event.key==='Enter')loadMemory(false)">
+              data-enter-action="load-memory">
           </div>
           <div>
             <label class="block text-xs text-gray-500 mb-1">Tag</label>
             <input id="memory-tag" type="text" placeholder="预测"
               class="border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none w-28"
-              onkeydown="if(event.key==='Enter')loadMemory(false)">
+              data-enter-action="load-memory">
           </div>
           <div>
             <label class="block text-xs text-gray-500 mb-1">Type</label>
-            <select id="memory-type" onchange="loadMemory(false)"
+            <select id="memory-type" data-change-action="load-memory"
               class="border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
               <option value="">All</option>
               <option value="diary">Diary</option>
@@ -984,7 +991,7 @@
               <option value="compressed">Compressed</option>
             </select>
           </div>
-          <button onclick="loadMemory(false)"
+          <button data-action="load-memory"
             class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 text-sm">Search</button>
           <span id="memory-stats" class="text-xs text-gray-400 ml-auto"></span>
         </div>
@@ -1001,9 +1008,9 @@
               <label class="block text-xs text-gray-500 mb-1">Recall Preview</label>
               <input id="memory-preview-query" type="text" placeholder="你之前猜outbound是40-60w，你记得么？"
                 class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none"
-                onkeydown="if(event.key==='Enter')previewMemoryRecall()">
+                data-enter-action="preview-memory-recall">
             </div>
-            <button onclick="previewMemoryRecall()"
+            <button data-action="preview-memory-recall"
               class="bg-gray-800 text-white px-4 py-2 rounded-lg hover:bg-gray-700 text-sm">Preview</button>
           </div>
           <pre id="memory-preview-output"
@@ -1022,6 +1029,42 @@
       </div>
     </div>
 
+    <!-- Leadgen Tab -->
+    <div id="panel-leadgen" class="hidden fade-in">
+      <div class="grid md:grid-cols-3 gap-4 mb-4">
+        <div class="bg-white rounded-xl shadow-sm p-4">
+          <h3 class="font-semibold text-gray-800 mb-3">Projects</h3>
+          <label class="text-xs text-gray-500">Tenant ID</label>
+          <input id="leadgen-tenant" value="kf-leadgen-demo"
+            class="w-full border rounded-lg px-3 py-2 text-sm mb-2">
+          <div class="flex gap-2">
+            <input id="leadgen-project-name" placeholder="New project name"
+              class="flex-1 border rounded-lg px-3 py-2 text-sm">
+            <button data-action="create-leadgen-project"
+              class="bg-blue-600 text-white px-3 py-2 rounded-lg text-sm">Create</button>
+          </div>
+            <button data-action="load-leadgen-projects"
+            class="mt-2 text-sm text-blue-600 hover:underline">Refresh projects</button>
+        </div>
+        <div class="bg-white rounded-xl shadow-sm p-4 md:col-span-2">
+          <h3 class="font-semibold text-gray-800 mb-3">Leadgen Ops</h3>
+          <p class="text-sm text-gray-600">
+            Projects, candidates, evidence, asset cards, outreach queue and audit logs are backed by Redis with tenant isolation.
+            This panel is the first operator surface; deeper candidate/evidence views use the APIs below.
+          </p>
+          <div class="mt-3 text-xs text-gray-500">
+            APIs: <code>/admin/api/leadgen/projects</code>,
+            <code>/admin/api/leadgen/projects/{id}/candidates</code>,
+            <code>/admin/api/leadgen/projects/{id}/outreach</code>
+          </div>
+        </div>
+      </div>
+      <div class="bg-white rounded-xl shadow-sm p-4">
+        <div id="leadgen-status" class="text-sm text-gray-500 mb-2"></div>
+        <div id="leadgen-projects" class="grid md:grid-cols-2 gap-3"></div>
+      </div>
+    </div>
+
     <!-- Identities Tab -->
     <div id="panel-identities" class="hidden fade-in">
       <div class="space-y-6">
@@ -1030,10 +1073,10 @@
           <div class="flex justify-between items-center mb-4">
             <h3 class="text-lg font-semibold">Cross-Platform Identities</h3>
             <div class="flex items-center gap-3">
-              <select id="identity-tenant-select" onchange="loadIdentities()"
+              <select id="identity-tenant-select" data-change-action="load-identities"
                 class="text-sm border rounded-lg px-3 py-1.5 bg-gray-50">
               </select>
-              <button onclick="showLinkIdentityModal()"
+              <button data-action="show-link-identity-modal"
                 class="px-3 py-1.5 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700">
                 Link Identity
               </button>
@@ -1060,7 +1103,7 @@
         <div class="bg-white rounded-xl shadow-sm border p-6">
           <div class="flex justify-between items-center mb-4">
             <h3 class="text-lg font-semibold">Bot Channels</h3>
-            <button onclick="showAddChannelModal()"
+            <button data-action="show-add-channel-modal"
               class="px-3 py-1.5 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700">
               + Add Channel
             </button>
@@ -1093,7 +1136,7 @@
           <div>
             <label class="text-sm font-medium text-gray-700">Select User</label>
             <p class="text-xs text-gray-400 mb-1">Choose from users who have interacted with this bot</p>
-            <select id="link-id-user-select" onchange="onLinkUserSelect()"
+            <select id="link-id-user-select" data-change-action="link-user-select"
               class="w-full text-sm border rounded-lg px-3 py-2 mt-1">
               <option value="">-- Select a user --</option>
             </select>
@@ -1116,7 +1159,7 @@
           <!-- Step 2: Link to existing identity or create new -->
           <div>
             <label class="text-sm font-medium text-gray-700">Link to Identity</label>
-            <select id="link-id-target" onchange="onLinkTargetChange()"
+            <select id="link-id-target" data-change-action="link-target-change"
               class="w-full text-sm border rounded-lg px-3 py-2 mt-1">
               <option value="__new__">Create New Identity</option>
             </select>
@@ -1157,9 +1200,9 @@
           </details>
         </div>
         <div class="flex justify-end gap-2 mt-4">
-          <button onclick="closeLinkIdentityModal()"
+          <button data-action="close-link-identity-modal"
             class="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg">Cancel</button>
-          <button onclick="submitLinkIdentity()"
+          <button data-action="submit-link-identity"
             class="px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700">Link</button>
         </div>
       </div>
@@ -1174,7 +1217,7 @@
           <div class="grid grid-cols-2 gap-3">
             <div>
               <label class="text-sm text-gray-600">Platform</label>
-              <select id="ch-platform" onchange="onChannelPlatformChange()"
+              <select id="ch-platform" data-change-action="channel-platform-change"
                 class="w-full text-sm border rounded-lg px-3 py-2 mt-1">
                 <option value="feishu">Feishu</option>
                 <option value="wecom">WeCom</option>
@@ -1240,7 +1283,7 @@
               class="w-full text-sm border rounded-lg px-3 py-2">
             <input id="ch-qq-app-secret" type="password" placeholder="QQ App Secret"
               class="w-full text-sm border rounded-lg px-3 py-2">
-            <input id="ch-qq-token" type="text" placeholder="QQ Token (Ed25519 seed)"
+            <input id="ch-qq-token" type="text" placeholder="QQ Token"
               class="w-full text-sm border rounded-lg px-3 py-2">
           </div>
 
@@ -1250,9 +1293,9 @@
           </div>
         </div>
         <div class="flex justify-end gap-2 mt-4">
-          <button onclick="closeChannelModal()"
+          <button data-action="close-channel-modal"
             class="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg">Cancel</button>
-          <button onclick="submitChannel()"
+          <button data-action="submit-channel"
             class="px-4 py-2 text-sm bg-green-600 text-white rounded-lg hover:bg-green-700">Save</button>
         </div>
       </div>
@@ -1265,7 +1308,7 @@
         <div class="bg-white rounded-xl shadow-sm border p-6">
           <div class="flex justify-between items-center mb-4">
             <h3 class="text-lg font-semibold">Super Admin Identity</h3>
-            <button onclick="saveSuperAdmin()" class="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700">Save</button>
+            <button data-action="save-super-admin" class="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700">Save</button>
           </div>
           <div class="mb-4">
             <label class="block text-sm text-gray-600 mb-1">Name (跨平台匹配)</label>
@@ -1273,14 +1316,14 @@
           </div>
           <h4 class="text-sm font-medium text-gray-700 mb-2">Platform Identities</h4>
           <div id="sa-identities" class="space-y-2"></div>
-          <button onclick="addIdentityRow()" class="mt-3 text-sm text-blue-600 hover:underline">+ Add Identity</button>
+          <button data-action="add-identity-row" class="mt-3 text-sm text-blue-600 hover:underline">+ Add Identity</button>
         </div>
 
         <!-- 开通审批队列 -->
         <div class="bg-white rounded-xl shadow-sm border p-6">
           <div class="flex justify-between items-center mb-4">
             <h3 class="text-lg font-semibold">Provision Requests</h3>
-            <select id="req-filter" onchange="loadProvisionRequests()" class="border rounded-lg px-2 py-1 text-sm">
+            <select id="req-filter" data-change-action="load-provision-requests" class="border rounded-lg px-2 py-1 text-sm">
               <option value="pending">Pending</option>
               <option value="all">All</option>
             </select>
@@ -1307,6 +1350,7 @@ let tenantsData = [];
 let usersData = [];
 let usersTrialDurationHours = 48;
 let currentFilter = 'all';
+let currentTab = 'overview';
 
 // ── API ──
 async function api(path, opts = {}) {
@@ -1326,6 +1370,147 @@ async function api(path, opts = {}) {
     throw new Error(msg);
   }
   return res.json();
+}
+
+// Only for static or already-sanitized UI templates. API-fed dynamic data should
+// render through DOM nodes and textContent/dataset instead.
+function fragmentFromTrustedMarkup(markup) {
+  return document.createRange().createContextualFragment(String(markup ?? ''));
+}
+
+function setTrustedMarkup(target, markup) {
+  if (!target) return;
+  target.replaceChildren(fragmentFromTrustedMarkup(markup));
+}
+
+function appendTrustedMarkup(target, markup) {
+  if (!target) return;
+  target.append(fragmentFromTrustedMarkup(markup));
+}
+
+function clearNode(target) {
+  if (!target) return;
+  target.replaceChildren();
+}
+
+function runDashboardAction(action, target, event) {
+  const ds = target.dataset || {};
+  const index = value => parseInt(value, 10);
+  switch (action) {
+    case 'login': return login();
+    case 'logout': return logout();
+    case 'refresh-all': return refreshAll();
+    case 'switch-tab': return switchTab(ds.tab);
+    case 'filter-users': return filterUsers(ds.status, target);
+    case 'show-users-manual-add': return showUsersManualAdd();
+    case 'hide-users-manual-add': return hideUsersManualAdd();
+    case 'show-users-chat-dropdown': return showUsersChatDropdown();
+    case 'hide-users-chat-dropdown': return hideUsersChatDropdown();
+    case 'add-whitelist-manual': return addWhitelistManual();
+    case 'add-whitelist-from-chat': return addWhitelistFromChat();
+    case 'promote-visitor': return promoteVisitor(index(ds.index));
+    case 'remove-whitelist-user': return removeWhitelistUser(index(ds.index));
+    case 'approve-user': return approveUser(ds.userId);
+    case 'user-action': return userAction(ds.userAction, ds.userId);
+    case 'show-provision-form': return showProvisionForm();
+    case 'hide-provision-form': return hideProvisionForm();
+    case 'hide-kf-panel': return hideKfPanel();
+    case 'hide-kf-add-form':
+      document.getElementById('kf-add-form').classList.add('hidden');
+      return;
+    case 'close-edit-modal': return closeEditModal();
+    case 'edit-modal-users-tab':
+      event.preventDefault();
+      switchTab('users');
+      closeEditModal();
+      return;
+    case 'load-logs': return loadLogs(ds.force === 'true');
+    case 'toggle-error-panel': return toggleErrorPanel();
+    case 'scroll-logs-bottom': return scrollLogsToBottom();
+    case 'load-memory': return loadMemory(ds.refreshUsers === 'true');
+    case 'preview-memory-recall': return previewMemoryRecall();
+    case 'create-leadgen-project': return createLeadgenProject();
+    case 'load-leadgen-projects': return loadLeadgenProjects();
+    case 'show-link-identity-modal': return showLinkIdentityModal();
+    case 'show-add-channel-modal': return showAddChannelModal();
+    case 'close-link-identity-modal': return closeLinkIdentityModal();
+    case 'submit-link-identity': return submitLinkIdentity();
+    case 'close-channel-modal': return closeChannelModal();
+    case 'submit-channel': return submitChannel();
+    case 'save-super-admin': return saveSuperAdmin();
+    case 'add-identity-row': return addIdentityRow();
+    case 'remove-identity': return removeIdentity(index(ds.index));
+    case 'open-edit-modal': return openEditModal(ds.tenantId);
+    case 'instance-action': return instanceAction(ds.instanceAction, ds.tenantId);
+    case 'view-instance-logs': return viewInstanceLogs(ds.tenantId);
+    case 'show-kf-panel': return showKfPanel(ds.tenantId);
+    case 'destroy-instance': return destroyInstance(ds.tenantId);
+    case 'remove-co-tenant': return removeCoTenant(ds.instanceId, ds.coTenantId);
+    case 'start-add-co-tenant': return startAddCoTenant(ds.openKfid, ds.kfName);
+    case 'unlink-identity': return unlinkIdentity(ds.tenantId, ds.identityId, ds.platform);
+    case 'edit-channel': return editChannel(ds.channelId);
+    case 'delete-channel': return deleteChannel(ds.channelId);
+    case 'approve-req': return approveReqByIndex(index(ds.index));
+    case 'reject-req': return rejectReqByIndex(index(ds.index));
+  }
+}
+
+function runDashboardChange(action, target) {
+  switch (action) {
+    case 'load-users': return loadUsers();
+    case 'load-usage': return loadUsage();
+    case 'platform-changed': return platformChanged(target.value);
+    case 'toggle-trial-options':
+      document.getElementById('trial-opts').classList.toggle('hidden', !target.checked);
+      return;
+    case 'load-logs': return loadLogs();
+    case 'load-memory': return loadMemory(target.dataset.refreshUsers === 'true');
+    case 'load-identities': return loadIdentities();
+    case 'link-user-select': return onLinkUserSelect();
+    case 'link-target-change': return onLinkTargetChange();
+    case 'channel-platform-change': return onChannelPlatformChange();
+    case 'load-provision-requests': return loadProvisionRequests();
+  }
+}
+
+function runDashboardSubmit(action, event) {
+  switch (action) {
+    case 'submit-provision': return submitProvision(event);
+    case 'submit-add-co-tenant': return submitAddCoTenant(event);
+    case 'submit-edit-tenant': return submitEditTenant(event);
+  }
+}
+
+function bindDashboardEvents() {
+  document.addEventListener('click', event => {
+    const target = event.target.closest('[data-action]');
+    if (!target) return;
+    const action = target.dataset.action;
+    if (!action) return;
+    event.preventDefault();
+    runDashboardAction(action, target, event);
+  });
+  document.addEventListener('change', event => {
+    const target = event.target.closest('[data-change-action]');
+    if (!target) return;
+    runDashboardChange(target.dataset.changeAction, target);
+  });
+  document.addEventListener('keydown', event => {
+    const target = event.target.closest('[data-enter-action]');
+    if (!target || event.key !== 'Enter') return;
+    event.preventDefault();
+    runDashboardAction(target.dataset.enterAction, target, event);
+  });
+  document.addEventListener('blur', event => {
+    const target = event.target.closest('[data-blur-action]');
+    if (!target) return;
+    if (target.dataset.blurAction === 'save-notes') saveNotes(target.dataset.userId, target.value);
+  }, true);
+  document.addEventListener('submit', event => {
+    const form = event.target.closest('[data-submit-action]');
+    if (!form) return;
+    runDashboardSubmit(form.dataset.submitAction, event);
+  });
 }
 
 // ── Auth ──
@@ -1360,14 +1545,24 @@ function showDashboard() {
 }
 
 // ── Tabs ──
+function stopLogsAutoRefresh() {
+  clearInterval(logsAutoTimer);
+  logsAutoTimer = null;
+  logsRequestSeq += 1;
+  if (logsAbortController) logsAbortController.abort();
+}
+
 function switchTab(tab) {
+  if (tab !== 'logs') stopLogsAutoRefresh();
+  currentTab = tab;
+
   document.querySelectorAll('.tab-btn').forEach(b => {
     b.className = 'tab-btn px-4 py-2 rounded-lg font-medium text-sm bg-gray-100 text-gray-600 hover:bg-gray-200';
   });
   document.getElementById(`tab-${tab}`).className =
     'tab-btn px-4 py-2 rounded-lg font-medium text-sm bg-blue-100 text-blue-700';
 
-  ['overview', 'users', 'usage', 'instances', 'logs', 'memory', 'identities', 'superadmin'].forEach(p => {
+  ['overview', 'users', 'usage', 'instances', 'logs', 'memory', 'leadgen', 'identities', 'superadmin'].forEach(p => {
     const el = document.getElementById(`panel-${p}`);
     if (el) el.classList.toggle('hidden', p !== tab);
   });
@@ -1377,6 +1572,7 @@ function switchTab(tab) {
   if (tab === 'instances') loadInstances();
   if (tab === 'logs') initLogsTab();
   if (tab === 'memory') initMemoryTab();
+  if (tab === 'leadgen') loadLeadgenProjects();
   if (tab === 'identities') loadIdentities();
   if (tab === 'superadmin') { loadSuperAdmin(); loadProvisionRequests(); }
 }
@@ -1393,49 +1589,60 @@ async function loadOverview() {
 
     // Populate user tenant selector
     const sel = document.getElementById('user-tenant-select');
-    sel.innerHTML = tenantsData.map(t =>
+    setTrustedMarkup(sel, tenantsData.map(t =>
       `<option value="${escapeAttr(String(t.tenant_id || ''))}">${escapeHtml(String(t.name || t.tenant_id || ''))}</option>`
-    ).join('');
+    ).join(''));
     const memSel = document.getElementById('memory-tenant-select');
     if (memSel) {
       const previousMemoryTenant = memSel.value;
-      memSel.innerHTML = tenantsData.map(t =>
+      setTrustedMarkup(memSel, tenantsData.map(t =>
         `<option value="${escapeAttr(String(t.tenant_id || ''))}">${escapeHtml(String(t.name || t.tenant_id || ''))}</option>`
-      ).join('');
+      ).join(''));
       if (previousMemoryTenant) memSel.value = previousMemoryTenant;
     }
 
     // Render cards
     const container = document.getElementById('tenant-cards');
     if (!tenantsData.length) {
-      container.innerHTML = '<div class="text-gray-400 p-8 text-center">No tenants found</div>';
+      setTrustedMarkup(container, '<div class="text-gray-400 p-8 text-center">No tenants found</div>');
       return;
     }
 
-    container.innerHTML = tenantsData.map(t => {
+    setTrustedMarkup(container, tenantsData.map(t => {
       const u = usageMap[t.tenant_id] || {};
       const calls = u.api_calls || 0;
       const tokens = (parseInt(u.input_tokens || 0) + parseInt(u.output_tokens || 0));
+      const tenantId = escapeHtml(String(t.tenant_id || ''));
+      const tenantName = escapeHtml(String(t.name || t.tenant_id || ''));
+      const tenantPlatform = escapeHtml(String(t.platform || ''));
+      const hostInstance = escapeHtml(String(t.host_instance || ''));
+      const trialText = t.trial_enabled ? `${Number.parseInt(t.trial_duration_hours || 0) || 0}h` : 'Off';
+      const approvalText = t.approval_duration_days ? `${Number.parseInt(t.approval_duration_days || 0) || 0}d` : 'Permanent';
+      const quotaText = t.quota_user_tokens_6h ? formatTokens(Number.parseInt(t.quota_user_tokens_6h || 0) || 0) : 'Unlimited';
+      const memoryRounds = Number.parseInt(t.memory_chat_rounds || 5) || 5;
+      const memoryTtl = t.memory_chat_ttl ? `${Math.round((Number.parseInt(t.memory_chat_ttl || 0) || 0) / 60)}m` : '60m';
+      const rateRpm = Number.parseInt(t.rate_limit_rpm || 60) || 60;
+      const deployQuota = t.deploy_free_quota === 0 ? '∞' : String(Number.parseInt(t.deploy_free_quota || 1) || 1);
       const platformBadge = {
         feishu: '<span class="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded">Feishu</span>',
         wecom: '<span class="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded">WeCom</span>',
         wecom_kf: '<span class="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded">WeCom KF</span>',
         qq: '<span class="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded">QQ</span>',
-      }[t.platform] || `<span class="text-xs bg-gray-100 text-gray-700 px-2 py-0.5 rounded">${t.platform}</span>`;
+      }[t.platform] || `<span class="text-xs bg-gray-100 text-gray-700 px-2 py-0.5 rounded">${tenantPlatform}</span>`;
 
       const hostBadge = t.host_instance
-        ? `<span class="text-[10px] bg-purple-50 text-purple-500 px-1.5 py-0.5 rounded mt-1 inline-block">on ${t.host_instance}</span>`
+        ? `<span class="text-[10px] bg-purple-50 text-purple-500 px-1.5 py-0.5 rounded mt-1 inline-block">on ${hostInstance}</span>`
         : '';
 
       return `
         <div class="bg-white rounded-xl shadow-sm p-5 hover:shadow-md transition">
           <div class="flex justify-between items-start mb-3">
             <div>
-              <h3 class="font-semibold text-gray-800">${t.name || t.tenant_id}</h3>
-              <p class="text-xs text-gray-400 mt-0.5">${t.tenant_id} ${hostBadge}</p>
+              <h3 class="font-semibold text-gray-800">${tenantName}</h3>
+              <p class="text-xs text-gray-400 mt-0.5">${tenantId} ${hostBadge}</p>
             </div>
             <div class="flex items-center gap-2">
-              <button onclick="openEditModal('${t.tenant_id}')" class="text-xs text-blue-500 hover:text-blue-700 hover:underline">Edit</button>
+              <button data-action="open-edit-modal" data-tenant-id="${escapeAttr(String(t.tenant_id || ''))}" class="text-xs text-blue-500 hover:text-blue-700 hover:underline">Edit</button>
               ${platformBadge}
             </div>
           </div>
@@ -1451,37 +1658,37 @@ async function loadOverview() {
             <div>
               <p class="text-gray-400 text-xs">Trial</p>
               <p class="font-medium ${t.trial_enabled ? 'text-blue-600' : 'text-gray-400'}">
-                ${t.trial_enabled ? t.trial_duration_hours + 'h' : 'Off'}
+                ${trialText}
               </p>
             </div>
             <div>
               <p class="text-gray-400 text-xs">Approval</p>
-              <p class="font-medium text-gray-700">${t.approval_duration_days ? t.approval_duration_days + 'd' : 'Permanent'}</p>
+              <p class="font-medium text-gray-700">${approvalText}</p>
             </div>
             <div>
               <p class="text-gray-400 text-xs">6h Token Quota</p>
-              <p class="font-medium text-gray-700">${t.quota_user_tokens_6h ? formatTokens(t.quota_user_tokens_6h) : 'Unlimited'}</p>
+              <p class="font-medium text-gray-700">${quotaText}</p>
             </div>
             <div>
               <p class="text-gray-400 text-xs">Memory</p>
               <p class="font-medium text-gray-700 text-xs">
                 ${t.memory_diary_enabled !== false ? '📓' : ''}${t.memory_context_enabled !== false ? '🧠' : ''}
-                ${t.memory_chat_rounds || 5}r / ${t.memory_chat_ttl ? Math.round(t.memory_chat_ttl/60)+'m' : '60m'}
+                ${memoryRounds}r / ${memoryTtl}
               </p>
             </div>
             <div>
               <p class="text-gray-400 text-xs">Rate / Deploy</p>
               <p class="font-medium text-gray-700 text-xs">
-                ${t.rate_limit_rpm || 60} rpm · ${t.deploy_free_quota === 0 ? '∞' : (t.deploy_free_quota || 1)} deploy
+                ${rateRpm} rpm · ${deployQuota} deploy
               </p>
             </div>
             ${t.wecom_kf_open_kfid ? `<div class="col-span-2">
               <p class="text-gray-400 text-xs">KF ID</p>
-              <p class="font-mono text-xs text-gray-500 select-all truncate" title="${t.wecom_kf_open_kfid}">${t.wecom_kf_open_kfid}</p>
+              <p class="font-mono text-xs text-gray-500 select-all truncate" title="${escapeAttr(t.wecom_kf_open_kfid)}">${escapeHtml(String(t.wecom_kf_open_kfid))}</p>
             </div>` : ''}
           </div>
         </div>`;
-    }).join('');
+    }).join(''));
   } catch (e) {
     console.error('loadOverview failed:', e);
   }
@@ -1500,9 +1707,9 @@ async function loadUsers() {
   usersMode = tenant?.trial_enabled ? 'trial' : 'whitelist';
 
   // Update mode badge
-  document.getElementById('users-mode-badge').innerHTML = usersMode === 'trial'
+  setTrustedMarkup(document.getElementById('users-mode-badge'), usersMode === 'trial'
     ? '<span class="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded">Trial Mode</span>'
-    : '<span class="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded">Whitelist Mode</span>';
+    : '<span class="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded">Whitelist Mode</span>');
 
   // Show/hide mode-specific UI
   document.getElementById('users-filter-row').classList.toggle('hidden', usersMode !== 'trial');
@@ -1513,13 +1720,13 @@ async function loadUsers() {
   // Update table header
   const thead = document.getElementById('users-thead');
   if (usersMode === 'whitelist') {
-    thead.innerHTML = `
+    setTrustedMarkup(thead, `
       <th class="py-2 px-2">Name</th>
       <th class="py-2 px-2">User ID</th>
       <th class="py-2 px-2">Role</th>
-      <th class="py-2 px-2 text-right" colspan="5">Actions</th>`;
+      <th class="py-2 px-2 text-right" colspan="5">Actions</th>`);
   } else {
-    thead.innerHTML = `
+    setTrustedMarkup(thead, `
       <th class="py-2 px-2">Name</th>
       <th class="py-2 px-2">User ID</th>
       <th class="py-2 px-2">Status</th>
@@ -1527,28 +1734,28 @@ async function loadUsers() {
       <th class="py-2 px-2">Last Active</th>
       <th class="py-2 px-2">Messages</th>
       <th class="py-2 px-2">Notes</th>
-      <th class="py-2 px-2 text-right">Actions</th>`;
+      <th class="py-2 px-2 text-right">Actions</th>`);
   }
 
   const tbody = document.getElementById('users-tbody');
-  tbody.innerHTML = '<tr><td colspan="8" class="text-center text-gray-400 py-8">Loading...</td></tr>';
+  setTrustedMarkup(tbody, '<tr><td colspan="8" class="text-center text-gray-400 py-8">Loading...</td></tr>');
 
   if (usersMode === 'trial') {
     try {
-      const res = await api(`/trial/${tid}/users`);
+      const res = await api(`/trial/${encodeURIComponent(tid)}/users`);
       usersData = res.users || [];
       usersTrialDurationHours = res.trial_duration_hours || 48;
       document.getElementById('user-count').textContent = `${res.total} users`;
       renderUsers();
     } catch (e) {
-      tbody.innerHTML = `<tr><td colspan="8" class="text-center text-red-400 py-8">${escapeHtml(e.message)}</td></tr>`;
+      setTrustedMarkup(tbody, `<tr><td colspan="8" class="text-center text-red-400 py-8">${escapeHtml(e.message)}</td></tr>`);
     }
   } else {
     try {
       // Fetch whitelist + all chat users in parallel
       const [wlRes, chatRes] = await Promise.all([
-        api(`/tenants/${tid}/allowed-users`),
-        api(`/tenants/${tid}/chat-users`).catch(() => ({ users: [] })),
+        api(`/tenants/${encodeURIComponent(tid)}/allowed-users`),
+        api(`/tenants/${encodeURIComponent(tid)}/chat-users`).catch(() => ({ users: [] })),
       ]);
       const allowedList = (wlRes.allowed_users || []).map(u =>
         typeof u === 'object' ? u : { external_userid: u, nickname: '' }
@@ -1575,15 +1782,15 @@ async function loadUsers() {
       document.getElementById('user-count').textContent = countText;
       renderUsers();
     } catch (e) {
-      tbody.innerHTML = `<tr><td colspan="8" class="text-center text-red-400 py-8">${escapeHtml(e.message)}</td></tr>`;
+      setTrustedMarkup(tbody, `<tr><td colspan="8" class="text-center text-red-400 py-8">${escapeHtml(e.message)}</td></tr>`);
     }
   }
 }
 
-function filterUsers(status) {
+function filterUsers(status, target = null) {
   currentFilter = status;
   document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('ring-2', 'ring-blue-400'));
-  event.target.classList.add('ring-2', 'ring-blue-400');
+  if (target) target.classList.add('ring-2', 'ring-blue-400');
   renderUsers();
 }
 
@@ -1599,16 +1806,17 @@ function renderUsers() {
   let filtered = currentFilter === 'all' ? usersData : usersData.filter(u => u.status === currentFilter);
 
   if (!filtered.length) {
-    tbody.innerHTML = '<tr><td colspan="8" class="text-center text-gray-400 py-8">No users</td></tr>';
+    setTrustedMarkup(tbody, '<tr><td colspan="8" class="text-center text-gray-400 py-8">No users</td></tr>');
     return;
   }
 
-  tbody.innerHTML = filtered.map(u => {
+  setTrustedMarkup(tbody, filtered.map(u => {
     const uid = u.user_id || '';
     const shortId = uid.length > 20 ? uid.slice(0, 10) + '...' + uid.slice(-6) : uid;
     const displayName = escapeHtml(u.display_name || '');
-    const status = u.status || 'trial';
-    let statusHtml = `<span class="status-${status} text-xs px-2 py-0.5 rounded-full font-medium">${status}</span>`;
+    const rawStatus = String(u.status || 'trial');
+    const status = ['trial', 'expired', 'approved', 'blocked'].includes(rawStatus) ? rawStatus : 'trial';
+    let statusHtml = `<span class="status-${status} text-xs px-2 py-0.5 rounded-full font-medium">${escapeHtml(status)}</span>`;
     if (status === 'trial' && u.first_seen) {
       const expiresAt = new Date(new Date(u.first_seen).getTime() + usersTrialDurationHours * 3600000);
       const remainMs = expiresAt - new Date();
@@ -1635,24 +1843,25 @@ function renderUsers() {
     }
     const firstSeen = formatTime(u.first_seen);
     const lastActive = formatTime(u.last_active);
-    const msgCount = u.message_count || '0';
+    const msgCount = escapeHtml(String(u.message_count || '0'));
     const notes = escapeHtml(u.notes || '');
+    const safeShortId = escapeHtml(shortId);
 
     let actions = '';
     if (status === 'trial' || status === 'expired') {
-      actions += `<button onclick="approveUser('${uid}')" class="text-xs bg-green-50 text-green-600 px-2 py-1 rounded hover:bg-green-100">Approve</button> `;
-      actions += `<button onclick="userAction('block','${uid}')" class="text-xs bg-red-50 text-red-600 px-2 py-1 rounded hover:bg-red-100">Block</button>`;
+      actions += `<button data-action="approve-user" data-user-id="${escapeAttr(uid)}" class="text-xs bg-green-50 text-green-600 px-2 py-1 rounded hover:bg-green-100">Approve</button> `;
+      actions += `<button data-action="user-action" data-user-action="block" data-user-id="${escapeAttr(uid)}" class="text-xs bg-red-50 text-red-600 px-2 py-1 rounded hover:bg-red-100">Block</button>`;
     } else if (status === 'approved') {
-      actions += `<button onclick="approveUser('${uid}')" class="text-xs bg-green-50 text-green-600 px-2 py-1 rounded hover:bg-green-100">Renew</button> `;
-      actions += `<button onclick="userAction('block','${uid}')" class="text-xs bg-red-50 text-red-600 px-2 py-1 rounded hover:bg-red-100">Block</button>`;
+      actions += `<button data-action="approve-user" data-user-id="${escapeAttr(uid)}" class="text-xs bg-green-50 text-green-600 px-2 py-1 rounded hover:bg-green-100">Renew</button> `;
+      actions += `<button data-action="user-action" data-user-action="block" data-user-id="${escapeAttr(uid)}" class="text-xs bg-red-50 text-red-600 px-2 py-1 rounded hover:bg-red-100">Block</button>`;
     } else if (status === 'blocked') {
-      actions += `<button onclick="approveUser('${uid}')" class="text-xs bg-green-50 text-green-600 px-2 py-1 rounded hover:bg-green-100">Approve</button>`;
+      actions += `<button data-action="approve-user" data-user-id="${escapeAttr(uid)}" class="text-xs bg-green-50 text-green-600 px-2 py-1 rounded hover:bg-green-100">Approve</button>`;
     }
-    actions += ` <button onclick="userAction('reset','${uid}')" class="text-xs bg-gray-50 text-gray-600 px-2 py-1 rounded hover:bg-gray-100">Reset</button>`;
+    actions += ` <button data-action="user-action" data-user-action="reset" data-user-id="${escapeAttr(uid)}" class="text-xs bg-gray-50 text-gray-600 px-2 py-1 rounded hover:bg-gray-100">Reset</button>`;
 
     return `<tr class="border-b hover:bg-gray-50">
       <td class="py-2 px-2 font-medium text-gray-800">${displayName || '<span class="text-gray-300 italic">unknown</span>'}</td>
-      <td class="py-2 px-2 font-mono text-xs text-gray-400" title="${uid}">${shortId}</td>
+      <td class="py-2 px-2 font-mono text-xs text-gray-400" title="${escapeAttr(uid)}">${safeShortId}</td>
       <td class="py-2 px-2">${statusHtml}</td>
       <td class="py-2 px-2 text-gray-500 text-xs">${firstSeen}</td>
       <td class="py-2 px-2 text-gray-500 text-xs">${lastActive}</td>
@@ -1660,11 +1869,11 @@ function renderUsers() {
       <td class="py-2 px-2">
         <input type="text" value="${notes}" placeholder="Add note..."
           class="w-full border-0 border-b border-transparent hover:border-gray-300 focus:border-blue-500 focus:outline-none text-xs py-1 bg-transparent"
-          onblur="saveNotes('${uid}', this.value)">
+          data-blur-action="save-notes" data-user-id="${escapeAttr(uid)}">
       </td>
       <td class="py-2 px-2 text-right whitespace-nowrap">${actions}</td>
     </tr>`;
-  }).join('');
+  }).join(''));
 }
 
 function renderWhitelistUsers(tbody) {
@@ -1677,14 +1886,15 @@ function renderWhitelistUsers(tbody) {
     const msg = currentFilter === 'all'
       ? 'No users yet — whitelist is empty (open access) and no one has chatted'
       : `No ${currentFilter} users`;
-    tbody.innerHTML = `<tr><td colspan="8" class="text-center text-gray-400 py-8">${msg}</td></tr>`;
+    setTrustedMarkup(tbody, `<tr><td colspan="8" class="text-center text-gray-400 py-8">${msg}</td></tr>`);
     return;
   }
 
-  tbody.innerHTML = filtered.map((u, i) => {
+  setTrustedMarkup(tbody, filtered.map((u, i) => {
     const realIndex = whitelistUsers.indexOf(u);
     const euid = u.external_userid || '';
     const shortId = euid.length > 20 ? euid.slice(0, 10) + '...' + euid.slice(-6) : euid;
+    const safeShortId = escapeHtml(shortId);
     const nickname = escapeHtml(u.nickname || 'Unknown');
     const isOwner = euid === whitelistOwner;
     const isAllowed = u._status === 'allowed';
@@ -1700,18 +1910,18 @@ function renderWhitelistUsers(tbody) {
 
     let actions = '';
     if (isAllowed) {
-      actions = `<button onclick="removeWhitelistUser(${realIndex})" class="text-xs bg-red-50 text-red-600 px-2 py-1 rounded hover:bg-red-100">Remove</button>`;
+      actions = `<button data-action="remove-whitelist-user" data-index="${realIndex}" class="text-xs bg-red-50 text-red-600 px-2 py-1 rounded hover:bg-red-100">Remove</button>`;
     } else {
-      actions = `<button onclick="promoteVisitor(${realIndex})" class="text-xs bg-green-50 text-green-600 px-2 py-1 rounded hover:bg-green-100">Add to Whitelist</button>`;
+      actions = `<button data-action="promote-visitor" data-index="${realIndex}" class="text-xs bg-green-50 text-green-600 px-2 py-1 rounded hover:bg-green-100">Add to Whitelist</button>`;
     }
 
     return `<tr class="border-b hover:bg-gray-50">
       <td class="py-2 px-2 font-medium text-gray-800">${nickname}</td>
-      <td class="py-2 px-2 font-mono text-xs text-gray-400" title="${euid}">${shortId}</td>
+      <td class="py-2 px-2 font-mono text-xs text-gray-400" title="${escapeAttr(euid)}">${safeShortId}</td>
       <td class="py-2 px-2">${roleBadge}</td>
       <td class="py-2 px-2 text-right" colspan="5">${actions}</td>
     </tr>`;
-  }).join('');
+  }).join(''));
 }
 
 // ── Whitelist add/remove ──
@@ -1732,20 +1942,24 @@ async function showUsersChatDropdown() {
   document.getElementById('users-chat-dropdown').classList.remove('hidden');
   document.getElementById('users-manual-add').classList.add('hidden');
   const select = document.getElementById('users-chat-select');
-  select.innerHTML = '<option value="">Loading...</option>';
+  setTrustedMarkup(select, '<option value="">Loading...</option>');
 
   try {
-    const data = await api(`/tenants/${tid}/chat-users`);
+    const data = await api(`/tenants/${encodeURIComponent(tid)}/chat-users`);
     const allowedIds = new Set(whitelistUsers.filter(u => u._status === 'allowed').map(u => u.external_userid));
     const users = (data.users || []).filter(u => !allowedIds.has(u.external_userid));
     if (!users.length) {
-      select.innerHTML = '<option value="">No available users (all added or no chat history)</option>';
+      setTrustedMarkup(select, '<option value="">No available users (all added or no chat history)</option>');
       return;
     }
-    select.innerHTML = '<option value="">-- Select user --</option>' +
-      users.map(u => `<option value="${u.external_userid}" data-nickname="${u.nickname || ''}">${u.nickname || u.external_userid} (${(u.external_userid || '').substring(0, 12)}...)</option>`).join('');
+    setTrustedMarkup(select, '<option value="">-- Select user --</option>' +
+      users.map(u => {
+        const euid = String(u.external_userid || '');
+        const nickname = String(u.nickname || '');
+        return `<option value="${escapeAttr(euid)}" data-nickname="${escapeAttr(nickname)}">${escapeHtml(nickname || euid)} (${escapeHtml(euid.substring(0, 12))}...)</option>`;
+      }).join(''));
   } catch (e) {
-    select.innerHTML = `<option value="">Error: ${e.message}</option>`;
+    setTrustedMarkup(select, `<option value="">Error: ${escapeHtml(e.message)}</option>`);
   }
 }
 
@@ -1803,7 +2017,7 @@ async function saveWhitelist() {
     .filter(u => u._status === 'allowed')
     .map(u => ({ external_userid: u.external_userid, nickname: u.nickname }));
   try {
-    await api(`/tenants/${tid}/config`, {
+    await api(`/tenants/${encodeURIComponent(tid)}/config`, {
       method: 'PUT',
       body: JSON.stringify({ allowed_users: allowedOnly }),
     });
@@ -1831,7 +2045,7 @@ async function approveUser(userId) {
 
   const days = parseInt(input) || 0;
   try {
-    await api(`/trial/${tid}/user/${userId}/approve`, {
+    await api(`/trial/${encodeURIComponent(tid)}/user/${encodeURIComponent(userId)}/approve`, {
       method: 'POST',
       body: JSON.stringify({ duration_days: days }),
     });
@@ -1846,7 +2060,7 @@ async function userAction(action, userId) {
   if (!confirm(`${action} user ${userId.slice(0, 16)}...?`)) return;
 
   try {
-    await api(`/trial/${tid}/user/${userId}/${action}`, { method: 'POST' });
+    await api(`/trial/${encodeURIComponent(tid)}/user/${encodeURIComponent(userId)}/${encodeURIComponent(action)}`, { method: 'POST' });
     await loadUsers();
   } catch (e) {
     alert(`Failed: ${e.message}`);
@@ -1856,7 +2070,7 @@ async function userAction(action, userId) {
 async function saveNotes(userId, notes) {
   const tid = document.getElementById('user-tenant-select').value;
   try {
-    await api(`/trial/${tid}/user/${userId}/notes`, {
+    await api(`/trial/${encodeURIComponent(tid)}/user/${encodeURIComponent(userId)}/notes`, {
       method: 'POST',
       body: JSON.stringify({ notes }),
     });
@@ -1875,14 +2089,14 @@ async function loadUsage() {
   const month = monthInput.value;
 
   const container = document.getElementById('usage-content');
-  container.innerHTML = '<div class="text-gray-400 p-4 text-center">Loading...</div>';
+  setTrustedMarkup(container, '<div class="text-gray-400 p-4 text-center">Loading...</div>');
 
   try {
-    const res = await api(`/usage?month=${month}`);
+    const res = await api(`/usage?month=${encodeURIComponent(month)}`);
     const tenants = res.tenants || {};
 
     if (!Object.keys(tenants).length) {
-      container.innerHTML = '<div class="text-gray-400 p-8 text-center">No usage data for this month</div>';
+      setTrustedMarkup(container, '<div class="text-gray-400 p-8 text-center">No usage data for this month</div>');
       return;
     }
 
@@ -1906,7 +2120,7 @@ async function loadUsage() {
       const rounds = parseInt(u.rounds || 0);
       totalCalls += calls; totalIn += inTok; totalOut += outTok;
 
-      const tName = tenantsData.find(t => t.tenant_id === tid)?.name || tid;
+      const tName = escapeHtml(String(tenantsData.find(t => t.tenant_id === tid)?.name || tid));
       html += `<tr class="border-b hover:bg-gray-50">
         <td class="py-2 px-3 font-medium">${tName}</td>
         <td class="py-2 px-3 text-right">${calls.toLocaleString()}</td>
@@ -1932,7 +2146,7 @@ async function loadUsage() {
 
     const tids = Object.keys(tenants);
     const dailyResults = await Promise.all(
-      tids.map(tid => api(`/usage/${tid}?month=${month}`).catch(() => null))
+      tids.map(tid => api(`/usage/${encodeURIComponent(tid)}?month=${encodeURIComponent(month)}`).catch(() => null))
     );
 
     for (let idx = 0; idx < tids.length; idx++) {
@@ -1942,7 +2156,7 @@ async function loadUsage() {
       const daily = dailyRes.daily || {};
       if (!Object.keys(daily).length) continue;
 
-      const tName = tenantsData.find(t => t.tenant_id === tid)?.name || tid;
+      const tName = escapeHtml(String(tenantsData.find(t => t.tenant_id === tid)?.name || tid));
       html += `<div class="mb-4">
         <h4 class="text-sm font-medium text-gray-600 mb-2">${tName}</h4>
         <div class="flex gap-1 items-end h-16">`;
@@ -1960,9 +2174,9 @@ async function loadUsage() {
       html += '</div></div>';
     }
 
-    container.innerHTML = html;
+    setTrustedMarkup(container, html);
   } catch (e) {
-    container.innerHTML = `<div class="text-red-400 p-8 text-center">${escapeHtml(e.message)}</div>`;
+    setTrustedMarkup(container, `<div class="text-red-400 p-8 text-center">${escapeHtml(e.message)}</div>`);
   }
 }
 
@@ -1971,25 +2185,30 @@ let instancesData = [];
 
 async function loadInstances() {
   const tbody = document.getElementById('instances-tbody');
-  tbody.innerHTML = '<tr><td colspan="6" class="text-center text-gray-400 py-8">Loading...</td></tr>';
+  setTrustedMarkup(tbody, '<tr><td colspan="6" class="text-center text-gray-400 py-8">Loading...</td></tr>');
 
   try {
     const res = await api('/instances');
     instancesData = res.instances || [];
     renderInstances();
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="6" class="text-center text-red-400 py-8">${escapeHtml(e.message)}</td></tr>`;
+    setTrustedMarkup(tbody, `<tr><td colspan="6" class="text-center text-red-400 py-8">${escapeHtml(e.message)}</td></tr>`);
   }
 }
 
 function renderInstances() {
   const tbody = document.getElementById('instances-tbody');
   if (!instancesData.length) {
-    tbody.innerHTML = '<tr><td colspan="6" class="text-center text-gray-400 py-8">No instances. Click "+ New Instance" to create one.</td></tr>';
+    setTrustedMarkup(tbody, '<tr><td colspan="6" class="text-center text-gray-400 py-8">No instances. Click "+ New Instance" to create one.</td></tr>');
     return;
   }
 
-  tbody.innerHTML = instancesData.map(inst => {
+  setTrustedMarkup(tbody, instancesData.map((inst, i) => {
+    const instTenantId = escapeHtml(String(inst.tenant_id || ''));
+    const instName = escapeHtml(String(inst.name || ''));
+    const instPlatform = escapeHtml(String(inst.platform || ''));
+    const instPort = escapeHtml(String(inst.port ?? ''));
+    const instStatus = escapeHtml(String(inst.status || ''));
     const statusColors = {
       running: 'text-green-600 bg-green-50',
       exited: 'text-red-600 bg-red-50',
@@ -2002,20 +2221,20 @@ function renderInstances() {
       wecom: '<span class="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded">WeCom</span>',
       wecom_kf: '<span class="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded">WeCom KF</span>',
       qq: '<span class="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded">QQ</span>',
-    }[inst.platform] || `<span class="text-xs bg-gray-100 text-gray-700 px-2 py-0.5 rounded">${inst.platform}</span>`;
+    }[inst.platform] || `<span class="text-xs bg-gray-100 text-gray-700 px-2 py-0.5 rounded">${instPlatform}</span>`;
 
     let actions = '';
     if (inst.status === 'running') {
-      actions += `<button onclick="instanceAction('restart','${inst.tenant_id}')" class="text-xs bg-blue-50 text-blue-600 px-2 py-1 rounded hover:bg-blue-100">Restart</button> `;
-      actions += `<button onclick="instanceAction('stop','${inst.tenant_id}')" class="text-xs bg-orange-50 text-orange-600 px-2 py-1 rounded hover:bg-orange-100">Stop</button> `;
+      actions += `<button data-action="instance-action" data-instance-action="restart" data-tenant-id="${escapeAttr(String(inst.tenant_id || ''))}" class="text-xs bg-blue-50 text-blue-600 px-2 py-1 rounded hover:bg-blue-100">Restart</button> `;
+      actions += `<button data-action="instance-action" data-instance-action="stop" data-tenant-id="${escapeAttr(String(inst.tenant_id || ''))}" class="text-xs bg-orange-50 text-orange-600 px-2 py-1 rounded hover:bg-orange-100">Stop</button> `;
     } else {
-      actions += `<button onclick="instanceAction('restart','${inst.tenant_id}')" class="text-xs bg-blue-50 text-blue-600 px-2 py-1 rounded hover:bg-blue-100">Start</button> `;
+      actions += `<button data-action="instance-action" data-instance-action="restart" data-tenant-id="${escapeAttr(String(inst.tenant_id || ''))}" class="text-xs bg-blue-50 text-blue-600 px-2 py-1 rounded hover:bg-blue-100">Start</button> `;
     }
-    actions += `<button onclick="viewInstanceLogs('${inst.tenant_id}')" class="text-xs bg-gray-50 text-gray-600 px-2 py-1 rounded hover:bg-gray-100">Logs</button> `;
+    actions += `<button data-action="view-instance-logs" data-tenant-id="${escapeAttr(String(inst.tenant_id || ''))}" class="text-xs bg-gray-50 text-gray-600 px-2 py-1 rounded hover:bg-gray-100">Logs</button> `;
     if (inst.platform === 'wecom_kf') {
-      actions += `<button onclick="showKfPanel('${inst.tenant_id}')" class="text-xs bg-purple-50 text-purple-600 px-2 py-1 rounded hover:bg-purple-100">KF Bots</button> `;
+      actions += `<button data-action="show-kf-panel" data-tenant-id="${escapeAttr(String(inst.tenant_id || ''))}" class="text-xs bg-purple-50 text-purple-600 px-2 py-1 rounded hover:bg-purple-100">KF Bots</button> `;
     }
-    actions += `<button onclick="destroyInstance('${inst.tenant_id}')" class="text-xs bg-red-50 text-red-600 px-2 py-1 rounded hover:bg-red-100">Destroy</button>`;
+    actions += `<button data-action="destroy-instance" data-tenant-id="${escapeAttr(String(inst.tenant_id || ''))}" class="text-xs bg-red-50 text-red-600 px-2 py-1 rounded hover:bg-red-100">Destroy</button>`;
 
     // Co-tenants sub-rows
     const coTenants = (inst.co_tenants || []);
@@ -2028,32 +2247,32 @@ function renderInstances() {
     if (coCount > 0) {
       coRows = coTenants.map(ct => `<tr class="bg-purple-50/40 border-b">
         <td class="py-1.5 px-3 pl-8 text-gray-600 text-sm">&boxur; ${escapeHtml(ct.name || ct.tenant_id)}</td>
-        <td class="py-1.5 px-3 font-mono text-xs text-gray-400">${ct.tenant_id}</td>
+        <td class="py-1.5 px-3 font-mono text-xs text-gray-400">${escapeHtml(String(ct.tenant_id || ''))}</td>
         <td class="py-1.5 px-3"><span class="text-[10px] text-gray-400">co-hosted</span></td>
-        <td class="py-1.5 px-3 font-mono text-[10px] text-gray-400">${ct.wecom_kf_open_kfid || '-'}</td>
+        <td class="py-1.5 px-3 font-mono text-[10px] text-gray-400">${escapeHtml(String(ct.wecom_kf_open_kfid || '-'))}</td>
         <td class="py-1.5 px-3"></td>
         <td class="py-1.5 px-3 text-right">
-          <button onclick="viewInstanceLogs('${ct.tenant_id}')" class="text-xs bg-gray-50 text-gray-600 px-2 py-0.5 rounded hover:bg-gray-100">Logs</button>
-          <button onclick="removeCoTenant('${inst.tenant_id}','${ct.tenant_id}')" class="text-xs bg-red-50 text-red-500 px-2 py-0.5 rounded hover:bg-red-100">Remove</button>
+          <button data-action="view-instance-logs" data-tenant-id="${escapeAttr(String(ct.tenant_id || ''))}" class="text-xs bg-gray-50 text-gray-600 px-2 py-0.5 rounded hover:bg-gray-100">Logs</button>
+          <button data-action="remove-co-tenant" data-instance-id="${escapeAttr(String(inst.tenant_id || ''))}" data-co-tenant-id="${escapeAttr(String(ct.tenant_id || ''))}" class="text-xs bg-red-50 text-red-500 px-2 py-0.5 rounded hover:bg-red-100">Remove</button>
         </td>
       </tr>`).join('');
     }
 
     return `<tr class="border-b hover:bg-gray-50">
-      <td class="py-2 px-3 font-medium text-gray-800">${escapeHtml(inst.name || '')}${coLabel}</td>
-      <td class="py-2 px-3 font-mono text-xs text-gray-500">${inst.tenant_id}</td>
+      <td class="py-2 px-3 font-medium text-gray-800">${instName}${coLabel}</td>
+      <td class="py-2 px-3 font-mono text-xs text-gray-500">${instTenantId}</td>
       <td class="py-2 px-3">${platformBadge}</td>
-      <td class="py-2 px-3 font-mono text-xs">${inst.port}</td>
-      <td class="py-2 px-3"><span class="${sc} text-xs px-2 py-0.5 rounded-full font-medium">${inst.status}</span></td>
+      <td class="py-2 px-3 font-mono text-xs">${instPort}</td>
+      <td class="py-2 px-3"><span class="${sc} text-xs px-2 py-0.5 rounded-full font-medium">${instStatus}</span></td>
       <td class="py-2 px-3 text-right whitespace-nowrap">${actions}</td>
     </tr>${coRows}`;
-  }).join('');
+  }).join(''));
 }
 
 async function instanceAction(action, tenantId) {
   if (!confirm(`${action} instance "${tenantId}"?`)) return;
   try {
-    await api(`/instances/${tenantId}/${action}`, { method: 'POST' });
+    await api(`/instances/${encodeURIComponent(tenantId)}/${encodeURIComponent(action)}`, { method: 'POST' });
     await loadInstances();
   } catch (e) {
     alert(`Failed: ${e.message}`);
@@ -2062,9 +2281,10 @@ async function instanceAction(action, tenantId) {
 
 async function destroyInstance(tenantId) {
   if (!confirm(`DESTROY instance "${tenantId}"?\n\nThis will stop the container and delete ALL files. This action is IRREVERSIBLE!`)) return;
-  if (!confirm(`Are you REALLY sure? Type the tenant ID to confirm.\n\n(Click OK to proceed)`)) return;
+  const confirmTenant = prompt(`Type the tenant ID to confirm irreversible destroy:\n\n${tenantId}`);
+  if (confirmTenant !== tenantId) return;
   try {
-    const res = await fetch(`/admin/api/instances/${tenantId}`, {
+    const res = await fetch(`/admin/api/instances/${encodeURIComponent(tenantId)}`, {
       method: 'DELETE',
       headers: { 'Authorization': `Bearer ${TOKEN}` },
     });
@@ -2079,7 +2299,7 @@ async function destroyInstance(tenantId) {
 async function removeCoTenant(instanceId, coTenantId) {
   if (!confirm(`Remove co-hosted tenant "${coTenantId}" from instance "${instanceId}"?\n\nThe container will be restarted.`)) return;
   try {
-    const res = await fetch(`/admin/api/instances/${instanceId}/co-tenants/${coTenantId}`, {
+    const res = await fetch(`/admin/api/instances/${encodeURIComponent(instanceId)}/co-tenants/${encodeURIComponent(coTenantId)}`, {
       method: 'DELETE',
       headers: { 'Authorization': `Bearer ${TOKEN}` },
     });
@@ -2093,6 +2313,7 @@ async function removeCoTenant(instanceId, coTenantId) {
 
 // ── KF Bot Management Panel ──
 let kfPanelInstance = '';
+let kfAccountsData = [];
 
 async function showKfPanel(instanceId) {
   kfPanelInstance = instanceId;
@@ -2100,44 +2321,46 @@ async function showKfPanel(instanceId) {
   const panel = document.getElementById('kf-panel-view');
   panel.classList.remove('hidden');
   document.getElementById('kf-panel-title').textContent = `KF Accounts — ${instanceId}`;
-  document.getElementById('kf-accounts-body').innerHTML = '<tr><td colspan="4" class="text-center text-gray-400 py-8">Loading KF accounts from WeChat API...</td></tr>';
+  setTrustedMarkup(document.getElementById('kf-accounts-body'), '<tr><td colspan="4" class="text-center text-gray-400 py-8">Loading KF accounts from WeChat API...</td></tr>');
   document.getElementById('kf-add-form').classList.add('hidden');
   loadModuleRegistry('kf-add-module-checkboxes');
 
   try {
-    const res = await api(`/instances/${instanceId}/kf-accounts`);
+    const res = await api(`/instances/${encodeURIComponent(instanceId)}/kf-accounts`);
     const accounts = res.accounts || [];
+    kfAccountsData = accounts;
     const tbody = document.getElementById('kf-accounts-body');
 
     if (res.error) {
-      tbody.innerHTML = `<tr><td colspan="4" class="text-center py-6">
+      setTrustedMarkup(tbody, `<tr><td colspan="4" class="text-center py-6">
         <div class="text-red-500 text-sm font-medium">${escapeHtml(res.error)}</div>
         ${res.hint ? `<div class="text-gray-400 text-xs mt-1">${escapeHtml(res.hint)}</div>` : ''}
-      </td></tr>`;
+      </td></tr>`);
       return;
     }
 
     if (!accounts.length) {
-      tbody.innerHTML = '<tr><td colspan="4" class="text-center text-gray-400 py-8">No KF accounts found in this corp</td></tr>';
+      setTrustedMarkup(tbody, '<tr><td colspan="4" class="text-center text-gray-400 py-8">No KF accounts found in this corp</td></tr>');
       return;
     }
 
-    tbody.innerHTML = accounts.map(a => {
+    setTrustedMarkup(tbody, accounts.map((a, i) => {
       const bound = a.bound_tenant;
+      const avatar = String(a.avatar || '');
       const statusHtml = bound
-        ? `<span class="text-xs bg-green-50 text-green-600 px-2 py-0.5 rounded">Bound: ${bound}</span>`
-        : `<button onclick="startAddCoTenant('${a.open_kfid}', '${escapeHtml(a.name)}')" class="text-xs bg-purple-50 text-purple-600 px-2 py-1 rounded hover:bg-purple-100">+ Add as Bot</button>`;
+        ? `<span class="text-xs bg-green-50 text-green-600 px-2 py-0.5 rounded">Bound: ${escapeHtml(String(bound))}</span>`
+        : `<button data-action="start-add-co-tenant" data-open-kfid="${escapeAttr(String(a.open_kfid || ''))}" data-kf-name="${escapeAttr(String(a.name || ''))}" class="text-xs bg-purple-50 text-purple-600 px-2 py-1 rounded hover:bg-purple-100">+ Add as Bot</button>`;
       return `<tr class="border-b hover:bg-gray-50">
-        <td class="py-2 px-3 font-medium text-gray-800">${escapeHtml(a.name)}</td>
-        <td class="py-2 px-3 font-mono text-xs text-gray-500 select-all">${a.open_kfid}</td>
+        <td class="py-2 px-3 font-medium text-gray-800">${escapeHtml(String(a.name || ''))}</td>
+        <td class="py-2 px-3 font-mono text-xs text-gray-500 select-all">${escapeHtml(String(a.open_kfid || ''))}</td>
         <td class="py-2 px-3">
-          ${a.avatar ? `<img src="${a.avatar}" class="w-6 h-6 rounded-full inline">` : '<span class="text-gray-300">-</span>'}
+          ${avatar ? `<img src="${escapeAttr(avatar)}" class="w-6 h-6 rounded-full inline">` : '<span class="text-gray-300">-</span>'}
         </td>
         <td class="py-2 px-3 text-right">${statusHtml}</td>
       </tr>`;
-    }).join('');
+    }).join(''));
   } catch (e) {
-    document.getElementById('kf-accounts-body').innerHTML = `<tr><td colspan="4" class="text-center text-red-400 py-8">${escapeHtml(e.message)}</td></tr>`;
+    setTrustedMarkup(document.getElementById('kf-accounts-body'), `<tr><td colspan="4" class="text-center text-red-400 py-8">${escapeHtml(e.message)}</td></tr>`);
   }
 }
 
@@ -2153,7 +2376,8 @@ function startAddCoTenant(openKfid, kfName) {
   document.getElementById('kf-add-open-kfid').value = openKfid;
   document.getElementById('kf-add-kfname').textContent = kfName;
   // Suggest tenant_id from kf name
-  const suggested = 'kf-' + kfName.replace(/[^a-zA-Z0-9\u4e00-\u9fff]/g, '-').toLowerCase().slice(0, 20);
+  const seed = String(kfName || '').replace(/[^a-zA-Z0-9_-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').toLowerCase();
+  const suggested = 'kf-' + (seed || `bot-${Date.now().toString(36)}`).slice(0, 20);
   document.getElementById('kf-add-tenant-id').value = suggested;
   document.getElementById('kf-add-name').value = kfName;
 }
@@ -2207,7 +2431,7 @@ async function submitAddCoTenant(e) {
   if (selectedModules.length) body.capability_modules = selectedModules;
 
   try {
-    const res = await api(`/instances/${kfPanelInstance}/co-tenants`, {
+    const res = await api(`/instances/${encodeURIComponent(kfPanelInstance)}/co-tenants`, {
       method: 'POST',
       body: JSON.stringify(body),
     });
@@ -2244,17 +2468,17 @@ async function loadModuleRegistry(containerId) {
       ? '<div class="text-gray-400 text-xs py-2">No modules available</div>'
       : modules.map(m => `
         <label class="flex items-start gap-2 p-2 rounded hover:bg-gray-50 cursor-pointer border border-gray-100">
-          <input type="checkbox" name="cap_module" value="${m.name}" class="mt-0.5 rounded">
+          <input type="checkbox" name="cap_module" value="${escapeAttr(String(m.name || ''))}" class="mt-0.5 rounded">
           <div>
-            <span class="text-sm font-medium text-gray-700">${m.label}</span>
-            <span class="text-xs text-gray-400 ml-1">[${categoryLabels[m.category] || m.category}]</span>
-            <p class="text-xs text-gray-500 mt-0.5">${m.description}</p>
+            <span class="text-sm font-medium text-gray-700">${escapeHtml(String(m.label || ''))}</span>
+            <span class="text-xs text-gray-400 ml-1">[${escapeHtml(String(categoryLabels[m.category] || m.category || ''))}]</span>
+            <p class="text-xs text-gray-500 mt-0.5">${escapeHtml(String(m.description || ''))}</p>
           </div>
         </label>
       `).join('');
-    ids.forEach(id => { const el = document.getElementById(id); if (el) el.innerHTML = html; });
+    ids.forEach(id => { const el = document.getElementById(id); if (el) setTrustedMarkup(el, html); });
   } catch (e) {
-    ids.forEach(id => { const el = document.getElementById(id); if (el) el.innerHTML = '<div class="text-red-400 text-xs py-2">Failed to load modules</div>'; });
+    ids.forEach(id => { const el = document.getElementById(id); if (el) setTrustedMarkup(el, '<div class="text-red-400 text-xs py-2">Failed to load modules</div>'); });
   }
 }
 
@@ -2381,6 +2605,10 @@ async function submitProvision(e) {
 // ── Logs ──
 let logsAutoTimer = null;
 let logsLoading = false;  // prevent concurrent fetches
+let logsAbortController = null;
+let logsRequestStartedAt = 0;
+let logsRequestSeq = 0;
+const LOGS_FETCH_TIMEOUT_MS = 15000;
 
 async function initLogsTab() {
   // Populate instance select from cached instancesData or fetch
@@ -2391,29 +2619,29 @@ async function initLogsTab() {
       const instances = res.instances || [];
       const options = [];
       instances.forEach(i => {
-        options.push(`<option value="${i.tenant_id}">${escapeHtml(i.name || i.tenant_id)} (${i.tenant_id})</option>`);
+        const tid = escapeHtml(String(i.tenant_id || ''));
+        options.push(`<option value="${escapeAttr(String(i.tenant_id || ''))}">${escapeHtml(i.name || i.tenant_id)} (${tid})</option>`);
         (i.co_tenants || []).forEach(ct => {
+          const coTid = escapeHtml(String(ct.tenant_id || ''));
           options.push(
-            `<option value="${ct.tenant_id}" data-host-tenant="${i.tenant_id}">&boxur; ${escapeHtml(ct.name || ct.tenant_id)} (${ct.tenant_id}, on ${i.tenant_id})</option>`
+            `<option value="${escapeAttr(String(ct.tenant_id || ''))}" data-host-tenant="${escapeAttr(String(i.tenant_id || ''))}">&boxur; ${escapeHtml(ct.name || ct.tenant_id)} (${coTid}, on ${tid})</option>`
           );
         });
       });
-      sel.innerHTML = options.join('');
+      setTrustedMarkup(sel, options.join(''));
       // Also add self (current container) option at the top
       if (instances.length) {
-        sel.insertAdjacentHTML('afterbegin', '<option value="_self">This container (self)</option>');
+        sel.prepend(fragmentFromTrustedMarkup('<option value="_self">This container (self)</option>'));
       }
     } catch (e) {
-      sel.innerHTML = '<option value="_self">This container (self)</option>';
+      setTrustedMarkup(sel, '<option value="_self">This container (self)</option>');
     }
   }
-  loadLogs();
+  if (currentTab === 'logs') loadLogs();
 }
 
-async function loadLogs() {
-  if (logsLoading) return;  // skip if previous fetch still in-flight
-  logsLoading = true;
-
+async function loadLogs(force = false) {
+  if (currentTab !== 'logs') return;
   const tid = document.getElementById('logs-instance-select').value;
   const selectedOpt = document.getElementById('logs-instance-select').selectedOptions[0];
   const hostTenant = selectedOpt?.dataset?.hostTenant || '';
@@ -2421,20 +2649,42 @@ async function loadLogs() {
   const since = document.getElementById('logs-since').value;
   const level = document.getElementById('logs-level').value;
   const grep = document.getElementById('logs-grep').value.trim();
+  const forceRefresh = Boolean(force || document.getElementById('logs-force-refresh')?.checked);
   const output = document.getElementById('logs-output');
   const stats = document.getElementById('logs-stats');
 
-  if (!tid) { output.textContent = 'Select an instance'; logsLoading = false; return; }
+  if (!tid) { output.textContent = 'Select an instance'; return; }
+
+  const now = Date.now();
+  const requestStale = logsRequestStartedAt && (now - logsRequestStartedAt > LOGS_FETCH_TIMEOUT_MS);
+  if (logsLoading && !force && !requestStale) return;  // skip if previous fetch is still healthy
+  if (logsLoading && logsAbortController) {
+    logsAbortController.abort();
+  }
+
+  logsLoading = true;
+  logsRequestStartedAt = Date.now();
+  const requestSeq = ++logsRequestSeq;
+  const controller = new AbortController();
+  logsAbortController = controller;
+  const timeoutId = setTimeout(() => {
+    if (logsAbortController === controller) logsAbortController.abort();
+  }, LOGS_FETCH_TIMEOUT_MS);
 
   stats.textContent = 'Loading...';
 
   try {
     let logData;
     const _ts = Date.now();  // cache-bust
+    const forceParam = forceRefresh ? '&force_refresh=1&force=1' : '&force_refresh=0';
     if (tid === '_self') {
-      logData = await api(`/logs?lines=${lines}&since=${encodeURIComponent(since)}&grep=${encodeURIComponent(grep)}&level=${encodeURIComponent(level)}&_t=${_ts}`);
+      logData = await api(`/logs?lines=${lines}&since=${encodeURIComponent(since)}&grep=${encodeURIComponent(grep)}&level=${encodeURIComponent(level)}${forceParam}&_t=${_ts}`, { signal: controller.signal });
     } else {
-      logData = await api(`/instances/${tid}/logs?lines=${lines}&since=${encodeURIComponent(since)}&grep=${encodeURIComponent(grep)}&level=${encodeURIComponent(level)}&_t=${_ts}`);
+      logData = await api(`/instances/${encodeURIComponent(tid)}/logs?lines=${lines}&since=${encodeURIComponent(since)}&grep=${encodeURIComponent(grep)}&level=${encodeURIComponent(level)}&_t=${_ts}${forceParam}`, { signal: controller.signal });
+    }
+    clearTimeout(timeoutId);
+    if (requestSeq !== logsRequestSeq || currentTab !== 'logs') {
+      return;  // superseded request must not update the UI
     }
 
     const logText = logData.logs || '(no logs)';
@@ -2445,13 +2695,22 @@ async function loadLogs() {
 
     // Show real-time diagnostics
     let statsText = `${logData.total_lines} lines`;
+    statsText += ` | tenant: ${logData.tenant_id || tid}`;
     if (logData.log_source) statsText += ` | ${logData.log_source}`;
+    if (logData.tenant_id) statsText += ` | requested: ${logData.tenant_id}`;
+    if (logData.freshness_status) statsText += ` | ${logData.freshness_status}`;
+    if (logData.source_age_s !== null && logData.source_age_s !== undefined) statsText += ` | age: ${logData.source_age_s}s`;
     if (hostTenant || logData.host_tenant_id) {
       const host = logData.host_tenant_id || hostTenant;
       if (host && host !== tid) statsText += ` | host: ${host}`;
     }
+    if (logData.deploy_sha) statsText += ` | sha: ${logData.deploy_sha}`;
+    if (logData.fetched_at) statsText += ` | fetched: ${new Date(logData.fetched_at).toLocaleTimeString()}`;
+    if (logData.force_refresh) statsText += ` | force`;
     if (logData.buffer_size >= 0) statsText += ` | buf: ${logData.buffer_size}`;
-    if (logData.errors_tried && logData.errors_tried.length > 0) {
+    if (logData.fallbacks_tried && logData.fallbacks_tried.length > 0) {
+      statsText += ` | fallback: ${logData.fallbacks_tried.map(f => `${f.source}:${f.reason}`).join('; ')}`;
+    } else if (logData.errors_tried && logData.errors_tried.length > 0) {
       statsText += ` | fallback: ${logData.errors_tried.join('; ')}`;
     }
     statsText += ` | ${new Date().toLocaleTimeString()}`;
@@ -2472,28 +2731,54 @@ async function loadLogs() {
     // Auto-scroll to bottom
     output.scrollTop = output.scrollHeight;
   } catch (e) {
-    output.textContent = `Error: ${e.message}`;
+    if (e.name === 'AbortError') {
+      if (requestSeq !== logsRequestSeq || logsAbortController !== controller || currentTab !== 'logs') {
+        return;  // superseded request must not update the UI
+      }
+      output.textContent = 'Log request timed out. You can retry or use Force refresh.';
+      stats.textContent = 'Timed out';
+    } else {
+      output.textContent = `Error: ${e.message}`;
+    }
   } finally {
-    logsLoading = false;
+    clearTimeout(timeoutId);
+    if (logsAbortController === controller) {
+      logsAbortController = null;
+      logsLoading = false;
+      logsRequestStartedAt = 0;
+    }
   }
 
   // Manage auto-refresh timer
   clearInterval(logsAutoTimer);
-  if (document.getElementById('logs-auto-refresh').checked) {
+  logsAutoTimer = null;
+  if (currentTab === 'logs' && document.getElementById('logs-auto-refresh').checked) {
     logsAutoTimer = setInterval(loadLogs, 5000);
   }
 }
 
 function colorizeLogs(pre) {
-  // Apply colors to log levels using spans
-  let html = escapeHtml(pre.textContent);
-  html = html.replace(/\[ERROR\]/g, '<span class="text-red-400 font-bold">[ERROR]</span>');
-  html = html.replace(/\[WARNING\]/g, '<span class="text-yellow-400">[WARNING]</span>');
-  html = html.replace(/\[INFO\]/g, '<span class="text-green-400">[INFO]</span>');
-  html = html.replace(/\[CRITICAL\]/g, '<span class="text-red-500 font-bold">[CRITICAL]</span>');
-  html = html.replace(/(Traceback \(most recent call last\):)/g, '<span class="text-red-400">$1</span>');
-  html = html.replace(/(Error:|Exception:|Failed:)/g, '<span class="text-red-400">$1</span>');
-  pre.innerHTML = html;
+  const text = pre.textContent || '';
+  const tokenClass = token => {
+    if (token === '[ERROR]') return 'text-red-400 font-bold';
+    if (token === '[WARNING]') return 'text-yellow-400';
+    if (token === '[INFO]') return 'text-green-400';
+    if (token === '[CRITICAL]') return 'text-red-500 font-bold';
+    return 'text-red-400';
+  };
+  const pattern = /\[CRITICAL\]|\[ERROR\]|\[WARNING\]|\[INFO\]|Traceback \(most recent call last\):|Error:|Exception:|Failed:/g;
+  let cursor = 0;
+  const nodes = [];
+  for (const match of text.matchAll(pattern)) {
+    if (match.index > cursor) nodes.push(document.createTextNode(text.slice(cursor, match.index)));
+    const span = document.createElement('span');
+    span.className = tokenClass(match[0]);
+    span.textContent = match[0];
+    nodes.push(span);
+    cursor = match.index + match[0].length;
+  }
+  if (cursor < text.length) nodes.push(document.createTextNode(text.slice(cursor)));
+  pre.replaceChildren(...nodes);
 }
 
 function toggleErrorPanel() {
@@ -2525,6 +2810,84 @@ function viewInstanceLogs(tenantId) {
   }, 300);
 }
 
+// ── Leadgen ──
+async function loadLeadgenProjects() {
+  const tenantEl = document.getElementById('leadgen-tenant');
+  const status = document.getElementById('leadgen-status');
+  const container = document.getElementById('leadgen-projects');
+  if (!tenantEl || !status || !container) return;
+
+  const tenantId = tenantEl.value.trim() || 'kf-leadgen-demo';
+  status.className = 'text-sm text-gray-500 mb-2';
+  status.textContent = 'Loading projects...';
+  clearNode(container);
+
+  try {
+    const res = await api(`/leadgen/projects?tenant_id=${encodeURIComponent(tenantId)}`);
+    const projects = res.projects || [];
+    status.textContent = `${projects.length} project(s) for ${tenantId}`;
+    if (!projects.length) {
+      setTrustedMarkup(container, '<div class="text-sm text-gray-400">No leadgen projects yet.</div>');
+      return;
+    }
+    setTrustedMarkup(container, projects.map(p => {
+      const channels = (p.default_channels || []).join(', ') || 'manual_task';
+      const updated = p.updated_at ? new Date(p.updated_at).toLocaleString() : '-';
+      return `
+        <div class="border rounded-lg p-3 bg-gray-50">
+          <div class="flex items-start justify-between gap-3">
+            <div>
+              <div class="font-semibold text-gray-800">${escapeHtml(String(p.name || p.project_id))}</div>
+              <div class="text-xs text-gray-500">${escapeHtml(String(p.project_id || ''))}</div>
+            </div>
+            <span class="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded">${escapeHtml(String(p.vertical || 'leadgen'))}</span>
+          </div>
+          <div class="mt-2 text-xs text-gray-600">Channels: ${escapeHtml(channels)}</div>
+          <div class="text-xs text-gray-400">Updated: ${escapeHtml(updated)}</div>
+        </div>
+      `;
+    }).join(''));
+  } catch (e) {
+    status.textContent = `Error: ${e.message}`;
+    status.className = 'text-sm text-red-600 mb-2';
+  }
+}
+
+async function createLeadgenProject() {
+  const tenantId = (document.getElementById('leadgen-tenant')?.value || 'kf-leadgen-demo').trim();
+  const nameEl = document.getElementById('leadgen-project-name');
+  const status = document.getElementById('leadgen-status');
+  const name = (nameEl?.value || '').trim() || '高教人才资源哨兵 Demo';
+  if (!status) return;
+
+  status.className = 'text-sm text-gray-500 mb-2';
+  status.textContent = 'Creating project...';
+  try {
+    await api('/leadgen/projects', {
+      method: 'POST',
+      body: JSON.stringify({
+        tenant_id: tenantId,
+        name,
+        vertical: 'higher_ed_talent',
+        icp: {
+          target: '非高校/非学院在职博士或博士后',
+          use_case: '高层次人才资源资产化与合规合作触达',
+        },
+        compliance_profile: {
+          positioning: '科研合作/兼职顾问/人才项目匹配',
+          forbidden_terms: ['挂名资质', '不用干活', '规避学校', '钻政策空子'],
+        },
+        default_channels: ['manual_task'],
+      }),
+    });
+    if (nameEl) nameEl.value = '';
+    await loadLeadgenProjects();
+  } catch (e) {
+    status.textContent = `Error: ${e.message}`;
+    status.className = 'text-sm text-red-600 mb-2';
+  }
+}
+
 // Stop auto-refresh when leaving logs tab
 document.getElementById('logs-auto-refresh')?.addEventListener('change', function() {
   if (!this.checked) clearInterval(logsAutoTimer);
@@ -2542,14 +2905,16 @@ async function initMemoryTab() {
         const tenantRes = await api('/tenants');
         tenantsData = tenantRes.tenants || [];
       } catch (e) {
-        document.getElementById('memory-results').innerHTML =
-          `<div class="text-red-500 text-sm p-4">Failed to load tenants: ${escapeHtml(String(e.message || e))}</div>`;
+        setTrustedMarkup(
+          document.getElementById('memory-results'),
+          `<div class="text-red-500 text-sm p-4">Failed to load tenants: ${escapeHtml(String(e.message || e))}</div>`
+        );
         return;
       }
     }
-    sel.innerHTML = tenantsData.map(t =>
+    setTrustedMarkup(sel, tenantsData.map(t =>
       `<option value="${escapeAttr(String(t.tenant_id || ''))}">${escapeHtml(String(t.name || t.tenant_id || ''))}</option>`
-    ).join('');
+    ).join(''));
   }
   loadMemory(true);
 }
@@ -2563,23 +2928,23 @@ function renderMemoryUsers(users, selectedUserId) {
     const count = Number.parseInt(user.count || 0) || 0;
     return `<option value="${uid}">${label} (${count})</option>`;
   }));
-  sel.innerHTML = options.join('');
+  setTrustedMarkup(sel, options.join(''));
   if (selectedUserId) sel.value = selectedUserId;
 }
 
 function renderMemoryProfile(profile, selectedUserId) {
   const el = document.getElementById('memory-profile');
   if (!selectedUserId) {
-    el.innerHTML = '<div class="text-gray-400">Select a user to view profile.</div>';
+    setTrustedMarkup(el, '<div class="text-gray-400">Select a user to view profile.</div>');
     return;
   }
   if (!profile) {
-    el.innerHTML = '<div class="text-gray-400">No profile stored for this user.</div>';
+    setTrustedMarkup(el, '<div class="text-gray-400">No profile stored for this user.</div>');
     return;
   }
   const prefs = Array.isArray(profile.preferences) ? profile.preferences : [];
   const topics = Array.isArray(profile.recent_topics) ? profile.recent_topics : [];
-  el.innerHTML = `
+  setTrustedMarkup(el, `
     <div class="space-y-3">
       <div>
         <div class="text-xs text-gray-400">Name</div>
@@ -2597,17 +2962,17 @@ function renderMemoryProfile(profile, selectedUserId) {
         <div class="text-xs text-gray-400">Recent Topics</div>
         <div>${topics.length ? topics.map(t => `<span class="inline-block bg-gray-100 text-gray-600 text-xs rounded px-2 py-0.5 mr-1 mb-1">${escapeHtml(String(t))}</span>`).join('') : '-'}</div>
       </div>
-    </div>`;
+    </div>`);
 }
 
 function renderMemoryEntries(entries) {
   const container = document.getElementById('memory-results');
   document.getElementById('memory-entry-count').textContent = `${entries.length} shown`;
   if (!entries.length) {
-    container.innerHTML = '<div class="text-gray-400 text-center py-8">No matching memory entries.</div>';
+    setTrustedMarkup(container, '<div class="text-gray-400 text-center py-8">No matching memory entries.</div>');
     return;
   }
-  container.innerHTML = entries.map(entry => {
+  setTrustedMarkup(container, entries.map(entry => {
     const summary = escapeHtml(String(entry.summary || ''));
     const userName = escapeHtml(String(entry.user_name || entry.user_id || '-'));
     const userId = escapeHtml(String(entry.user_id || ''));
@@ -2628,7 +2993,7 @@ function renderMemoryEntries(entries) {
         </div>
         <div class="text-sm text-gray-800 whitespace-pre-wrap">${summary}</div>
       </div>`;
-  }).join('');
+  }).join(''));
 }
 
 async function loadMemory(refreshUsers = false) {
@@ -2650,8 +3015,10 @@ async function loadMemory(refreshUsers = false) {
     const data = await api(`/tenants/${encodeURIComponent(tid)}/memory?${params.toString()}`);
     if (!data.ok) {
       document.getElementById('memory-stats').textContent = data.error || 'Unavailable';
-      document.getElementById('memory-results').innerHTML =
-        `<div class="text-amber-600 text-sm p-4">${escapeHtml(String(data.error || 'Memory unavailable'))}</div>`;
+      setTrustedMarkup(
+        document.getElementById('memory-results'),
+        `<div class="text-amber-600 text-sm p-4">${escapeHtml(String(data.error || 'Memory unavailable'))}</div>`
+      );
       renderMemoryProfile(null, userId);
       return;
     }
@@ -2663,8 +3030,10 @@ async function loadMemory(refreshUsers = false) {
       `${stats.matched_entries || 0}/${stats.total_entries || 0} matched · ${stats.users_count || 0} users`;
   } catch (e) {
     document.getElementById('memory-stats').textContent = 'Failed';
-    document.getElementById('memory-results').innerHTML =
-      `<div class="text-red-500 text-sm p-4">Failed to load memory: ${escapeHtml(String(e.message || e))}</div>`;
+    setTrustedMarkup(
+      document.getElementById('memory-results'),
+      `<div class="text-red-500 text-sm p-4">Failed to load memory: ${escapeHtml(String(e.message || e))}</div>`
+    );
   }
 }
 
@@ -2720,11 +3089,11 @@ function formatTime(iso, { allowFuture = false } = {}) {
 }
 
 function escapeHtml(s) {
-  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
 function escapeAttr(s) {
-  return escapeHtml(s).replace(/'/g, '&#39;');
+  return escapeHtml(String(s ?? '')).replace(/'/g, '&#39;');
 }
 
 function jsArg(value) {
@@ -2743,6 +3112,8 @@ async function refreshAll() {
 }
 
 // ── Init ──
+bindDashboardEvents();
+
 if (TOKEN) {
   api('/tenants').then(() => showDashboard()).catch(() => {
     TOKEN = '';
@@ -2755,17 +3126,17 @@ async function loadIdentities() {
   const sel = document.getElementById('identity-tenant-select');
   // Populate tenant selector if empty
   if (sel.options.length === 0 && tenantsData.length > 0) {
-    sel.innerHTML = tenantsData.map(t =>
-      `<option value="${t.tenant_id}">${t.name || t.tenant_id}</option>`
-    ).join('');
+    setTrustedMarkup(sel, tenantsData.map(t =>
+      `<option value="${escapeAttr(String(t.tenant_id || ''))}">${escapeHtml(String(t.name || t.tenant_id || ''))}</option>`
+    ).join(''));
   }
   const tid = sel.value;
   if (!tid) return;
 
   // Fetch identities and channels independently (one 404 shouldn't block the other)
   const [idRes, chRes] = await Promise.allSettled([
-    api(`/identities/${tid}`),
-    api(`/tenants/${tid}/channels`),
+    api(`/identities/${encodeURIComponent(tid)}`),
+    api(`/tenants/${encodeURIComponent(tid)}/channels`),
   ]);
 
   // Render identities
@@ -2773,32 +3144,33 @@ async function loadIdentities() {
   const empty = document.getElementById('identities-empty');
   const identities = idRes.status === 'fulfilled' ? (idRes.value.identities || []) : [];
   if (identities.length === 0) {
-    tbody.innerHTML = '';
+    clearNode(tbody);
     empty.classList.remove('hidden');
   } else {
     empty.classList.add('hidden');
-    tbody.innerHTML = identities.map(id => {
+    setTrustedMarkup(tbody, identities.map(id => {
       const linked = id.linked_platforms || {};
       const platformBadges = Object.entries(linked).map(([p, uid]) =>
         `<span class="inline-block px-2 py-0.5 rounded text-xs font-medium ${
           p === 'feishu' ? 'bg-blue-100 text-blue-700' :
           p === 'wecom' ? 'bg-green-100 text-green-700' :
           'bg-purple-100 text-purple-700'
-        }">${p}: ${uid.substring(0, 12)}...</span>`
+        }">${escapeHtml(String(p))}: ${escapeHtml(String(uid).substring(0, 12))}...</span>`
       ).join(' ');
+      const identityId = String(id.identity_id || '');
       return `<tr class="border-b hover:bg-gray-50">
-        <td class="py-2 pr-4 font-medium">${id.name || '?'}</td>
-        <td class="py-2 pr-4 text-xs text-gray-500 font-mono">${(id.identity_id || '').substring(0, 12)}...</td>
+        <td class="py-2 pr-4 font-medium">${escapeHtml(String(id.name || '?'))}</td>
+        <td class="py-2 pr-4 text-xs text-gray-500 font-mono">${escapeHtml(identityId.substring(0, 12))}...</td>
         <td class="py-2 pr-4">${platformBadges || '<span class="text-gray-400">none</span>'}</td>
-        <td class="py-2 pr-4 text-xs text-gray-500">${(id.created_at || '').substring(0, 16)}</td>
+        <td class="py-2 pr-4 text-xs text-gray-500">${escapeHtml(String(id.created_at || '').substring(0, 16))}</td>
         <td class="py-2">
           ${Object.entries(linked).map(([p, uid]) =>
-            `<button onclick="unlinkIdentity('${tid}','${id.identity_id}','${p}')"
-              class="text-xs text-red-500 hover:text-red-700 mr-1">unlink ${p}</button>`
+            `<button data-action="unlink-identity" data-tenant-id="${escapeAttr(tid)}" data-identity-id="${escapeAttr(identityId)}" data-platform="${escapeAttr(String(p))}"
+              class="text-xs text-red-500 hover:text-red-700 mr-1">unlink ${escapeHtml(String(p))}</button>`
           ).join('')}
         </td>
       </tr>`;
-    }).join('');
+    }).join(''));
   }
 
   // Render channels (always clear first to avoid stale data from previous tenant)
@@ -2806,11 +3178,11 @@ async function loadIdentities() {
   const chEmpty = document.getElementById('channels-empty');
   const channels = chRes.status === 'fulfilled' ? (chRes.value.channels || []) : [];
   if (channels.length === 0) {
-    chTbody.innerHTML = '';
+    clearNode(chTbody);
     chEmpty.classList.remove('hidden');
   } else {
     chEmpty.classList.add('hidden');
-    chTbody.innerHTML = channels.map(ch => {
+    setTrustedMarkup(chTbody, channels.map(ch => {
       const statusBadge = ch.enabled
         ? '<span class="px-2 py-0.5 rounded text-xs bg-green-100 text-green-700">enabled</span>'
         : '<span class="px-2 py-0.5 rounded text-xs bg-gray-100 text-gray-500">disabled</span>';
@@ -2823,21 +3195,23 @@ async function loadIdentities() {
         feishu: 'bg-blue-100 text-blue-700', wecom: 'bg-green-100 text-green-700',
         wecom_kf: 'bg-purple-100 text-purple-700', qq: 'bg-orange-100 text-orange-700',
       };
+      const channelId = String(ch.channel_id || 'primary');
+      const channelPlatform = String(ch.platform || '');
       return `<tr class="border-b hover:bg-gray-50">
-        <td class="py-2 pr-4 text-xs font-mono">${ch.channel_id || 'primary'}</td>
+        <td class="py-2 pr-4 text-xs font-mono">${escapeHtml(channelId)}</td>
         <td class="py-2 pr-4">
           <span class="px-2 py-0.5 rounded text-xs font-medium ${
             platformColors[ch.platform] || 'bg-gray-100 text-gray-700'
-          }">${ch.platform}</span>
+          }">${escapeHtml(channelPlatform)}</span>
         </td>
         <td class="py-2 pr-4">${statusBadge}</td>
         <td class="py-2 pr-4 text-xs text-gray-500">${creds.join(', ') || 'none'}</td>
         <td class="py-2 text-xs">
-          <button onclick="editChannel('${ch.channel_id}')" class="text-blue-600 hover:text-blue-800 mr-2">edit</button>
-          <button onclick="deleteChannel('${ch.channel_id}')" class="text-red-500 hover:text-red-700">delete</button>
+          <button data-action="edit-channel" data-channel-id="${escapeAttr(channelId)}" class="text-blue-600 hover:text-blue-800 mr-2">edit</button>
+          <button data-action="delete-channel" data-channel-id="${escapeAttr(channelId)}" class="text-red-500 hover:text-red-700">delete</button>
         </td>
       </tr>`;
-    }).join('');
+    }).join(''));
   }
 }
 
@@ -2854,27 +3228,27 @@ async function showLinkIdentityModal() {
   // Load trial users + existing identities in parallel for the dropdowns
   const userSelect = document.getElementById('link-id-user-select');
   const targetSelect = document.getElementById('link-id-target');
-  userSelect.innerHTML = '<option value="">Loading...</option>';
-  targetSelect.innerHTML = '<option value="__new__">Create New Identity</option>';
+  setTrustedMarkup(userSelect, '<option value="">Loading...</option>');
+  setTrustedMarkup(targetSelect, '<option value="__new__">Create New Identity</option>');
 
   try {
     const [usersRes, idsRes] = await Promise.allSettled([
-      api(`/trial/${tid}/users`),
-      api(`/identities/${tid}`),
+      api(`/trial/${encodeURIComponent(tid)}/users`),
+      api(`/identities/${encodeURIComponent(tid)}`),
     ]);
     // Populate user dropdown
     _trialUsersCache = usersRes.status === 'fulfilled' ? (usersRes.value.users || []) : [];
-    userSelect.innerHTML = '<option value="">-- Select a user --</option>';
+    setTrustedMarkup(userSelect, '<option value="">-- Select a user --</option>');
     // Determine platform from tenant
     const tenant = tenantsData.find(t => t.tenant_id === tid);
     const tPlatform = tenant ? (tenant.platform || '') : '';
     _trialUsersCache.forEach(u => {
-      const uid = u.user_id || '';
-      const name = u.name || uid.substring(0, 16);
+      const uid = String(u.user_id || '');
+      const name = String(u.name || uid.substring(0, 16));
       const status = u.status || '';
       const statusTag = status === 'approved' ? ' [approved]' : status === 'blocked' ? ' [blocked]' : '';
       const pidShort = uid.length > 16 ? uid.substring(0, 14) + '..' : uid;
-      userSelect.innerHTML += `<option value="${uid}" data-platform="${tPlatform}" data-name="${name}">${name} (${tPlatform}: ${pidShort})${statusTag}</option>`;
+      appendTrustedMarkup(userSelect, `<option value="${escapeAttr(uid)}" data-platform="${escapeAttr(tPlatform)}" data-name="${escapeAttr(name)}">${escapeHtml(name)} (${escapeHtml(tPlatform)}: ${escapeHtml(pidShort)})${statusTag}</option>`);
     });
 
     // Populate identity dropdown
@@ -2882,10 +3256,10 @@ async function showLinkIdentityModal() {
     _identitiesCache.forEach(id => {
       const linked = id.linked_platforms || {};
       const platforms = Object.keys(linked).join(', ') || 'none';
-      targetSelect.innerHTML += `<option value="${id.identity_id}">${id.name || '?'} (${platforms})</option>`;
+      appendTrustedMarkup(targetSelect, `<option value="${escapeAttr(String(id.identity_id || ''))}">${escapeHtml(String(id.name || '?'))} (${escapeHtml(platforms)})</option>`);
     });
   } catch (e) {
-    userSelect.innerHTML = '<option value="">Failed to load</option>';
+    setTrustedMarkup(userSelect, '<option value="">Failed to load</option>');
   }
 
   // Reset fields
@@ -2941,7 +3315,7 @@ async function submitLinkIdentity() {
   if (!identityId && !name) return alert('Name is required for new identity');
 
   try {
-    await api(`/identities/${tid}/link`, {
+    await api(`/identities/${encodeURIComponent(tid)}/link`, {
       method: 'POST',
       body: JSON.stringify({ identity_id: identityId, platform, platform_user_id: pid, name }),
     });
@@ -2955,7 +3329,7 @@ async function submitLinkIdentity() {
 async function unlinkIdentity(tid, identityId, platform) {
   if (!confirm(`Unlink ${platform} from identity ${identityId.substring(0, 8)}...?`)) return;
   try {
-    await api(`/identities/${tid}/${identityId}/${platform}`, { method: 'DELETE' });
+    await api(`/identities/${encodeURIComponent(tid)}/${encodeURIComponent(identityId)}/${encodeURIComponent(platform)}`, { method: 'DELETE' });
     loadIdentities();
   } catch (e) {
     alert('Unlink failed: ' + e.message);
@@ -3048,7 +3422,7 @@ async function deleteChannel(channelId) {
   if (!confirm(`Delete channel "${channelId}"? This cannot be undone.`)) return;
   const tid = document.getElementById('identity-tenant-select').value;
   try {
-    await api(`/tenants/${tid}/channels/${channelId}`, { method: 'DELETE' });
+    await api(`/tenants/${encodeURIComponent(tid)}/channels/${encodeURIComponent(channelId)}`, { method: 'DELETE' });
     loadIdentities();
   } catch (e) {
     alert('Delete failed: ' + e.message);
@@ -3104,13 +3478,13 @@ async function submitChannel() {
   try {
     if (editId) {
       // Edit existing
-      await api(`/tenants/${tid}/channels/${editId}`, {
+      await api(`/tenants/${encodeURIComponent(tid)}/channels/${encodeURIComponent(editId)}`, {
         method: 'PUT',
         body: JSON.stringify(body),
       });
     } else {
       // Add new
-      await api(`/tenants/${tid}/channels`, {
+      await api(`/tenants/${encodeURIComponent(tid)}/channels`, {
         method: 'POST',
         body: JSON.stringify(body),
       });
@@ -3128,7 +3502,7 @@ let saData = { name: '', identities: [] };
 async function loadSuperAdmin() {
   try {
     saData = await api('/superadmin');
-    document.getElementById('sa-name').value = saData.name || '';
+    document.getElementById('sa-name').value = String(saData.name || '');
     renderIdentities();
   } catch (e) {
     console.error('load superadmin failed', e);
@@ -3137,20 +3511,23 @@ async function loadSuperAdmin() {
 
 function renderIdentities() {
   const c = document.getElementById('sa-identities');
-  c.innerHTML = (saData.identities || []).map((id, i) => `
-    <div class="flex gap-2 items-center">
-      <select class="sa-platform border rounded px-2 py-1 text-sm" data-i="${i}">
-        <option value="feishu" ${id.platform==='feishu'?'selected':''}>Feishu</option>
-        <option value="wecom" ${id.platform==='wecom'?'selected':''}>WeCom</option>
-        <option value="wecom_kf" ${id.platform==='wecom_kf'?'selected':''}>WeChat KF</option>
-        <option value="qq" ${id.platform==='qq'?'selected':''}>QQ</option>
-      </select>
-      <input class="sa-uid border rounded px-2 py-1 text-sm flex-1" data-i="${i}" value="${id.user_id||''}" placeholder="user_id">
-      <input class="sa-tid border rounded px-2 py-1 text-sm w-32" data-i="${i}" value="${id.tenant_id||''}" placeholder="tenant_id">
-      <input class="sa-label border rounded px-2 py-1 text-sm w-24" data-i="${i}" value="${id.label||''}" placeholder="label">
-      <button onclick="removeIdentity(${i})" class="text-red-500 hover:text-red-700 text-sm">✕</button>
-    </div>
-  `).join('');
+  setTrustedMarkup(c, (saData.identities || []).map((id, i) => {
+    const platform = String(id.platform || '');
+    return `
+      <div class="flex gap-2 items-center">
+        <select class="sa-platform border rounded px-2 py-1 text-sm" data-i="${i}">
+          <option value="feishu" ${platform==='feishu'?'selected':''}>Feishu</option>
+          <option value="wecom" ${platform==='wecom'?'selected':''}>WeCom</option>
+          <option value="wecom_kf" ${platform==='wecom_kf'?'selected':''}>WeChat KF</option>
+          <option value="qq" ${platform==='qq'?'selected':''}>QQ</option>
+        </select>
+        <input class="sa-uid border rounded px-2 py-1 text-sm flex-1" data-i="${i}" value="${escapeAttr(id.user_id || '')}" placeholder="user_id">
+        <input class="sa-tid border rounded px-2 py-1 text-sm w-32" data-i="${i}" value="${escapeAttr(id.tenant_id || '')}" placeholder="tenant_id">
+        <input class="sa-label border rounded px-2 py-1 text-sm w-24" data-i="${i}" value="${escapeAttr(id.label || '')}" placeholder="label">
+        <button data-action="remove-identity" data-index="${i}" class="text-red-500 hover:text-red-700 text-sm">✕</button>
+      </div>
+    `;
+  }).join(''));
 }
 
 function addIdentityRow() {
@@ -3196,38 +3573,108 @@ async function saveSuperAdmin() {
 }
 
 // ── Provision Requests ──
+let provisionRequestsData = [];
+
+function provisionRequestMessageRow(message, className = 'text-gray-400', paddingClass = 'py-8') {
+  const row = document.createElement('tr');
+  const cell = document.createElement('td');
+  cell.colSpan = 6;
+  cell.className = `text-center ${className} ${paddingClass}`;
+  cell.textContent = message;
+  row.append(cell);
+  return row;
+}
+
 async function loadProvisionRequests() {
   const tbody = document.getElementById('requests-tbody');
   const filter = document.getElementById('req-filter').value;
-  tbody.innerHTML = '<tr><td colspan="6" class="text-center text-gray-400 py-4">Loading...</td></tr>';
+  tbody.replaceChildren(provisionRequestMessageRow('Loading...', 'text-gray-400', 'py-4'));
   try {
-    const res = await api(`/provision-requests?status=${filter}`);
+    const res = await api(`/provision-requests?status=${encodeURIComponent(filter)}`);
     const reqs = res.requests || [];
+    provisionRequestsData = reqs;
     if (!reqs.length) {
-      tbody.innerHTML = '<tr><td colspan="6" class="text-center text-gray-400 py-8">No requests</td></tr>';
+      tbody.replaceChildren(provisionRequestMessageRow('No requests'));
       return;
     }
-    const statusColors = { pending: 'text-yellow-600 bg-yellow-50', approved: 'text-green-600 bg-green-50', rejected: 'text-red-600 bg-red-50' };
-    tbody.innerHTML = reqs.map(r => `<tr class="border-b">
-      <td class="py-2 font-mono text-xs">${r.request_id}</td>
-      <td class="py-2">${r.requester_name || r.requester_id?.slice(0,12) || '-'}</td>
-      <td class="py-2">${r.name || '-'}</td>
-      <td class="py-2">${r.platform || '-'}</td>
-      <td class="py-2"><span class="px-2 py-0.5 rounded-full text-xs ${statusColors[r.status]||''}">${r.status}</span></td>
-      <td class="py-2">${r.status === 'pending' ? `
-        <button onclick="approveReq('${r.request_id}')" class="text-green-600 hover:underline text-xs mr-2">Approve</button>
-        <button onclick="rejectReq('${r.request_id}')" class="text-red-600 hover:underline text-xs">Reject</button>
-      ` : (r.reviewed_at ? r.reviewed_at.slice(0,16) : '-')}</td>
-    </tr>`).join('');
+    renderProvisionRequestRows(tbody, reqs);
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="6" class="text-center text-red-400 py-8">${escapeHtml(e.message)}</td></tr>`;
+    tbody.replaceChildren(provisionRequestMessageRow(e.message, 'text-red-400'));
   }
+}
+
+function renderProvisionRequestRows(tbody, reqs) {
+  const statusColors = { pending: 'text-yellow-600 bg-yellow-50', approved: 'text-green-600 bg-green-50', rejected: 'text-red-600 bg-red-50' };
+  const rows = reqs.map((r, i) => {
+    const row = document.createElement('tr');
+    row.className = 'border-b';
+
+    const requestIdCell = document.createElement('td');
+    requestIdCell.className = 'py-2 font-mono text-xs';
+    requestIdCell.textContent = String(r.request_id || '');
+
+    const requesterCell = document.createElement('td');
+    requesterCell.className = 'py-2';
+    requesterCell.textContent = String(r.requester_name || r.requester_id?.slice(0, 12) || '-');
+
+    const nameCell = document.createElement('td');
+    nameCell.className = 'py-2';
+    nameCell.textContent = String(r.name || '-');
+
+    const platformCell = document.createElement('td');
+    platformCell.className = 'py-2';
+    platformCell.textContent = String(r.platform || '-');
+
+    const rawStatus = String(r.status || '');
+    const statusCell = document.createElement('td');
+    statusCell.className = 'py-2';
+    const statusBadge = document.createElement('span');
+    statusBadge.className = `px-2 py-0.5 rounded-full text-xs ${Object.prototype.hasOwnProperty.call(statusColors, rawStatus) ? statusColors[rawStatus] : ''}`;
+    statusBadge.textContent = rawStatus || '-';
+    statusCell.append(statusBadge);
+
+    const actionsCell = document.createElement('td');
+    actionsCell.className = 'py-2';
+    if (rawStatus === 'pending') {
+      const approveBtn = document.createElement('button');
+      approveBtn.className = 'text-green-600 hover:underline text-xs mr-2';
+      approveBtn.dataset.action = 'approve-req';
+      approveBtn.dataset.index = String(i);
+      approveBtn.textContent = 'Approve';
+      const rejectBtn = document.createElement('button');
+      rejectBtn.className = 'text-red-600 hover:underline text-xs';
+      rejectBtn.dataset.action = 'reject-req';
+      rejectBtn.dataset.index = String(i);
+      rejectBtn.textContent = 'Reject';
+      actionsCell.append(approveBtn, rejectBtn);
+    } else {
+      actionsCell.textContent = r.reviewed_at ? String(r.reviewed_at).slice(0, 16) : '-';
+    }
+
+    row.append(requestIdCell, requesterCell, nameCell, platformCell, statusCell, actionsCell);
+    return row;
+  });
+  tbody.replaceChildren(...rows);
+}
+
+function provisionRequestIdByIndex(index) {
+  return provisionRequestsData[index]?.request_id || '';
+}
+
+function approveReqByIndex(index) {
+  const id = provisionRequestIdByIndex(index);
+  if (id) approveReq(id);
+}
+
+function rejectReqByIndex(index) {
+  const id = provisionRequestIdByIndex(index);
+  if (id) rejectReq(id);
 }
 
 async function approveReq(id) {
   if (!confirm(`Approve request ${id}? This will auto-provision the instance.`)) return;
   try {
-    const r = await api(`/provision-requests/${id}/approve`, { method: 'POST' });
+    const r = await api(`/provision-requests/${encodeURIComponent(id)}/approve`, { method: 'POST' });
     const pr = r.provision_result;
     if (pr && pr.ok) alert(`Approved & provisioned! Port: ${pr.port}`);
     else alert(`Approved, but provision failed: ${(pr||{}).error || 'unknown'}`);
@@ -3239,7 +3686,7 @@ async function rejectReq(id) {
   const reason = prompt('Reject reason (optional):');
   if (reason === null) return;
   try {
-    await api(`/provision-requests/${id}/reject`, { method: 'POST', body: JSON.stringify({ reason }) });
+    await api(`/provision-requests/${encodeURIComponent(id)}/reject`, { method: 'POST', body: JSON.stringify({ reason }) });
     loadProvisionRequests();
   } catch (e) { alert('Failed: ' + e.message); }
 }
@@ -3254,7 +3701,7 @@ async function openEditModal(tid) {
   document.getElementById('edit-tenant-modal').classList.remove('hidden');
 
   try {
-    const config = await api(`/tenants/${tid}/config`);
+    const config = await api(`/tenants/${encodeURIComponent(tid)}/config`);
 
     // Show warning if config source is partial (only metadata, missing prompt/tools/memory)
     const srcEl = document.getElementById('edit-status');
@@ -3382,7 +3829,7 @@ async function submitEditTenant(e) {
   body.access_deny_msg = document.getElementById('edit-access-deny-msg').value.trim() || '抱歉，您没有权限使用此助手。如需开通，请联系管理员。';
 
   try {
-    const res = await api(`/tenants/${editingTenantId}/config`, {
+    const res = await api(`/tenants/${encodeURIComponent(editingTenantId)}/config`, {
       method: 'PUT',
       body: JSON.stringify(body),
     });

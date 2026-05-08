@@ -42,6 +42,21 @@ _FACTUAL_CLAIM_SIGNALS = re.compile(
     r"|[\u4e00-\u9fff]{2,4}[、,，][\u4e00-\u9fff]{2,4}[、,，][\u4e00-\u9fff]{2,4}"
 )
 _FAKE_TOOL_TRACE_RE = re.compile(r"<(?:tools_used|execute_tool)>", re.IGNORECASE)
+_FAILURE_RE = re.compile(r"(失败|超时|error|timeout|blocked|无权限|not found)", re.IGNORECASE)
+
+_OVERCONFIDENT_ABSENCE_CLAIM_RE = re.compile(
+    r"(石沉大海|没什么水花|热度.*虚|声量.*微不足道|存在感.*(低|弱)|"
+    r"网上都搜不到|根本搜不到|没名气|不出名|毫无热度)",
+    re.IGNORECASE,
+)
+
+_DEEP_VERIFICATION_TOOLS = frozenset({
+    "fetch_url",
+    "browser_read",
+    "browser_open",
+    "read_feishu_doc",
+    "read_feishu_wiki",
+})
 _YEAR_RE = re.compile(r"\b((?:19|20)\d{2})\b")
 _SEASON_RE = re.compile(r"\b((?:19|20)\d{2})\s*[-/]\s*(\d{2,4})\b")
 _TEMPORAL_URGENCY_RE = re.compile(
@@ -83,7 +98,12 @@ _FIRST_PARTY_EVIDENCE_TOOLS = frozenset({
 })
 _FIRST_PARTY_SCOPE_RE = re.compile(
     r"(飞书|企微|微信群|群聊|大群|群里|本群|私聊|聊天记录|会话|频道|消息记录|"
-    r"会议纪要|纪要|任务列表|日历)",
+    r"会议纪要|纪要|任务列表)",
+    re.IGNORECASE,
+)
+_FIRST_PARTY_CALENDAR_SCOPE_RE = re.compile(
+    r"((我的|咱们|我们|团队|项目|部门|本周|本月|今天|明天).{0,8}(日历|日程|安排)"
+    r"|((日历|日程).{0,6}(里|上|事项|待办|会议)))",
     re.IGNORECASE,
 )
 _FIRST_PARTY_LOOKUP_RE = re.compile(
@@ -93,6 +113,15 @@ _FIRST_PARTY_LOOKUP_RE = re.compile(
 _HIGH_RISK_DECISION_RE = re.compile(
     r"(预测|预判|推荐|建议|决策|评估|打分|胜率|比分|排名|投资|下注|买入|卖出|"
     r"forecast|predict|projection|recommendation|strategy)",
+    re.IGNORECASE,
+)
+_SELF_ROLE_QUESTION_RE = re.compile(
+    r"(你是谁|你叫.{0,6}什么|你负责.{0,10}(什么|干嘛|哪些)|"
+    r"你是干什么|你是干嘛的|你是做什么的|你能干嘛|你能做什么|你都会什么|你的职责|你负责干什么)",
+    re.IGNORECASE,
+)
+_CASUAL_REPLY_REQUEST_RE = re.compile(
+    r"(回我|理我|在吗|在不|还在吗|说句话|求你|收到吗|能回复吗|别装死)",
     re.IGNORECASE,
 )
 _ENTITY_RELATION_SIGNAL_RE = re.compile(
@@ -131,9 +160,17 @@ def _is_first_party_context_turn(user_text: str) -> bool:
     text = (user_text or "").strip()
     if not text:
         return False
-    if not _FIRST_PARTY_SCOPE_RE.search(text):
+    has_scope_signal = bool(
+        _FIRST_PARTY_SCOPE_RE.search(text) or _FIRST_PARTY_CALENDAR_SCOPE_RE.search(text)
+    )
+    if not has_scope_signal:
         return False
     return bool(_FIRST_PARTY_LOOKUP_RE.search(text) or _TEMPORAL_URGENCY_RE.search(text))
+
+
+def _is_self_role_question(user_text: str) -> bool:
+    text = (user_text or "").strip()
+    return bool(text and _SELF_ROLE_QUESTION_RE.search(text))
 
 
 def _extract_entity_tokens(text: str) -> set[str]:
@@ -309,6 +346,8 @@ def requires_external_grounding(user_text: str) -> bool:
     text = (user_text or "").strip()
     if not text:
         return False
+    if _is_self_role_question(text):
+        return False
     if _is_first_party_context_turn(text):
         return False
     if should_relax_common_knowledge_grounding(text):
@@ -452,8 +491,12 @@ def should_relax_fact_grounding(user_text: str) -> bool:
         return False
     if should_relax_common_knowledge_grounding(text):
         return True
+    if _is_self_role_question(text):
+        return True
     if _PRICING_RE.search(text) or _PUBLIC_ENTITY_FACT_RE.search(text):
         return False
+    if _CASUAL_REPLY_REQUEST_RE.search(text):
+        return True
     if is_non_actionable_turn(text) and _CONCEPTUAL_TOPICS_RE.search(text):
         return True
     turn_mode = infer_turn_mode(text)
@@ -462,6 +505,43 @@ def should_relax_fact_grounding(user_text: str) -> bool:
 
 def reply_contains_dense_factual_claims(reply_text: str) -> bool:
     return bool(reply_text and _FACTUAL_CLAIM_SIGNALS.search(reply_text))
+
+
+def reply_contains_overconfident_absence_claim(reply_text: str) -> bool:
+    """Detect overconfident 'not famous / no signal' conclusions."""
+    return bool(reply_text and _OVERCONFIDENT_ABSENCE_CLAIM_RE.search(reply_text))
+
+
+def has_deep_verification_for_absence_claim(
+    tool_names_called: list[str] | tuple[str, ...],
+    action_outcomes: list[tuple[str, str]] | None,
+) -> bool:
+    """Whether model has at least one successful deep verification read."""
+    if not tool_names_called:
+        return False
+    called = set(tool_names_called)
+    if not (called & _DEEP_VERIFICATION_TOOLS):
+        return False
+    if not action_outcomes:
+        # Conservative: if tool names exist but no outcome log, still treat as insufficient.
+        return False
+    for name, outcome in action_outcomes:
+        if name not in _DEEP_VERIFICATION_TOOLS:
+            continue
+        text = (outcome or "").strip()
+        if text and not _FAILURE_RE.search(text):
+            return True
+    return False
+
+
+def build_absence_claim_nudge(user_text: str) -> str:
+    _ = user_text
+    return (
+        "⚠️ 你对某个对象给出了“没名气/没热度/搜不到”的强结论，但证据链不够。"
+        "仅靠 web_search 标题列表不能支持这种判断。"
+        "请先调用 fetch_url 或 browser_read 打开至少一个权威来源页面（如官方站点/平台详情页），"
+        "再给结论；如果证据不足，只能说“目前公开信息不足”，不要下价值判断。"
+    )
 
 
 def build_grounding_nudge(user_text: str, reply_text: str = "") -> str:

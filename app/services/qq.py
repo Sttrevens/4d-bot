@@ -33,9 +33,12 @@ _token_cache: dict[str, tuple[str, float]] = {}
 def _get_credentials() -> tuple[str, str, str]:
     """从当前 tenant/channel 上下文获取 QQ 凭证。返回 (app_id, app_secret, token)。"""
     ch = get_current_channel()
-    if ch and ch.qq_app_id:
+    if ch and ch.platform == "qq" and ch.qq_app_id:
         return ch.qq_app_id, ch.qq_app_secret, ch.qq_token
     t = get_current_tenant()
+    qq_ch = t.get_channel("qq") if hasattr(t, "get_channel") else None
+    if qq_ch and qq_ch.qq_app_id:
+        return qq_ch.qq_app_id, qq_ch.qq_app_secret, qq_ch.qq_token
     return t.qq_app_id, t.qq_app_secret, t.qq_token
 
 
@@ -53,7 +56,7 @@ async def _get_access_token() -> str:
     try:
         async with httpx.AsyncClient(
             trust_env=False,
-            timeout=httpx.Timeout(connect=5.0, read=10.0),
+            timeout=httpx.Timeout(connect=5.0, read=10.0, write=10.0, pool=5.0),
         ) as client:
             resp = await client.post(_TOKEN_URL, json={
                 "appId": app_id,
@@ -84,7 +87,7 @@ async def _request(method: str, path: str, **kwargs: Any) -> dict:
     try:
         async with httpx.AsyncClient(
             trust_env=False,
-            timeout=httpx.Timeout(connect=5.0, read=30.0),
+            timeout=httpx.Timeout(connect=5.0, read=30.0, write=10.0, pool=5.0),
         ) as client:
             resp = await client.request(method, url, headers=headers, **kwargs)
             if resp.status_code >= 400:
@@ -275,7 +278,7 @@ async def download_image_url(url: str) -> str:
     try:
         async with httpx.AsyncClient(
             trust_env=False,
-            timeout=httpx.Timeout(connect=5.0, read=30.0),
+            timeout=httpx.Timeout(connect=5.0, read=30.0, write=10.0, pool=5.0),
         ) as client:
             resp = await client.get(url, headers=headers)
             if resp.status_code != 200:

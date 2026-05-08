@@ -24,6 +24,7 @@ from app.harness import (
     build_stable_common_knowledge_search_nudge,
     build_tool_domain_nudge,
     build_tool_settle_nudge,
+    ControlEvent,
     compress_gemini_function_results,
     extract_focus_terms,
     infer_turn_mode,
@@ -34,8 +35,10 @@ from app.harness import (
     is_temporal_scope_drift_query,
     normalize_inbox_item,
     remember_active_constraints,
+    render_control_event,
     requires_fact_pack_first,
     sanitize_suggested_groups,
+    sanitize_public_reply,
     should_compact_history,
     should_reuse_recent_topic,
     should_run_code_preflight,
@@ -128,6 +131,44 @@ def _is_network_like_error(exc: Exception, exc_msg: str = "") -> bool:
     )
     return any(keyword in text for keyword in network_keywords)
 
+
+def _append_gemini_control_event(
+    contents: list[types.Content],
+    event: ControlEvent,
+    *,
+    channel_platform: str = "",
+    available_tools: set[str] | frozenset[str] | None = None,
+    failed_content: types.Content | None = None,
+) -> None:
+    """Append a safe control message without replaying the failed candidate reply."""
+    _ = failed_content
+    rendered = render_control_event(
+        event,
+        provider="gemini",
+        channel_platform=channel_platform,
+        available_tools=available_tools,
+    )
+    contents.append(types.Content(
+        role=rendered["role"],
+        parts=[types.Part(text=rendered["text"])],
+    ))
+
+
+def _control_event(
+    kind: str,
+    reason_code: str,
+    action: str,
+    *,
+    payload: dict | None = None,
+    audit_summary: str = "",
+) -> ControlEvent:
+    return ControlEvent(
+        kind=kind,
+        reason_code=reason_code,
+        action=action,
+        payload=payload or {},
+        audit_summary=audit_summary,
+    )
 
 _DEFAULT_MODEL = "gemini-3-flash-preview"
 _DEFAULT_STRONG_MODEL = "gemini-3.1-pro-preview-customtools"
@@ -851,6 +892,12 @@ async def _run_sub_agent(
     _escalated = False
     _pro_failures = 0
     _exit_nudged = False  # 防止 exit gate nudge 死循环，最多 nudge 一次
+    try:
+        from app.tenant.context import get_current_channel
+        _sub_channel = get_current_channel()
+        _sub_channel_platform = _sub_channel.platform if _sub_channel else tenant.platform
+    except Exception:
+        _sub_channel_platform = tenant.platform
     # Sub-agent URL 溯源
     _sub_seen_urls: set[str] = extract_urls(user_text)
     _sub_blocked_urls: set[str] = set()
@@ -951,15 +998,41 @@ async def _run_sub_agent(
                             _exit_decision.verdict,
                             _exit_decision.reason,
                         )
-                        contents.append(content_obj)
-                        contents.append(types.Content(
-                            role="user",
-                            parts=[types.Part(text=(
-                                _exit_decision.nudge_text
-                                or "请先完成必要工具执行，再退出。"
-                            ))],
-                        ))
+                        _append_gemini_control_event(
+                            contents,
+                            _exit_decision.event or _control_event(
+                                "exit_governor",
+                                _exit_decision.reason,
+                                "continue_task",
+                            ),
+                            channel_platform=_sub_channel_platform,
+                            available_tools=set(tool_map.keys()),
+                            failed_content=content_obj,
+                        )
                         continue
+
+                public_decision = sanitize_public_reply(reply, _sub_channel_platform)
+                if public_decision.should_retry and not _exit_nudged:
+                    _exit_nudged = True
+                    logger.warning(
+                        "sub-agent [%s] public output scrub requested: %s",
+                        sub_agent_type,
+                        public_decision.audit_reason,
+                    )
+                    _append_gemini_control_event(
+                        contents,
+                        _control_event(
+                            "public_output_scrub",
+                            public_decision.audit_reason,
+                            "rewrite_public_reply",
+                            audit_summary=reply[:240],
+                        ),
+                        channel_platform=_sub_channel_platform,
+                        available_tools=set(tool_map.keys()),
+                        failed_content=content_obj,
+                    )
+                    continue
+                reply = public_decision.text
 
                 _elapsed = time.monotonic() - _loop_start
                 logger.info(
@@ -1273,10 +1346,12 @@ async def handle_message(
     接口与 kimi_coder.handle_message 完全一致，可直接替换。
     image_urls 支持 data:image/..., data:video/..., data:audio/... 等任意媒体类型。
     """
-    from app.tenant.context import get_current_tenant, set_current_sender
+    from app.tenant.context import get_current_channel, get_current_tenant, set_current_sender
     from app.tools.source_registry import reset as _reset_source_registry
     reset_agent_progress()  # 每个请求开始时重置进度跟踪
     tenant = get_current_tenant()
+    current_channel = get_current_channel()
+    channel_platform = current_channel.platform if current_channel else tenant.platform
 
     # 设置发送者上下文（供工具层权限检查读取）
     set_current_sender(sender_id, sender_name)
@@ -1705,6 +1780,7 @@ async def handle_message(
     _MAX_DELIVERABLE_NUDGES = 2
     _exit_gate_nudge_count = 0  # LLM exit gate 催促计数（允许最多 2 次）
     _MAX_EXIT_GATE_NUDGES = 3
+    _public_output_scrub_nudged = False
     _custom_tool_thrashing_nudged = False  # P4: 自定义工具 thrashing 检测（最多 nudge 1 次）
     _empty_content_retries = 0  # 空响应重试计数（最多 3 次后用事实性总结退出）
     _consecutive_empty_content = 0  # 连续空 content 次数（用于自动降级模型）
@@ -1917,13 +1993,17 @@ async def handle_message(
                     if _missing:
                         _deliverable_nudge_count += 1
                         logger.info("empty candidates + unfulfilled deliverables %s, nudging", _missing)
-                        contents.append(types.Content(
-                            role="user",
-                            parts=[types.Part(text=(
-                                f"你还没有生成用户要求的{'、'.join(_missing)}。"
-                                "请立即调用 export_file 或对应工具完成文件生成，不要跳过。"
-                            ))],
-                        ))
+                        _append_gemini_control_event(
+                            contents,
+                            _control_event(
+                                "deliverable",
+                                "missing_deliverable",
+                                "complete_deliverable",
+                                payload={"missing": _missing},
+                            ),
+                            channel_platform=channel_platform,
+                            available_tools=set(tool_map.keys()),
+                        )
                         continue
                 logger.info("empty candidates but %d tools were called, building factual summary",
                             len(tool_names_called))
@@ -1979,27 +2059,34 @@ async def handle_message(
                         if _missing:
                             _deliverable_nudge_count += 1
                             logger.info("empty content + unfulfilled deliverables %s, nudging", _missing)
-                            contents.append(types.Content(
-                                role="user",
-                                parts=[types.Part(text=(
-                                    f"你还没有生成用户要求的{'、'.join(_missing)}。"
-                                    "请立即调用 export_file 或对应工具完成文件生成，不要跳过。"
-                                ))],
-                            ))
+                            _append_gemini_control_event(
+                                contents,
+                                _control_event(
+                                    "deliverable",
+                                    "missing_deliverable",
+                                    "complete_deliverable",
+                                    payload={"missing": _missing},
+                                ),
+                                channel_platform=channel_platform,
+                                available_tools=set(tool_map.keys()),
+                            )
                             continue
                     # 通用 nudge：催模型继续执行
                     logger.info(
                         "empty content parts at round %d (retry %d/3, %d tools called), nudging to continue",
                         round_num + 1, _empty_content_retries, len(tool_names_called),
                     )
-                    contents.append(types.Content(
-                        role="user",
-                        parts=[types.Part(text=(
-                            "你的回复为空。请继续执行任务——"
-                            "如果还有操作要做，直接调用工具；如果已全部完成，用文字告诉用户结果。"
-                            "不要只是承诺要做，直接做。"
-                        ))],
-                    ))
+                    _append_gemini_control_event(
+                        contents,
+                        _control_event(
+                            "empty_retry",
+                            "empty_content",
+                            "continue_or_answer",
+                            payload={"tools_called": len(tool_names_called)},
+                        ),
+                        channel_platform=channel_platform,
+                        available_tools=set(tool_map.keys()),
+                    )
                     continue
                 # 3 次空响应都没恢复 → 用事实性总结，不问 LLM（避免幻觉）
                 logger.info("empty content parts after %d retries (%d tools called), building factual summary",
@@ -2101,14 +2188,18 @@ async def handle_message(
                     "read-without-write at round %d (tools: %s), nudging",
                     round_num + 1, tool_names_called,
                 )
-                contents.append(content_obj)
-                contents.append(types.Content(
-                    role="user",
-                    parts=[types.Part(text=(
-                        "你已经读取了内容但还没有执行修改。"
-                        "请调用对应的写入工具（如 write_file）完成操作，不要只是描述你会怎么改。"
-                    ))],
-                ))
+                _append_gemini_control_event(
+                    contents,
+                    _control_event(
+                        "unmatched_read",
+                        "read_without_write",
+                        "write_after_read",
+                        audit_summary=f"tools={tool_names_called[-6:]}",
+                    ),
+                    channel_platform=channel_platform,
+                    available_tools=set(tool_map.keys()),
+                    failed_content=content_obj,
+                )
                 continue
 
             # ── 退出前检查 3: 用户要的文件没生成 ──
@@ -2125,14 +2216,18 @@ async def handle_message(
                         "text-exit but unfulfilled deliverables %s at round %d, nudging",
                         _missing, round_num + 1,
                     )
-                    contents.append(content_obj)
-                    contents.append(types.Content(
-                        role="user",
-                        parts=[types.Part(text=(
-                            f"你还没有生成用户要求的{'、'.join(_missing)}。"
-                            "请立即调用 export_file 或对应工具完成文件生成，不要跳过这一步。"
-                        ))],
-                    ))
+                    _append_gemini_control_event(
+                        contents,
+                        _control_event(
+                            "deliverable",
+                            "missing_deliverable",
+                            "complete_deliverable",
+                            payload={"missing": _missing},
+                        ),
+                        channel_platform=channel_platform,
+                        available_tools=set(tool_map.keys()),
+                        failed_content=content_obj,
+                    )
                     continue
 
             # ── 退出前检查 4: Exit Governor（deterministic + neutral judge）──
@@ -2161,18 +2256,39 @@ async def handle_message(
                         _exit_decision.reason,
                         reply_text[:80],
                     )
-                    contents.append(content_obj)
-                    contents.append(types.Content(
-                        role="user",
-                        parts=[types.Part(text=(
-                            _exit_decision.nudge_text
-                            or "请先完成必要工具执行，再退出。"
-                        ))],
-                    ))
+                    _append_gemini_control_event(
+                        contents,
+                        _exit_decision.event or _control_event(
+                            "exit_governor",
+                            _exit_decision.reason,
+                            "continue_task",
+                        ),
+                        channel_platform=channel_platform,
+                        available_tools=set(tool_map.keys()),
+                        failed_content=content_obj,
+                    )
                     continue
 
             if reply_text:
-                reply = _strip_hallucinated_code_blocks(_strip_degenerate_repetition(reply_text))
+                candidate_reply = _strip_degenerate_repetition(reply_text)
+                public_decision = sanitize_public_reply(candidate_reply, channel_platform)
+                if public_decision.should_retry and not _public_output_scrub_nudged:
+                    _public_output_scrub_nudged = True
+                    logger.warning("public output scrub requested: %s", public_decision.audit_reason)
+                    _append_gemini_control_event(
+                        contents,
+                        _control_event(
+                            "public_output_scrub",
+                            public_decision.audit_reason,
+                            "rewrite_public_reply",
+                            audit_summary=candidate_reply[:240],
+                        ),
+                        channel_platform=channel_platform,
+                        available_tools=set(tool_map.keys()),
+                        failed_content=content_obj,
+                    )
+                    continue
+                reply = _strip_hallucinated_code_blocks(public_decision.text)
             else:
                 # 模型返回空文本（如全是 thinking parts 被过滤）→ 事实性总结，不再问 LLM
                 reply = _build_factual_summary(tool_names_called, action_outcomes)

@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Awaitable
 
 from app.harness import (
+    ControlEvent,
     DEFAULT_COMPACTION_AFTER_ROUND,
     DEFAULT_COMPACTION_KEEP_RECENT,
     build_coding_workflow_instructions,
@@ -2483,6 +2484,9 @@ def detect_ungrounded_claims(
 
     called = set(tool_names_called)
 
+    if should_relax_fact_grounding(user_text) and not requires_external_grounding(user_text):
+        return None
+
     # 时效性事实任务必须通过年份/时态锚点校验，不能只看“是否调用过搜索工具”。
     temporal_nudge = detect_temporal_grounding_issue(
         reply_text,
@@ -2545,8 +2549,34 @@ def detect_ungrounded_claims(
 class ExitGovernorDecision:
     verdict: str  # "pass" | "nudge" | "grounding"
     reason: str
+    event: ControlEvent | None = None
+    # Deprecated compatibility field. Runtime should use event + renderer.
     nudge_text: str = ""
     judge_context: str = ""
+
+
+def _make_control_event(
+    *,
+    reason_code: str,
+    action: str,
+    user_text: str = "",
+    reply_text: str = "",
+    payload: dict[str, Any] | None = None,
+    audit_summary: str = "",
+    kind: str = "exit_governor",
+) -> ControlEvent:
+    data = dict(payload or {})
+    if user_text:
+        data.setdefault("user_text", user_text[:240])
+    if reply_text:
+        data.setdefault("reply_excerpt", reply_text[:240])
+    return ControlEvent(
+        kind=kind,
+        reason_code=reason_code,
+        action=action,
+        payload=data,
+        audit_summary=audit_summary,
+    )
 
 
 _PROMISE_COMMITMENT_RE = re.compile(
@@ -2566,6 +2596,17 @@ _INTERMEDIATE_REPLY_RE = re.compile(
     r"^\s*(<thought\b|<tools_used\b|<tool\b|web_search\s*→|fetch_url\s*→|search_social_media\s*→)",
     re.IGNORECASE,
 )
+_QQ_PERSONA_LEAK_RE = re.compile(
+    r"(项目运营|日程助理|CEO\s*日程|老板.{0,6}日程|会议排期|项目节奏|理理任务|"
+    r"任务进度|团队协作|内部协作|调研竞品|整理文档|排期|文档|聊聊工作|工作吧|"
+    r"工作场景|工作内容|强力辅助|数字助理|写代码|修\s*bug)",
+    re.IGNORECASE,
+)
+_QQ_PERSONA_REWRITE_TURN_RE = re.compile(
+    r"(回我|理我|在吗|在不|还在吗|说句话|求你|你是谁|你负责|你是干嘛|你是做什么|"
+    r"你能干嘛|你能做什么|你的职责)",
+    re.IGNORECASE,
+)
 
 _EXIT_NUDGE_ACTION = (
     "你的回复里包含“准备去做/已经做了”的执行语义，但当前没有足够执行证据。"
@@ -2583,6 +2624,12 @@ _EXIT_NUDGE_HISTORY_ASSERTION = (
 _EXIT_NUDGE_INTERMEDIATE = (
     "你输出的是中间过程（思考/工具摘要），还不是用户可读的最终答复。"
     "请继续执行：需要信息就继续调用工具；如果已完成，请直接给用户结论。"
+)
+_EXIT_NUDGE_QQ_PERSONA = (
+    "上一轮回复不适合 QQ 玩家社群。请直接重写给用户看的最终回复，不要解释这条系统指令。"
+    "当前身份：耀西，四缔游戏官方社群运营。面向玩家时只说玩家答疑、活动公告、反馈收集、"
+    "社群秩序维护、游戏相关沟通。不要主动提内部团队协作、老板安排、办公工具能力或代码能力。"
+    "回复要短、自然，像真人社群运营。"
 )
 
 _EXIT_REVIEW_PROMPT = """\
@@ -2680,6 +2727,25 @@ def detect_unverified_history_assertion(
     if "fetch_chat_history" in tool_names_called:
         return False
     return bool(_HISTORY_ASSERTION_USER_CHALLENGE_RE.search(user_text))
+
+
+def _detect_qq_persona_leak(reply_text: str, user_text: str) -> bool:
+    if not reply_text or not user_text:
+        return False
+    try:
+        from app.tenant.context import get_current_channel
+
+        current_channel = get_current_channel()
+    except Exception:
+        current_channel = None
+    if getattr(current_channel, "platform", "") != "qq":
+        return False
+    if not _QQ_PERSONA_LEAK_RE.search(reply_text):
+        return False
+    text = (user_text or "").strip()
+    if not (_QQ_PERSONA_REWRITE_TURN_RE.search(text) or len(text) <= 12):
+        return False
+    return not requires_external_grounding(text)
 
 
 async def _llm_exit_review_detailed(
@@ -2840,7 +2906,13 @@ async def evaluate_exit_governor(
         return ExitGovernorDecision(
             verdict="nudge",
             reason="deterministic.intermediate_payload",
-            nudge_text=_EXIT_NUDGE_INTERMEDIATE,
+            event=_make_control_event(
+                reason_code="deterministic.intermediate_payload",
+                action="produce_final_answer",
+                user_text=user_text,
+                reply_text=reply_text,
+                audit_summary=_EXIT_NUDGE_INTERMEDIATE,
+            ),
         )
 
     if detect_action_claims(
@@ -2852,7 +2924,26 @@ async def evaluate_exit_governor(
         return ExitGovernorDecision(
             verdict="nudge",
             reason="deterministic.action_claim",
-            nudge_text=_EXIT_NUDGE_ACTION,
+            event=_make_control_event(
+                reason_code="deterministic.action_claim",
+                action="complete_required_action",
+                user_text=user_text,
+                reply_text=reply_text,
+                audit_summary=_EXIT_NUDGE_ACTION,
+            ),
+        )
+
+    if _detect_qq_persona_leak(reply_text, user_text):
+        return ExitGovernorDecision(
+            verdict="nudge",
+            reason="deterministic.qq_persona",
+            event=_make_control_event(
+                reason_code="deterministic.qq_persona",
+                action="rewrite_for_channel",
+                user_text=user_text,
+                reply_text=reply_text,
+                audit_summary=_EXIT_NUDGE_QQ_PERSONA,
+            ),
         )
 
     grounding_nudge = detect_ungrounded_claims(
@@ -2865,14 +2956,26 @@ async def evaluate_exit_governor(
         return ExitGovernorDecision(
             verdict="grounding",
             reason="deterministic.grounding",
-            nudge_text=grounding_nudge,
+            event=_make_control_event(
+                reason_code="deterministic.grounding",
+                action="verify_evidence",
+                user_text=user_text,
+                reply_text=reply_text,
+                audit_summary=grounding_nudge,
+            ),
         )
 
     if detect_unverified_history_assertion(reply_text, user_text, tool_names_called):
         return ExitGovernorDecision(
             verdict="nudge",
             reason="deterministic.history_assertion",
-            nudge_text=_EXIT_NUDGE_HISTORY_ASSERTION,
+            event=_make_control_event(
+                reason_code="deterministic.history_assertion",
+                action="verify_history",
+                user_text=user_text,
+                reply_text=reply_text,
+                audit_summary=_EXIT_NUDGE_HISTORY_ASSERTION,
+            ),
         )
 
     if not enable_llm_judge:
@@ -2892,13 +2995,20 @@ async def evaluate_exit_governor(
             judge_context=judge_context,
         )
 
-    nudge_text = _EXIT_NUDGE_GROUNDING if verdict == "grounding" else _EXIT_NUDGE_ACTION
+    action = "verify_evidence" if verdict == "grounding" else "complete_required_action"
+    audit_text = _EXIT_NUDGE_GROUNDING if verdict == "grounding" else _EXIT_NUDGE_ACTION
     if judge_context:
-        nudge_text = f"{nudge_text}\n\n[中立裁判意见]\n{judge_context}"
+        audit_text = f"{audit_text}\n\n[中立裁判意见]\n{judge_context}"
     return ExitGovernorDecision(
         verdict=verdict,
         reason=f"llm.{verdict}",
-        nudge_text=nudge_text,
+        event=_make_control_event(
+            reason_code=f"llm.{verdict}",
+            action=action,
+            user_text=user_text,
+            reply_text=reply_text,
+            audit_summary=audit_text,
+        ),
         judge_context=judge_context,
     )
 
@@ -3212,7 +3322,13 @@ def _extract_persona_hint() -> str:
     截断到最后一个完整句子。如果太短或没有，返回空字符串。
     """
     try:
-        from app.tenant.context import get_current_tenant
+        from app.tenant.context import get_current_channel, get_current_tenant
+        current_channel = get_current_channel()
+        if getattr(current_channel, "platform", "") == "qq":
+            return (
+                "你的人设：你是四缔游戏（4D Games）官方社群运营，团队叫你“耀西”。"
+                "你面向玩家和社群成员，负责玩家答疑、活动/公告同步、反馈收集与社群秩序。\n\n"
+            )
         tenant = get_current_tenant()
         sp = tenant.llm_system_prompt or ""
         if not sp:

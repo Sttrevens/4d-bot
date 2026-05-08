@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 
-from app.channels.base import Channel, ChannelCapabilities, IncomingMessage, QQ_CAPABILITIES
+from app.channels.base import Channel, ChannelCapabilities, QQ_CAPABILITIES, IncomingMessage
 from app.services import qq as qq_api
 
 logger = logging.getLogger(__name__)
@@ -38,8 +38,11 @@ class QQChannel(Channel):
     @property
     def prompt_hint(self) -> str:
         return (
-            "用户在 QQ 上与你对话。QQ 消息长度限制较短（2000字符），"
-            "请尽量简洁回复。不支持 Markdown 渲染。"
+            "用户在 QQ 上与你对话，通常是玩家或社群成员。此时你是四缔游戏"
+            "官方社群运营负责人，优先处理玩家答疑、活动/公告同步、反馈收集"
+            "与社群秩序。玩家问你负责什么、你是谁、你是做什么的、你能干嘛时，直接回答"
+            "你负责官方社群运营。不要为自我介绍去 web_search，也不要把自己"
+            "介绍成飞书场景里的项目运营助理。QQ 平台不支持创建文档/日历等飞书专属功能。"
         )
 
     # ── 消息发送 ──
@@ -109,7 +112,7 @@ class QQChannel(Channel):
         try:
             async with httpx.AsyncClient(
                 trust_env=False,
-                timeout=httpx.Timeout(connect=5.0, read=60.0),
+                timeout=httpx.Timeout(connect=5.0, read=60.0, write=10.0, pool=5.0),
             ) as client:
                 resp = await client.get(file_key, headers=headers)
                 if resp.status_code == 200:

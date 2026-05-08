@@ -27,6 +27,44 @@ def test_conceptual_question_with_persona_names_does_not_trigger_grounding():
     )
 
 
+def test_self_role_question_does_not_require_public_source_grounding():
+    nudge = detect_ungrounded_claims(
+        "我是四缔游戏官方社群运营，主要负责玩家答疑、活动同步、反馈收集和社群秩序。",
+        "你负责干什么",
+        [],
+    )
+
+    assert nudge is None
+
+
+def test_self_role_casual_question_variant_does_not_require_public_source_grounding():
+    assert should_relax_fact_grounding("你是干嘛的")
+    assert not requires_external_grounding("你是干嘛的")
+    assert should_relax_fact_grounding("你是做什么的")
+    assert not requires_external_grounding("你是做什么的")
+
+    nudge = detect_ungrounded_claims(
+        "我是四缔游戏官方社群运营，平时主要负责玩家答疑、活动同步和反馈收集。",
+        "你是做什么的",
+        [],
+    )
+
+    assert nudge is None
+
+
+def test_casual_reply_request_does_not_trigger_grounding_nudge():
+    assert should_relax_fact_grounding("回我求你了")
+    assert not requires_external_grounding("回我求你了")
+
+    nudge = detect_ungrounded_claims(
+        "收到，收到！以后涉及事实性的调研或结论，我会严格按照证据账本规范来。",
+        "回我求你了",
+        [],
+    )
+
+    assert nudge is None
+
+
 def test_pricing_question_requires_grounding_even_without_search_verbs():
     user_text = "我用 codex 两天用了 20 刀周额度的 60%，是开 200 刀套餐还是充 extra 额度？"
     assert requires_external_grounding(user_text)
@@ -152,3 +190,16 @@ def test_first_party_context_turn_requires_context_read_before_summary():
     )
     assert nudge is not None
     assert "第一方上下文任务" in nudge
+
+
+def test_external_calendar_query_not_misclassified_as_first_party_context():
+    user_text = "帮我看下2026年苹果发布会日历和时间安排，给我最新消息"
+    nudge = detect_ungrounded_claims(
+        "我查到了安排。",
+        user_text,
+        ["web_search"],
+        action_outcomes=[("web_search", "→ query=apple event calendar 2024; 返回了 920 字符数据")],
+    )
+    assert nudge is not None
+    assert "第一方上下文任务" not in nudge
+    assert "2026" in nudge
