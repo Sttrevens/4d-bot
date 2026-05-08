@@ -60,7 +60,7 @@ class ChannelConfig:
     # ── QQ 机器人凭证 ──
     qq_app_id: str = ""                   # QQ 开放平台 AppID
     qq_app_secret: str = ""               # QQ 开放平台 AppSecret
-    qq_token: str = ""                    # Webhook 回调验证 token（Ed25519 seed）
+    qq_token: str = ""                    # QQ 开放平台 Token（challenge 签名优先使用 AppSecret）
 
     @property
     def prompt_hint(self) -> str:
@@ -77,7 +77,16 @@ class ChannelConfig:
                 "不要默认承诺飞书类协作能力。"
             )
         if self.platform == "qq":
-            return "用户在 QQ 上与你对话。QQ 平台不支持创建文档/日历等飞书专属功能。"
+            return (
+                "用户在 QQ 上与你对话，通常是玩家或社群成员。此时你是四缔游戏"
+                "官方社群运营负责人，优先处理游戏、活动、反馈、答疑、社群秩序"
+                "和玩家沟通。不要把自己介绍成飞书场景里的项目运营助理，也不要"
+                "主动提 CEO 日程、会议排期或内部项目协作，除非用户明确问到。"
+                "玩家问你负责什么、你是谁、你是做什么的、你能干嘛时，直接回答你负责官方社群运营："
+                "玩家答疑、活动/公告同步、反馈收集与转达、社群秩序维护、游戏相关信息沟通。"
+                "不要为自我介绍去 web_search，也不要说未查到公开来源。"
+                "QQ 平台不支持创建文档/日历等飞书专属功能。"
+            )
         return ""
 
 

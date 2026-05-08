@@ -24,6 +24,7 @@ from app.services.error_log import record_error
 from app.tenant.context import (
     get_current_tenant, set_current_tenant, set_current_channel, set_current_sender,
 )
+from app.tenant.config import ChannelConfig
 from app.tenant.registry import tenant_registry
 from app.webhook.base import (
     MessageDedup, UserStateManager, tuk, split_reply, strip_markdown,
@@ -42,12 +43,70 @@ _channel = QQChannel()
 _PROCESS_TIMEOUT = DEFAULT_PROCESS_TIMEOUT
 
 
+def _ensure_qq_channel_context(tenant) -> ChannelConfig:
+    """Bind the request to a QQ channel even if the local tenant lacks one."""
+    try:
+        from app.services.tenant_sync import hydrate_persisted_channels_for_tenant
+        ch = tenant.get_channel("qq")
+        if not (ch and ch.qq_app_id and ch.qq_app_secret):
+            hydrate_persisted_channels_for_tenant(tenant)
+    except Exception:
+        logger.debug("qq: channel overlay hydration failed", exc_info=True)
+
+    ch = tenant.get_channel("qq")
+    if not ch:
+        ch = ChannelConfig(channel_id=f"{tenant.tenant_id}-qq", platform="qq", enabled=True)
+        logger.warning("qq: tenant=%s has no configured QQ channel; using platform context only", tenant.tenant_id)
+
+    set_current_channel(ch)
+    return ch
+
+
+def _log_reply_preview(sender_id: str, chat_type: str, reply: str, chunks_count: int) -> None:
+    preview = " / ".join((reply or "").splitlines()).strip()
+    if len(preview) > 240:
+        preview = preview[:240] + "..."
+    logger.info(
+        "qq: reply to %s chat=%s chunks=%d text=%s",
+        sender_id[:8], chat_type, chunks_count, preview,
+    )
+
+
+def _log_send_result(
+    sender_id: str,
+    chat_type: str,
+    result: dict | None,
+    *,
+    chunk_index: int,
+    chunks_count: int,
+) -> None:
+    result = result or {}
+    status = result.get("status")
+    error = str(result.get("error") or "").strip()
+    if error:
+        if len(error) > 240:
+            error = error[:240] + "..."
+        logger.warning(
+            "qq: send failed to %s chat=%s chunk=%d/%d status=%s error=%s",
+            sender_id[:8], chat_type, chunk_index, chunks_count, status or "unknown", error,
+        )
+        return
+
+    message = result.get("message")
+    nested_message_id = message.get("id") if isinstance(message, dict) else ""
+    message_id = result.get("id") or result.get("message_id") or result.get("msg_id") or nested_message_id
+    logger.info(
+        "qq: send ok to %s chat=%s chunk=%d/%d status=%s message_id=%s",
+        sender_id[:8], chat_type, chunk_index, chunks_count, status or "ok", message_id or "-",
+    )
+
+
 # ── Ed25519 签名验证 ──
 
-def _ed25519_sign(token: str, event_ts: str, plain_token: str) -> str:
+def _ed25519_sign(secret: str, event_ts: str, plain_token: str) -> str:
     """QQ webhook Ed25519 签名。
 
-    1. token 重复填充到 32 字节作为 seed
+    1. AppSecret 重复填充到 32 字节作为 seed
     2. 用 seed 生成 Ed25519 私钥
     3. sign(event_ts + plain_token)
     4. 返回 hex 签名
@@ -59,10 +118,10 @@ def _ed25519_sign(token: str, event_ts: str, plain_token: str) -> str:
         return ""
 
     # seed: repeat token bytes to fill 32 bytes
-    token_bytes = token.encode("utf-8")
-    if not token_bytes:
+    secret_bytes = secret.encode("utf-8")
+    if not secret_bytes:
         return ""
-    seed = (token_bytes * (32 // len(token_bytes) + 1))[:32]
+    seed = (secret_bytes * (32 // len(secret_bytes) + 1))[:32]
 
     signing_key = SigningKey(seed)
     message = (event_ts + plain_token).encode("utf-8")
@@ -82,9 +141,7 @@ async def qq_callback(tenant_id: str, request: Request) -> Response:
         return Response("unknown tenant", status_code=404)
 
     set_current_tenant(tenant)
-    ch = tenant.get_channel("qq")
-    if ch:
-        set_current_channel(ch)
+    _ensure_qq_channel_context(tenant)
 
     try:
         body = await request.json()
@@ -111,16 +168,18 @@ async def qq_callback(tenant_id: str, request: Request) -> Response:
 
 def _handle_validation(body: dict, tenant) -> JSONResponse:
     """处理 QQ webhook 验证 challenge (op=13)。"""
+    _ensure_qq_channel_context(tenant)
     d = body.get("d", {})
     plain_token = d.get("plain_token", "")
     event_ts = d.get("event_ts", "")
 
-    _, _, qq_token = qq_api._get_credentials()
-    if not qq_token:
-        logger.warning("qq: missing qq_token for tenant=%s, cannot verify", tenant.tenant_id)
+    _, qq_app_secret, qq_token = qq_api._get_credentials()
+    signing_secret = qq_app_secret or qq_token
+    if not signing_secret:
+        logger.warning("qq: missing qq_app_secret for tenant=%s, cannot verify", tenant.tenant_id)
         return JSONResponse({"plain_token": plain_token, "signature": ""})
 
-    signature = _ed25519_sign(qq_token, event_ts, plain_token)
+    signature = _ed25519_sign(signing_secret, event_ts, plain_token)
     logger.info("qq: challenge verified for tenant=%s", tenant.tenant_id)
     return JSONResponse({"plain_token": plain_token, "signature": signature})
 
@@ -130,9 +189,7 @@ def _handle_validation(body: dict, tenant) -> JSONResponse:
 async def _dispatch_message(tenant, payload: dict) -> None:
     """异步分发消息到 LLM 处理。"""
     set_current_tenant(tenant)
-    ch = tenant.get_channel("qq")
-    if ch:
-        set_current_channel(ch)
+    _ensure_qq_channel_context(tenant)
 
     msg = _channel.parse_event(payload)
     if not msg:
@@ -214,7 +271,8 @@ async def _process_and_reply(
     qq_msg_id = parts[2] if len(parts) >= 3 else ""
 
     async def _send_progress(text: str) -> None:
-        await qq_api.reply_text(qq_chat_id, qq_msg_id, text, is_group=is_group)
+        result = await qq_api.reply_text(qq_chat_id, qq_msg_id, text, is_group=is_group)
+        _log_send_result(sender_id, chat_type, result, chunk_index=0, chunks_count=0)
 
     async def _do_work() -> str:
         sender_name = await _channel.get_user_name(sender_id)
@@ -242,8 +300,16 @@ async def _process_and_reply(
             # QQ 不渲染 markdown，发送前清洗；分段发送
             reply = strip_markdown(reply)
             chunks = split_reply(reply, max_len=_channel.max_message_length)
-            for chunk in chunks:
-                await qq_api.reply_text(qq_chat_id, qq_msg_id, chunk, is_group=is_group)
+            _log_reply_preview(sender_id, chat_type, reply, len(chunks))
+            for idx, chunk in enumerate(chunks, start=1):
+                result = await qq_api.reply_text(qq_chat_id, qq_msg_id, chunk, is_group=is_group)
+                _log_send_result(
+                    sender_id,
+                    chat_type,
+                    result,
+                    chunk_index=idx,
+                    chunks_count=len(chunks),
+                )
                 if len(chunks) > 1:
                     await asyncio.sleep(0.5)
 
@@ -252,11 +318,12 @@ async def _process_and_reply(
             record_error("timeout", f"QQ 消息处理超时 sender={sender_id} text={user_text[:200]}")
             try:
                 from app.services.base_agent import build_timeout_message
-                await qq_api.reply_text(
+                result = await qq_api.reply_text(
                     qq_chat_id, qq_msg_id,
                     build_timeout_message(),
                     is_group=is_group,
                 )
+                _log_send_result(sender_id, chat_type, result, chunk_index=1, chunks_count=1)
             except Exception:
                 logger.exception("qq: timeout reply failed")
 
@@ -264,10 +331,11 @@ async def _process_and_reply(
             logger.exception("qq: failed to process message")
             record_error("unhandled", f"QQ 消息处理异常 sender={sender_id}", exc=exc)
             try:
-                await qq_api.reply_text(
+                result = await qq_api.reply_text(
                     qq_chat_id, qq_msg_id,
                     "不好意思出了点小状况~ 你再发一遍试试？",
                     is_group=is_group,
                 )
+                _log_send_result(sender_id, chat_type, result, chunk_index=1, chunks_count=1)
             except Exception:
                 logger.exception("qq: error reply failed")

@@ -87,6 +87,51 @@ def test_disclosure_policy_forbids_internal_enumeration():
     assert "用户问你能做什么时，只用高层能力描述回答" in prompt
 
 
+def test_disclosure_policy_forbids_internal_ops_escalation_to_customer():
+    from app.services.prompt_composer import PromptComposeContext, compose_prompt
+
+    prompt = compose_prompt(
+        PromptComposeContext(
+            time_context="当前时间：2026年04月26日 星期日 10:00（Asia/Shanghai）",
+            tenant_identity="你是微信客服 bot。",
+            user_text="帮我通知Steven合并bot-fix",
+            task_type="normal",
+            mode="safe",
+            platform="wecom_kf",
+            platform_prompt_hint="用户在微信客服上与你对话。",
+            actual_tool_names={"notify_admin", "request_provision", "set_reminder"},
+            capability_profile="你能通知管理员，也能提交开通申请。",
+            is_admin=False,
+        )
+    )
+
+    assert "不要把 bot-fix、PR、CI/CD" in prompt
+    assert "不能把提醒说成私信通知" in prompt
+
+
+def test_grounding_policy_for_reports_requires_current_date_and_evidence_labels():
+    from app.services.prompt_composer import PromptComposeContext, compose_prompt
+
+    prompt = compose_prompt(
+        PromptComposeContext(
+            time_context="当前时间：2026年04月26日 星期日 10:00（Asia/Shanghai）",
+            tenant_identity="你是微信客服 bot。",
+            user_text="生成一份PDF报告",
+            task_type="research",
+            mode="safe",
+            platform="wecom_kf",
+            platform_prompt_hint="用户在微信客服上与你对话。",
+            actual_tool_names={"web_search", "export_file"},
+            capability_profile="你能联网查资料，也能导出文件。",
+            is_admin=False,
+        )
+    )
+
+    assert "报告日期必须使用运行时上下文里的当前日期" in prompt
+    assert "事实 / 推断 / 待核验" in prompt
+    assert "没有来源 URL 和发布时间" in prompt
+
+
 def test_capability_profile_uses_user_facing_language():
     from app.services.prompt_composer import build_capability_profile
 
@@ -229,6 +274,67 @@ async def test_channel_prompt_hint_is_injected():
 
 
 @pytest.mark.asyncio
+async def test_qq_role_question_prompt_uses_player_facing_responsibilities():
+    from app.services.base_agent import _build_system_prompt
+
+    tenant = TenantConfig(
+        tenant_id="pm-bot",
+        name="耀西",
+        platform="feishu",
+        llm_api_key="test-key",
+        llm_system_prompt=(
+            "你是四缔游戏（4D Games）的项目运营与日程助理，团队叫你“耀西”。"
+            "你负责帮团队梳理项目节奏、会议安排、任务落地和 CEO 日程相关的协作。"
+        ),
+        memory_context_enabled=False,
+        tools_enabled=["web_search"],
+    )
+    set_current_tenant(tenant)
+    set_current_channel(ChannelConfig(platform="qq"))
+    set_current_sender("u_test", "Alice")
+
+    with patch("app.services.base_agent.user_registry.summary", return_value=""), \
+         patch("app.services.base_agent.bot_planner.get_active_plans_context", return_value=""), \
+         patch("app.services.base_agent.bot_memory.build_memory_context", new=AsyncMock(return_value="")), \
+         patch("app.services.base_agent._build_admin_context", return_value=""), \
+         patch("app.services.base_agent._build_deploy_quota_context", return_value=""):
+        prompt = await _build_system_prompt(
+            mode="safe",
+            sender_id="u_test",
+            sender_name="Alice",
+            user_text="你是做什么的",
+            actual_tool_names={"web_search"},
+        )
+
+    assert "玩家问你是做什么的" in prompt
+    assert "玩家问你负责什么" in prompt
+    assert "直接回答你负责官方社群运营" in prompt
+    assert "不要为自我介绍去 web_search" in prompt
+
+
+def test_qq_progress_persona_hint_does_not_leak_feishu_role():
+    from app.services.base_agent import _extract_persona_hint
+
+    tenant = TenantConfig(
+        tenant_id="pm-bot",
+        name="耀西",
+        platform="feishu",
+        llm_system_prompt=(
+            "你是四缔游戏（4D Games）的项目运营与日程助理，团队叫你“耀西”。"
+            "你负责帮团队梳理项目节奏、会议安排、任务落地和 CEO 日程相关的协作。"
+        ),
+    )
+    set_current_tenant(tenant)
+    set_current_channel(ChannelConfig(platform="qq"))
+
+    hint = _extract_persona_hint()
+
+    assert "官方社群运营" in hint
+    assert "项目运营与日程助理" not in hint
+    assert "CEO 日程" not in hint
+
+
+@pytest.mark.asyncio
 async def test_system_prompt_ignores_loaded_tools_for_neutral_turn():
     from app.services.base_agent import _build_system_prompt
 
@@ -340,15 +446,54 @@ def test_channel_config_exposes_platform_prompt_hint(platform: str, expected: st
     assert expected in hint
 
 
+def test_qq_prompt_hint_adapts_yoshi_to_player_community_context():
+    hint = ChannelConfig(platform="qq").prompt_hint
+
+    assert "玩家" in hint
+    assert "官方社群运营" in hint
+    assert "项目运营助理" in hint
+    assert "CEO 日程" in hint
+
+
+def test_qq_identity_override_follows_feishu_tenant_identity_in_role_section():
+    from app.services.prompt_composer import PromptComposeContext, compose_prompt
+
+    prompt = compose_prompt(
+        PromptComposeContext(
+            time_context="当前时间：2026年04月28日 Tuesday 15:00（Asia/Shanghai）",
+            tenant_identity=(
+                "你是四缔游戏（4D Games）的项目运营与日程助理，团队叫你“耀西”。"
+                "你负责帮团队梳理项目节奏、会议安排、任务落地和 CEO 日程相关的协作。"
+            ),
+            user_text="你是做什么的",
+            task_type="normal",
+            mode="safe",
+            platform="qq",
+            platform_prompt_hint=ChannelConfig(platform="qq").prompt_hint,
+            actual_tool_names={"web_search"},
+            capability_profile="你在 QQ 场景里对话，以轻量聊天和信息响应为主",
+            is_admin=False,
+        )
+    )
+
+    assert "项目运营与日程助理" in prompt
+    assert "当前是 QQ 玩家社群场景" in prompt
+    assert "玩家问你是做什么的" in prompt
+    assert "玩家问你是干嘛的" in prompt
+    assert "必须回答你是四缔游戏官方社群运营" in prompt
+    assert prompt.index("项目运营与日程助理") < prompt.index("当前是 QQ 玩家社群场景")
+
+
 @pytest.mark.parametrize(
     ("tenant_id", "must_contain"),
     [
-        ("my-feishu-bot", "技术助手"),
-        ("my-wecom-bot", "工作助手"),
-        ("my-kf-bot", "AI 助手"),
+        ("code-bot", "高梦"),
+        ("pm-bot", "耀西"),
+        ("kf-steven-ai", "Steven"),
+        ("kf-leadgen-demo", "社交媒体调研"),
     ],
 )
-def test_example_tenant_prompts_keep_identity_and_remove_risky_copy(tenant_id: str, must_contain: str):
+def test_tenant_prompts_keep_identity_but_remove_risky_copy(tenant_id: str, must_contain: str):
     tenant_prompt = _load_tenant_prompt(tenant_id)
 
     assert must_contain in tenant_prompt
@@ -365,7 +510,10 @@ def test_example_tenant_prompts_keep_identity_and_remove_risky_copy(tenant_id: s
 
 
 def _load_tenant_prompt(tenant_id: str) -> str:
-    tenants = json.loads(Path("tenants.example.json").read_text(encoding="utf-8"))["tenants"]
+    tenants_path = Path("tenants.json")
+    if not tenants_path.exists():
+        pytest.skip("tenant prompt copy check needs production tenants.json")
+    tenants = json.loads(tenants_path.read_text(encoding="utf-8"))["tenants"]
     for item in tenants:
         if item["tenant_id"] == tenant_id:
             return item.get("llm_system_prompt", "")

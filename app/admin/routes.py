@@ -1921,15 +1921,19 @@ def _persist_channels(tenant_id: str, channels: list):
         written = False
         cfg_key = f"tenant_cfg:{tenant_id}"
         raw = redis.execute("GET", cfg_key)
-        if raw:
-            try:
-                cfg = json.loads(raw)
-                cfg["channels"] = ch_dicts
-                redis.execute("SET", cfg_key, json.dumps(cfg, ensure_ascii=False))
-                logger.info("Persisted channels for %s to Redis tenant_cfg", tenant_id)
-                written = True
-            except Exception:
-                logger.warning("Failed to persist channels to Redis tenant_cfg for %s", tenant_id, exc_info=True)
+        try:
+            cfg = json.loads(raw) if raw else {"tenant_id": tenant_id, "_overlay_only": True}
+            if not isinstance(cfg, dict):
+                cfg = {"tenant_id": tenant_id, "_overlay_only": True}
+            cfg.setdefault("tenant_id", tenant_id)
+            if not raw:
+                cfg["_overlay_only"] = True
+            cfg["channels"] = ch_dicts
+            redis.execute("SET", cfg_key, json.dumps(cfg, ensure_ascii=False))
+            logger.info("Persisted channels for %s to Redis tenant_cfg", tenant_id)
+            written = True
+        except Exception:
+            logger.warning("Failed to persist channels to Redis tenant_cfg for %s", tenant_id, exc_info=True)
         if not written:
             # tenant_cfg 不存在：更新或创建 admin:tenant 元数据
             meta_key = f"admin:tenant:{tenant_id}"

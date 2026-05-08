@@ -4,7 +4,10 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.harness.control_plane import render_control_event
 from app.services.base_agent import evaluate_exit_governor
+from app.tenant.config import ChannelConfig, TenantConfig
+from app.tenant.context import set_current_channel, set_current_tenant
 
 
 class _FakeModels:
@@ -58,7 +61,9 @@ async def test_exit_governor_fallback_nudges_pending_action_when_judge_unparseab
     )
     assert decision.verdict == "nudge"
     assert decision.reason == "llm.nudge"
-    assert "中立裁判意见" in decision.nudge_text
+    assert decision.event is not None
+    rendered = render_control_event(decision.event, provider="openai")
+    assert "中立裁判" not in rendered["content"]
 
 
 @pytest.mark.asyncio
@@ -81,7 +86,10 @@ async def test_exit_governor_accepts_structured_judge_nudge_with_context():
     )
     assert decision.verdict == "nudge"
     assert decision.reason == "llm.nudge"
-    assert "behavioral=3" in decision.nudge_text
+    assert decision.event is not None
+    assert "behavioral=3" in decision.event.audit_summary
+    rendered = render_control_event(decision.event, provider="openai")
+    assert "behavioral=3" not in rendered["content"]
 
 
 @pytest.mark.asyncio
@@ -118,3 +126,83 @@ async def test_exit_governor_does_not_re_nudge_completed_turn_when_judge_unparse
         enable_llm_judge=True,
     )
     assert decision.verdict == "pass"
+
+
+@pytest.mark.asyncio
+async def test_exit_governor_nudges_qq_feishu_persona_leak_before_grounding():
+    tenant = TenantConfig(
+        tenant_id="pm-bot",
+        platform="feishu",
+        channels=[
+            ChannelConfig(channel_id="pm-bot-feishu", platform="feishu"),
+            ChannelConfig(channel_id="pm-bot-qq", platform="qq"),
+        ],
+    )
+    set_current_tenant(tenant)
+    set_current_channel(tenant.get_channel("qq"))
+
+    decision = await evaluate_exit_governor(
+        reply_text=(
+            "在呢在呢！我是耀西，有什么我能帮你的？"
+            "不管是想对对日程、理理任务，还是有啥项目上的事要我帮忙查查，你直说就行。"
+        ),
+        user_text="回我求你了",
+        tool_names_called=[],
+        action_outcomes=[],
+        gemini_client=None,
+        enable_llm_judge=False,
+    )
+
+    assert decision.verdict == "nudge"
+    assert decision.reason == "deterministic.qq_persona"
+    assert decision.event is not None
+    assert decision.nudge_text == ""
+    rendered = render_control_event(
+        decision.event,
+        provider="openai",
+        channel_platform="qq",
+    )
+    assert "官方社群运营" in rendered["content"]
+    assert "证据" not in rendered["content"]
+    assert "grounding" not in rendered["content"].lower()
+
+
+@pytest.mark.asyncio
+async def test_exit_governor_rewrites_qq_work_scene_deflection_for_short_flirty_turn():
+    set_current_channel(ChannelConfig(platform="qq"))
+
+    decision = await evaluate_exit_governor(
+        reply_text="这种称呼不太合适哦，我们还是聊聊工作吧。今天有什么排期或文档需要我帮忙吗？",
+        user_text="老婆",
+        tool_names_called=[],
+        action_outcomes=[],
+        gemini_client=None,
+        enable_llm_judge=False,
+    )
+
+    assert decision.verdict == "nudge"
+    assert decision.reason == "deterministic.qq_persona"
+    assert decision.event is not None
+    assert decision.event.action == "rewrite_for_channel"
+
+
+@pytest.mark.asyncio
+async def test_exit_governor_grounding_returns_structured_control_event():
+    decision = await evaluate_exit_governor(
+        reply_text="执行董事：张三，监事：李四，总经理：王五。",
+        user_text="这家公司现在的管理层有哪些人？",
+        tool_names_called=[],
+        action_outcomes=[],
+        gemini_client=None,
+        enable_llm_judge=False,
+    )
+
+    assert decision.verdict == "grounding"
+    assert decision.reason == "deterministic.grounding"
+    assert decision.event is not None
+    assert decision.event.kind == "exit_governor"
+    assert decision.event.reason_code == "deterministic.grounding"
+    assert decision.nudge_text == ""
+    rendered = render_control_event(decision.event, provider="openai")
+    assert "证据账本" not in rendered["content"]
+    assert "grounding" not in rendered["content"].lower()

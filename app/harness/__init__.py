@@ -26,6 +26,16 @@ from app.harness.common_knowledge import (
     classify_common_knowledge_turn,
     should_relax_common_knowledge_grounding,
 )
+from app.harness.control_plane import (
+    ControlDecision,
+    ControlEvent,
+    PublicOutputDecision,
+    append_openai_control_event,
+    has_internal_control_leak,
+    render_control_event,
+    render_control_text,
+    sanitize_public_reply,
+)
 from app.harness.grounding import (
     detect_evidence_contract_gap,
     build_grounding_nudge,
@@ -111,6 +121,14 @@ __all__ = [
     "build_common_knowledge_search_block_message",
     "classify_common_knowledge_turn",
     "should_relax_common_knowledge_grounding",
+    "ControlDecision",
+    "ControlEvent",
+    "PublicOutputDecision",
+    "append_openai_control_event",
+    "has_internal_control_leak",
+    "render_control_event",
+    "render_control_text",
+    "sanitize_public_reply",
     "build_grounding_nudge",
     "detect_evidence_contract_gap",
     "build_temporal_grounding_nudge",

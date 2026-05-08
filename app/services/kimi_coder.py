@@ -24,7 +24,14 @@ from app.services.kimi import _is_k2_model, _extra_body
 from app.services.error_log import record_error
 
 # ── 从 base_agent 导入共享基础设施 ──
-from app.harness import append_openai_inbox_messages, should_compact_history, should_nudge_unmatched_reads
+from app.harness import (
+    ControlEvent,
+    append_openai_control_event,
+    append_openai_inbox_messages,
+    sanitize_public_reply,
+    should_compact_history,
+    should_nudge_unmatched_reads,
+)
 from app.services.base_agent import (
     # 工具注册表
     ALL_TOOL_MAP,
@@ -72,8 +79,10 @@ async def _final_call(client: AsyncOpenAI, messages: list[dict]) -> str:
 
     不传 tools 参数，模型自然无法再调工具，无需注入假 user 消息。
     """
-    from app.tenant.context import get_current_tenant
+    from app.tenant.context import get_current_channel, get_current_tenant
     tenant = get_current_tenant()
+    current_channel = get_current_channel()
+    channel_platform = current_channel.platform if current_channel else tenant.platform
     try:
         kwargs: dict = dict(
             model=tenant.llm_model or settings.kimi.model,
@@ -197,6 +206,7 @@ async def handle_message(
     call_log: list[str] = []  # 记录工具调用名，用于空转检测
     tool_names_called: list[str] = []  # 记录实际调用的工具名，用于记忆系统
     _nudged = False  # 标记是否已追加过 unfulfilled promise 催促
+    _public_scrub_nudged = False
 
     _model = model_override or tenant.llm_model or settings.kimi.model
     _is_k2 = "k2" in _model.lower()
@@ -268,14 +278,38 @@ async def handle_message(
                     "read-without-write at round %d (tools: %s), nudging",
                     round_num + 1, tool_names_called,
                 )
-                messages.append({"role": "assistant", "content": reply_text})
-                messages.append({
-                    "role": "user",
-                    "content": "你已经读取了内容但还没有执行修改。请调用对应的写入工具（如 write_file）完成操作，不要只是描述你会怎么改。",
-                })
+                append_openai_control_event(
+                    messages,
+                    ControlEvent(
+                        kind="unmatched_read",
+                        reason_code="read_without_write",
+                        action="write_after_read",
+                        audit_summary=f"tools={tool_names_called[-6:]}",
+                    ),
+                    channel_platform=channel_platform,
+                    available_tools=_loaded_tool_names,
+                )
                 continue
 
-            reply = _strip_hallucinated_code_blocks(_strip_degenerate_repetition(reply_text))
+            candidate_reply = _strip_degenerate_repetition(reply_text)
+            public_decision = sanitize_public_reply(candidate_reply, channel_platform)
+            if public_decision.should_retry and not _public_scrub_nudged:
+                _public_scrub_nudged = True
+                logger.warning("kimi public output scrub requested: %s", public_decision.audit_reason)
+                append_openai_control_event(
+                    messages,
+                    ControlEvent(
+                        kind="public_output_scrub",
+                        reason_code=public_decision.audit_reason,
+                        action="rewrite_public_reply",
+                        audit_summary=candidate_reply[:240],
+                    ),
+                    channel_platform=channel_platform,
+                    available_tools=_loaded_tool_names,
+                )
+                continue
+
+            reply = _strip_hallucinated_code_blocks(public_decision.text)
             _trigger_memory(sender_id, sender_name, user_text, reply, tool_names_called, call_log)
             return reply
 

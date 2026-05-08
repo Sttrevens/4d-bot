@@ -26,11 +26,105 @@ logger = logging.getLogger(__name__)
 
 _QUEUE_KEY = "tenant_sync:queue"
 _CFG_PREFIX = "tenant_cfg:"
+_ADMIN_PREFIX = "admin:tenant:"
 _MAX_QUEUE_LEN = 100
 _POLL_INTERVAL = 60  # seconds (was 15→60; saves ~4320 cmds/day per container on Upstash free tier)
 
 # 每个容器维护自己的 last_processed_ts
 _last_processed_ts: float = 0.0
+
+
+def _scan_keys(prefix: str) -> list[str]:
+    """Return Redis keys for a prefix using SCAN, bounded for Upstash safety."""
+    keys: list[str] = []
+    cursor = "0"
+    for _ in range(50):
+        result = redis.execute("SCAN", cursor, "MATCH", f"{prefix}*", "COUNT", "50")
+        if not result or not isinstance(result, list) or len(result) < 2:
+            break
+        cursor = str(result[0])
+        batch = result[1] if isinstance(result[1], list) else []
+        keys.extend(k for k in batch if isinstance(k, str))
+        if cursor == "0":
+            break
+    return keys
+
+
+def _load_json_key(key: str) -> dict:
+    raw = redis.execute("GET", key)
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _merge_channel_overlay(tenant, channels_raw: object) -> bool:
+    """Merge persisted channel overlays into a local tenants.json tenant."""
+    if not isinstance(channels_raw, list) or not channels_raw:
+        return False
+
+    from dataclasses import asdict
+    from app.tenant.config import ChannelConfig
+
+    ch_fields = {f.name for f in ChannelConfig.__dataclass_fields__.values()}
+
+    def coerce(item) -> ChannelConfig | None:
+        if isinstance(item, ChannelConfig):
+            ch = item
+        elif isinstance(item, dict):
+            filtered = {k: v for k, v in item.items() if k in ch_fields}
+            if not filtered.get("platform"):
+                return None
+            if not filtered.get("channel_id"):
+                filtered["channel_id"] = f"{tenant.tenant_id}-{filtered['platform']}"
+            ch = ChannelConfig(**filtered)
+        else:
+            return None
+        if not ch.channel_id:
+            ch.channel_id = f"{tenant.tenant_id}-{ch.platform}"
+        return ch
+
+    base_channels = list(getattr(tenant, "channels", []) or [])
+    if not base_channels:
+        base_channels = [tenant._build_primary_channel()]
+
+    before = [asdict(ch) for ch in base_channels]
+    by_id = {ch.channel_id: ch for ch in base_channels}
+    order = [ch.channel_id for ch in base_channels]
+
+    for raw in channels_raw:
+        ch = coerce(raw)
+        if not ch:
+            continue
+        if ch.channel_id not in by_id:
+            order.append(ch.channel_id)
+        by_id[ch.channel_id] = ch
+
+    merged = [by_id[channel_id] for channel_id in order if channel_id in by_id]
+    after = [asdict(ch) for ch in merged]
+    if before == after:
+        return False
+
+    tenant.channels = merged
+    return True
+
+
+def hydrate_persisted_channels_for_tenant(tenant) -> bool:
+    """Load persisted channel overlays for an existing local tenant."""
+    if not redis.available() or not tenant or not getattr(tenant, "tenant_id", ""):
+        return False
+
+    tid = tenant.tenant_id
+    merged = False
+    for key in (f"{_CFG_PREFIX}{tid}", f"{_ADMIN_PREFIX}{tid}"):
+        config = _load_json_key(key)
+        if config and _merge_channel_overlay(tenant, config.get("channels")):
+            merged = True
+            logger.info("tenant_sync: merged persisted channels for local tenant %s from %s", tid, key)
+    return merged
 
 
 # =====================================================================
@@ -129,35 +223,41 @@ def load_persisted_tenants() -> int:
 
     loaded = 0
     try:
-        cursor = "0"
-        for _ in range(50):
-            result = redis.execute("SCAN", cursor, "MATCH", f"{_CFG_PREFIX}*", "COUNT", "50")
-            if not result or not isinstance(result, list) or len(result) < 2:
-                break
-            cursor = str(result[0])
-            keys = result[1] if isinstance(result[1], list) else []
-            for key in keys:
-                tid = key.replace(_CFG_PREFIX, "", 1) if isinstance(key, str) else ""
-                if not tid:
-                    continue
+        for key in _scan_keys(_CFG_PREFIX):
+            tid = key.replace(_CFG_PREFIX, "", 1)
+            if not tid:
+                continue
 
-                # 跳过本地已有的租户（tenants.json 里的优先）
-                if tenant_registry.get(tid):
-                    continue
+            config = _load_json_key(key)
+            if not config:
+                continue
 
-                raw = redis.execute("GET", f"{_CFG_PREFIX}{tid}")
-                if not raw:
-                    continue
-                try:
-                    config = json.loads(raw)
-                    tenant_registry.register_from_dict(config)
+            existing = tenant_registry.get(tid)
+            if existing:
+                if _merge_channel_overlay(existing, config.get("channels")):
                     loaded += 1
-                    logger.info("tenant_sync: loaded persisted tenant %s from Redis", tid)
-                except Exception as e:
-                    logger.warning("tenant_sync: failed to load %s: %s", tid, e)
+                    logger.info("tenant_sync: merged persisted channels for local tenant %s", tid)
+                continue
 
-            if cursor == "0":
-                break
+            if config.get("_overlay_only"):
+                continue
+
+            try:
+                tenant_registry.register_from_dict(config)
+                loaded += 1
+                logger.info("tenant_sync: loaded persisted tenant %s from Redis", tid)
+            except Exception as e:
+                logger.warning("tenant_sync: failed to load %s: %s", tid, e)
+
+        for key in _scan_keys(_ADMIN_PREFIX):
+            tid = key.replace(_ADMIN_PREFIX, "", 1)
+            tenant = tenant_registry.get(tid)
+            if not tenant:
+                continue
+            config = _load_json_key(key)
+            if config and _merge_channel_overlay(tenant, config.get("channels")):
+                loaded += 1
+                logger.info("tenant_sync: merged admin channel overlay for local tenant %s", tid)
     except Exception:
         logger.warning("tenant_sync: load_persisted_tenants failed", exc_info=True)
 

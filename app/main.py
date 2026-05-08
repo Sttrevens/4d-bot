@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json as _json
 import logging
 
 import uvicorn
@@ -31,6 +32,11 @@ if _log_dir:
 # ── 内存日志环形缓冲区（dashboard 实时读取，彻底绕开文件系统）──
 # 20000 条 × ~200 字节/条 ≈ 4MB，可存约 8-12 小时的日志（排除了 health check 噪音）
 LOG_BUFFER: _deque = _deque(maxlen=20000)
+_LOG_CACHE_TTL_SECONDS = 120
+_LOG_PUSH_INTERVAL = 30
+_LOG_PUSH_LINES = 1000
+_LOG_CACHE_PAYLOAD_MAX_BYTES = int(_os.getenv("LOG_CACHE_PAYLOAD_MAX_BYTES", "180000"))
+_LOG_PUSH_BATCH_SIZE = int(_os.getenv("LOG_PUSH_BATCH_SIZE", "3"))
 
 # health check 等高频噪音 pattern，只排除在 buffer 外（文件/console 照常写）
 _BUFFER_SKIP_PATTERNS = (
@@ -60,6 +66,135 @@ _buffer_handler.setFormatter(
     logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 )
 _buffer_handler.setLevel(logging.INFO)
+
+
+def _read_tenant_ids_from_file(path: str) -> set[str]:
+    if not path:
+        return set()
+    if not _os.path.exists(path):
+        return set()
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = _json.load(fh)
+    except Exception:
+        logger.debug("log cache: failed to read tenant config %s", path, exc_info=True)
+        return set()
+
+    tenants = data.get("tenants", [data]) if isinstance(data, dict) else data
+    if not isinstance(tenants, list):
+        return set()
+    ids: set[str] = set()
+    for tenant in tenants:
+        if not isinstance(tenant, dict):
+            continue
+        tid = str(tenant.get("tenant_id") or "").strip()
+        if tid:
+            ids.add(tid)
+    return ids
+
+
+def _local_log_cache_tenant_ids(registry_tenant_ids: list[str]) -> list[str]:
+    """Return tenant ids physically mounted in this container for log cache writes.
+
+    tenant_registry may contain Redis hot-loaded tenants from other containers. The
+    mounted tenants.json is the physical ownership source of truth for log cache
+    targets. If no tenants.json exists, keep the prior single-process behavior.
+    """
+    local_ids: set[str] = set()
+    seen_paths: set[str] = set()
+    for path in (_os.getenv("TENANTS_CONFIG_PATH", "").strip(), "/app/tenants.json"):
+        if not path or path in seen_paths:
+            continue
+        seen_paths.add(path)
+        local_ids.update(_read_tenant_ids_from_file(path))
+
+    cleaned_registry_ids = [tid for tid in registry_tenant_ids if tid]
+    if not local_ids:
+        return cleaned_registry_ids
+
+    local_in_registry = [tid for tid in cleaned_registry_ids if tid in local_ids]
+    return local_in_registry or sorted(local_ids)
+
+
+def _utf8_tail(text: str, max_bytes: int) -> str:
+    data = text.encode("utf-8")
+    if len(data) <= max_bytes:
+        return text
+    return data[-max(0, max_bytes):].decode("utf-8", errors="ignore")
+
+
+def _log_cache_payload(
+    lines: list[str],
+    *,
+    now: float,
+    max_payload_bytes: int,
+    original_count: int,
+) -> str:
+    selected = list(lines)
+    truncated = original_count > len(selected)
+    while True:
+        payload = {
+            "lines": selected,
+            "ts": now,
+            "count": len(selected),
+            "raw_count": original_count,
+            "truncated": truncated,
+        }
+        raw = _json.dumps(payload, ensure_ascii=False)
+        if len(raw.encode("utf-8")) <= max_payload_bytes:
+            return raw
+        if len(selected) > 1:
+            selected = selected[1:]
+            truncated = True
+            continue
+        if selected:
+            selected = [_utf8_tail(selected[-1], max_payload_bytes // 2)]
+            truncated = True
+            continue
+        return raw
+
+
+def _filter_log_cache_lines(log_lines: list[str], tenant_id: str, max_lines: int) -> list[str]:
+    tail = log_lines[-max_lines * 2:] if len(log_lines) > max_lines * 2 else log_lines
+    filtered = [
+        line for line in tail
+        if f"tenant={tenant_id}" in line or "tenant=" not in line
+    ]
+    return filtered[-max_lines:]
+
+
+def _build_log_cache_commands(
+    log_lines: list[str],
+    tenant_ids: list[str],
+    *,
+    now: float | None = None,
+    max_lines: int | None = None,
+    max_payload_bytes: int | None = None,
+) -> list[list[str]]:
+    """Build Redis SET commands for dashboard log cache snapshots."""
+    if not log_lines or not tenant_ids:
+        return []
+    import time as _t
+
+    max_lines = max(1, max_lines or _LOG_PUSH_LINES)
+    max_payload_bytes = max(512, max_payload_bytes or _LOG_CACHE_PAYLOAD_MAX_BYTES)
+    ts = _t.time() if now is None else now
+    commands: list[list[str]] = []
+    for tid in tenant_ids:
+        filtered = _filter_log_cache_lines(log_lines, tid, max_lines)
+        payload = _log_cache_payload(
+            filtered,
+            now=ts,
+            max_payload_bytes=max_payload_bytes,
+            original_count=len(filtered),
+        )
+        commands.append(["SET", f"logs:{tid}", payload, "EX", str(_LOG_CACHE_TTL_SECONDS)])
+    return commands
+
+
+def _chunk_log_cache_commands(commands: list[list[str]], batch_size: int | None = None) -> list[list[list[str]]]:
+    size = max(1, batch_size or _LOG_PUSH_BATCH_SIZE)
+    return [commands[i:i + size] for i in range(0, len(commands), size)]
 
 # ── 预启动日志（uvicorn 启动前的 import-time 日志用 basicConfig 输出到 stderr）──
 logging.basicConfig(
@@ -332,7 +467,7 @@ async def health_diagnostics():
 
     # 1) Redis 连通性
     try:
-        from app.services.redis_client import redis
+        from app.services import redis_client as redis
         if redis.available():
             pong = redis.execute("PING")
             checks["checks"]["redis"] = {"status": "ok", "response": str(pong)}
@@ -615,13 +750,8 @@ async def _log_push_loop() -> None:
     每个容器只推自己加载的租户的日志（所有本容器租户共享同一个 LOG_BUFFER，
     因为一个容器只有一个 uvicorn 进程）。
     """
-    import json as _json
-    import time as _t
     from app.services import redis_client as redis
     from app.tenant.registry import tenant_registry
-
-    _PUSH_INTERVAL = 30  # 秒
-    _PUSH_LINES = 1000   # 与 dashboard Lines 下拉上限一致，避免跨容器刷新只剩短尾巴
 
     await asyncio.sleep(15)  # 等启动完成，LOG_BUFFER 有内容
 
@@ -630,33 +760,13 @@ async def _log_push_loop() -> None:
             if redis.available() and LOG_BUFFER:
                 buf_list = list(LOG_BUFFER)
                 all_tids = list(tenant_registry.all_tenants().keys())
-
-                if all_tids:
-                    cmds = []
-                    if len(all_tids) == 1:
-                        # 单租户容器：所有日志都属于这个租户，不需要过滤
-                        tail = buf_list[-_PUSH_LINES:] if len(buf_list) > _PUSH_LINES else buf_list
-                        payload = _json.dumps({
-                            "lines": tail, "ts": _t.time(), "count": len(tail),
-                        }, ensure_ascii=False)
-                        cmds.append(["SET", f"logs:{all_tids[0]}", payload, "EX", "120"])
-                    else:
-                        # 多租户共容器：按 tenant= 标签过滤，避免日志串租户
-                        # 没有 tenant= 标签的系统日志（startup/scheduler 等）放入所有租户
-                        for tid in all_tids:
-                            filtered = [
-                                line for line in buf_list[-_PUSH_LINES * 2:]
-                                if f"tenant={tid}" in line
-                                or "tenant=" not in line  # 系统日志保留
-                            ][-_PUSH_LINES:]
-                            payload = _json.dumps({
-                                "lines": filtered, "ts": _t.time(), "count": len(filtered),
-                            }, ensure_ascii=False)
-                            cmds.append(["SET", f"logs:{tid}", payload, "EX", "120"])
-                    redis.pipeline(cmds)
+                local_tids = _local_log_cache_tenant_ids(all_tids)
+                cmds = _build_log_cache_commands(buf_list, local_tids)
+                for batch in _chunk_log_cache_commands(cmds):
+                    redis.pipeline(batch)
         except Exception:
             pass  # fail-open，不影响业务
-        await asyncio.sleep(_PUSH_INTERVAL)
+        await asyncio.sleep(_LOG_PUSH_INTERVAL)
 
 
 async def _heartbeat_loop() -> None:

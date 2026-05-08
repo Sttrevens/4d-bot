@@ -43,12 +43,29 @@ _RETRY_BACKOFF = (0.5, 1.0, 2.0)  # 每次重试的等待秒数
 _TRANSIENT_ERRORS = (
     httpx.ConnectError,
     httpx.ConnectTimeout,
+    httpx.PoolTimeout,
+    httpx.ReadError,
     httpx.RemoteProtocolError,
     httpx.ReadTimeout,
+    httpx.WriteError,
+    httpx.WriteTimeout,
 )
 
 _client_lock = threading.Lock()
 _shared_client: httpx.Client | None = None
+
+_TRANSIENT_CB_THRESHOLD = int(os.getenv("REDIS_TRANSIENT_CB_THRESHOLD", "3"))
+_TRANSIENT_CB_COOLDOWN = float(os.getenv("REDIS_TRANSIENT_CB_COOLDOWN", "20"))
+_ERROR_LOG_COOLDOWN = float(os.getenv("REDIS_ERROR_LOG_COOLDOWN", "60"))
+
+_state_lock = threading.Lock()
+_transient_cb_open_until: float = 0.0
+_consecutive_transient_failures: int = 0
+_last_error_type: str = ""
+_last_error_message: str = ""
+_last_error_at: float = 0.0
+_last_error_log_at: dict[str, float] = {}
+_suppressed_error_counts: dict[str, int] = {}
 
 # ── Circuit Breaker ──
 # 当 Upstash 返回 "max requests limit exceeded" 时，停止请求 _CB_COOLDOWN 秒。
@@ -76,9 +93,67 @@ def _cb_is_open() -> bool:
     return True
 
 
+def _transient_cb_is_open() -> bool:
+    """Short fail-open breaker for repeated Redis network/client timeouts."""
+    global _transient_cb_open_until
+    if _transient_cb_open_until <= 0:
+        return False
+    if time.monotonic() >= _transient_cb_open_until:
+        _transient_cb_open_until = 0.0
+        logger.info("Redis transient circuit breaker CLOSED (cooldown expired)")
+        return False
+    return True
+
+
 def _is_rate_limit_error(error_str: str) -> bool:
     """检测是否为限额错误"""
     return "max requests limit" in error_str.lower() or "rate limit" in error_str.lower()
+
+
+def _record_success() -> None:
+    global _consecutive_transient_failures
+    with _state_lock:
+        _consecutive_transient_failures = 0
+
+
+def _record_failure(exc: Exception) -> None:
+    """Track Redis failures for diagnostics and transient fail-open behavior."""
+    global _transient_cb_open_until, _consecutive_transient_failures
+    global _last_error_type, _last_error_message, _last_error_at
+
+    now = time.monotonic()
+    with _state_lock:
+        _last_error_type = type(exc).__name__
+        _last_error_message = str(exc)[:300]
+        _last_error_at = time.time()
+        if isinstance(exc, _TRANSIENT_ERRORS):
+            _consecutive_transient_failures += 1
+            if _consecutive_transient_failures >= _TRANSIENT_CB_THRESHOLD:
+                _transient_cb_open_until = now + _TRANSIENT_CB_COOLDOWN
+        else:
+            _consecutive_transient_failures = 0
+
+
+def _log_failure(operation: str, exc: Exception) -> None:
+    """Log the first traceback for repeated Redis failures, then aggregate."""
+    now = time.monotonic()
+    key = f"{operation}:{type(exc).__name__}"
+    with _state_lock:
+        last = _last_error_log_at.get(key, 0.0)
+        if now - last < _ERROR_LOG_COOLDOWN:
+            _suppressed_error_counts[key] = _suppressed_error_counts.get(key, 0) + 1
+            logger.debug(
+                "Redis %s failed (%s); traceback suppressed (%d repeat(s))",
+                operation,
+                type(exc).__name__,
+                _suppressed_error_counts[key],
+            )
+            return
+        suppressed = _suppressed_error_counts.pop(key, 0)
+        _last_error_log_at[key] = now
+
+    suffix = f" ({suppressed} repeated traceback(s) suppressed)" if suppressed else ""
+    logger.warning("Redis %s failed%s", operation, suffix, exc_info=True)
 
 _REDIS_URL = os.getenv("UPSTASH_REDIS_REST_URL", "").strip().rstrip("/")
 _REDIS_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN", "").strip()
@@ -133,7 +208,9 @@ def _post_with_retry(url: str, json_data: Any, *, timeout: float | None = None) 
     for attempt in range(_RETRY_MAX):
         try:
             client = _get_client()
-            return client.post(url, json=json_data)
+            if timeout is None:
+                return client.post(url, json=json_data)
+            return client.post(url, json=json_data, timeout=timeout)
         except _TRANSIENT_ERRORS as e:
             last_exc = e
             if attempt < _RETRY_MAX - 1:
@@ -187,10 +264,13 @@ def execute(*args: str | int) -> Any:
     if _cb_is_open():
         logger.warning("Redis command skipped (circuit breaker open): %s", args[0] if args else "?")
         return None
+    if _transient_cb_is_open():
+        return None
 
     try:
         resp = _post_with_retry(_REDIS_URL, [str(a) for a in args])
         data = resp.json()
+        _record_success()
         if "error" in data:
             err = data["error"]
             if _is_rate_limit_error(str(err)):
@@ -199,8 +279,9 @@ def execute(*args: str | int) -> Any:
                 logger.warning("Redis error: %s (cmd=%s)", err, args[0])
             return None
         return data.get("result")
-    except Exception:
-        logger.warning("Redis command failed: %s", args[0] if args else "?", exc_info=True)
+    except Exception as e:
+        _record_failure(e)
+        _log_failure(f"command {args[0] if args else '?'}", e)
         return None
 
 
@@ -214,6 +295,8 @@ def pipeline(commands: list[list[str | int]]) -> list[Any]:
         return [None] * len(commands)
     if _cb_is_open():
         return [None] * len(commands)
+    if _transient_cb_is_open():
+        return [None] * len(commands)
 
     try:
         resp = _post_with_retry(
@@ -221,6 +304,7 @@ def pipeline(commands: list[list[str | int]]) -> list[Any]:
             [[str(a) for a in cmd] for cmd in commands],
         )
         results = resp.json()
+        _record_success()
         if isinstance(results, list):
             # 检查 pipeline 结果中是否有限额错误
             for r in results:
@@ -229,8 +313,9 @@ def pipeline(commands: list[list[str | int]]) -> list[Any]:
                     return [None] * len(commands)
             return [r.get("result") if isinstance(r, dict) else r for r in results]
         return [None] * len(commands)
-    except Exception:
-        logger.warning("Redis pipeline failed", exc_info=True)
+    except Exception as e:
+        _record_failure(e)
+        _log_failure("pipeline", e)
         return [None] * len(commands)
 
 
@@ -242,16 +327,27 @@ def ping() -> bool:
 
 def diagnostics() -> dict:
     """Return Redis diagnostic info for admin debugging."""
-    import math
     cb_remaining = 0.0
     if _cb_open_until > 0:
         cb_remaining = max(0, _cb_open_until - time.monotonic())
+    transient_remaining = 0.0
+    if _transient_cb_open_until > 0:
+        transient_remaining = max(0, _transient_cb_open_until - time.monotonic())
+    rate_cb_open = _cb_is_open()
+    transient_cb_open = _transient_cb_is_open()
     return {
         "configured": available(),
         "url_set": bool(_REDIS_URL),
         "token_set": bool(_REDIS_TOKEN),
         "proxy": _REDIS_PROXY or "(none)",
-        "circuit_breaker_open": _cb_is_open(),
+        "circuit_breaker_open": rate_cb_open or transient_cb_open,
+        "rate_limit_circuit_breaker_open": rate_cb_open,
         "circuit_breaker_remaining_s": round(cb_remaining, 1),
-        "ping": ping() if available() and not _cb_is_open() else False,
+        "transient_circuit_open": transient_cb_open,
+        "transient_circuit_remaining_s": round(transient_remaining, 1),
+        "consecutive_transient_failures": _consecutive_transient_failures,
+        "last_error_type": _last_error_type,
+        "last_error_message": _last_error_message,
+        "last_error_at": _last_error_at,
+        "ping": ping() if available() and not rate_cb_open and not transient_cb_open else False,
     }
