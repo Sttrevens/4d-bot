@@ -20,8 +20,10 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from app.tenant.registry import tenant_registry
-from app.tenant.config import ChannelConfig
+from app.tenant.config import ChannelConfig, TenantConfig
+from app.tenant.context import set_current_tenant
 from app.services import redis_client as redis
+from app.services import memory, memory_store
 from app.services.metering import get_usage_summary, get_daily_breakdown
 from app.services.trial import (
     list_trial_users, get_user_info, approve_user, block_user,
@@ -47,6 +49,80 @@ _TENANT_META_FIELDS = (
 )
 
 _REMOVED_TENANTS_KEY = "admin:removed_tenants"
+
+
+def _is_valid_tenant_id(tenant_id: str) -> bool:
+    return bool(tenant_id) and len(tenant_id) <= 64 and tenant_id.replace("-", "").replace("_", "").isalnum()
+
+
+def _set_memory_tenant_context(tenant_id: str) -> TenantConfig:
+    """Set tenant context for memory_store reads without requiring local registry ownership."""
+    if not _is_valid_tenant_id(tenant_id):
+        raise HTTPException(400, "Invalid tenant_id")
+    tenant = tenant_registry.get(tenant_id)
+    if tenant is None:
+        tenant = TenantConfig(tenant_id=tenant_id, name=tenant_id)
+    set_current_tenant(tenant)
+    return tenant
+
+
+def _memory_entry_summary(entry: dict) -> str:
+    for key in ("action", "summary", "details", "outcome"):
+        val = str(entry.get(key, "") or "").strip()
+        if val:
+            return val[:600]
+    return ""
+
+
+def _memory_entry_search_text(entry: dict) -> str:
+    parts = [
+        str(entry.get("type", "") or ""),
+        str(entry.get("user_id", "") or ""),
+        str(entry.get("user_name", "") or ""),
+        str(entry.get("action", "") or ""),
+        str(entry.get("summary", "") or ""),
+        str(entry.get("details", "") or ""),
+        str(entry.get("outcome", "") or ""),
+        " ".join(str(t) for t in entry.get("tags", []) if t),
+    ]
+    return " ".join(parts).lower()
+
+
+def _serialize_memory_entry(entry: dict) -> dict:
+    tags = entry.get("tags", [])
+    if not isinstance(tags, list):
+        tags = []
+    return {
+        "type": str(entry.get("type") or "diary"),
+        "time": str(entry.get("time") or ""),
+        "ts": entry.get("ts", 0),
+        "user_id": str(entry.get("user_id") or ""),
+        "user_name": str(entry.get("user_name") or ""),
+        "tags": [str(t) for t in tags],
+        "summary": _memory_entry_summary(entry),
+        "tool": str(entry.get("tool") or ""),
+    }
+
+
+def _memory_users_from_entries(entries: list[dict]) -> list[dict]:
+    users: dict[str, dict] = {}
+    for entry in entries:
+        uid = str(entry.get("user_id") or "")
+        if not uid:
+            continue
+        user = users.setdefault(uid, {
+            "user_id": uid,
+            "name": str(entry.get("user_name") or uid),
+            "count": 0,
+            "last_seen": "",
+        })
+        user["count"] += 1
+        when = str(entry.get("time") or "")
+        if when > user["last_seen"]:
+            user["last_seen"] = when
+        if entry.get("user_name"):
+            user["name"] = str(entry.get("user_name"))
+    return sorted(users.values(), key=lambda u: (u["last_seen"], u["count"]), reverse=True)
 
 
 def _get_removed_tenants() -> set[str]:
@@ -388,6 +464,116 @@ async def api_get_tenant_config(
             pass
 
     raise HTTPException(404, f"Tenant {tenant_id} not found")
+
+
+@router.get("/api/tenants/{tenant_id}/memory")
+async def api_tenant_memory(
+    tenant_id: str,
+    q: str = "",
+    user_id: str = "",
+    tag: str = "",
+    type: str = "",
+    limit: int = 100,
+    _token: str = Depends(_verify_token),
+):
+    """Read-only memory inspector for a tenant."""
+    if not redis.available():
+        return JSONResponse({
+            "ok": False,
+            "tenant_id": tenant_id,
+            "error": "Redis unavailable",
+            "stats": {
+                "total_entries": 0,
+                "matched_entries": 0,
+                "returned_entries": 0,
+                "users_count": 0,
+            },
+            "users": [],
+            "profile": None,
+            "entries": [],
+        })
+
+    _set_memory_tenant_context(tenant_id)
+    limit = min(max(int(limit or 100), 1), 500)
+    entries = memory_store.read_journal_all()
+    total_entries = len(entries)
+    q_lower = (q or "").strip().lower()
+    user_prefix = (user_id or "").strip()[:12]
+    tag_filter = (tag or "").strip()
+    type_filter = (type or "").strip()
+
+    def matches(entry: dict) -> bool:
+        if user_prefix and str(entry.get("user_id") or "")[:12] != user_prefix:
+            return False
+        if tag_filter and tag_filter not in [str(t) for t in entry.get("tags", [])]:
+            return False
+        if type_filter and str(entry.get("type") or "diary") != type_filter:
+            return False
+        if q_lower and q_lower not in _memory_entry_search_text(entry):
+            return False
+        return True
+
+    matched = [entry for entry in reversed(entries) if matches(entry)]
+    users = _memory_users_from_entries(entries)
+    profile = None
+    if user_prefix:
+        profile = memory_store.read_json(f"users/{user_prefix}")
+
+    return JSONResponse({
+        "ok": True,
+        "tenant_id": tenant_id,
+        "stats": {
+            "total_entries": total_entries,
+            "matched_entries": len(matched),
+            "returned_entries": min(len(matched), limit),
+            "users_count": len(users),
+        },
+        "users": users,
+        "profile": profile,
+        "entries": [_serialize_memory_entry(entry) for entry in matched[:limit]],
+    })
+
+
+@router.get("/api/tenants/{tenant_id}/memory/recall-preview")
+async def api_tenant_memory_recall_preview(
+    tenant_id: str,
+    user_id: str = "",
+    query_text: str = "",
+    keyword: str = "",
+    limit: int = 10,
+    _token: str = Depends(_verify_token),
+):
+    """Preview what recall_memory would return for a tenant/user/query."""
+    if not redis.available():
+        return JSONResponse({
+            "ok": False,
+            "tenant_id": tenant_id,
+            "error": "Redis unavailable",
+            "formatted": "Redis unavailable",
+            "entries": [],
+        })
+
+    _set_memory_tenant_context(tenant_id)
+    limit = min(max(int(limit or 10), 1), 50)
+    entries = memory.recall(
+        user_id=user_id,
+        keyword=keyword,
+        limit=limit,
+        query_text=query_text,
+    )
+    formatted = memory.recall_text(
+        user_id=user_id,
+        keyword=keyword,
+        limit=limit,
+        query_text=query_text,
+    )
+
+    return JSONResponse({
+        "ok": True,
+        "tenant_id": tenant_id,
+        "formatted": formatted,
+        "entries": [_serialize_memory_entry(entry) for entry in entries],
+    })
 
 
 @router.put("/api/tenants/{tenant_id}/config")

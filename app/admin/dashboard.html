@@ -71,6 +71,10 @@
         class="tab-btn px-4 py-2 rounded-lg font-medium text-sm bg-gray-100 text-gray-600 hover:bg-gray-200">
         Logs
       </button>
+      <button onclick="switchTab('memory')" id="tab-memory"
+        class="tab-btn px-4 py-2 rounded-lg font-medium text-sm bg-gray-100 text-gray-600 hover:bg-gray-200">
+        Memory
+      </button>
       <button onclick="switchTab('identities')" id="tab-identities"
         class="tab-btn px-4 py-2 rounded-lg font-medium text-sm bg-gray-100 text-gray-600 hover:bg-gray-200">
         Identities
@@ -940,6 +944,84 @@
       </div>
     </div>
 
+    <!-- Memory Tab -->
+    <div id="panel-memory" class="hidden fade-in">
+      <div class="bg-white rounded-xl shadow-sm p-6 mb-4">
+        <div class="flex flex-wrap items-end gap-3">
+          <div>
+            <label class="block text-xs text-gray-500 mb-1">Tenant</label>
+            <select id="memory-tenant-select" onchange="loadMemory()"
+              class="border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs text-gray-500 mb-1">User</label>
+            <select id="memory-user-select" onchange="loadMemory(false)"
+              class="border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none min-w-48">
+              <option value="">All users</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs text-gray-500 mb-1">Keyword</label>
+            <input id="memory-query" type="text" placeholder="Outbound, 40-60w, 销量..."
+              class="border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none w-56"
+              onkeydown="if(event.key==='Enter')loadMemory(false)">
+          </div>
+          <div>
+            <label class="block text-xs text-gray-500 mb-1">Tag</label>
+            <input id="memory-tag" type="text" placeholder="预测"
+              class="border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none w-28"
+              onkeydown="if(event.key==='Enter')loadMemory(false)">
+          </div>
+          <div>
+            <label class="block text-xs text-gray-500 mb-1">Type</label>
+            <select id="memory-type" onchange="loadMemory(false)"
+              class="border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
+              <option value="">All</option>
+              <option value="diary">Diary</option>
+              <option value="numeric_fact">Numeric facts</option>
+              <option value="bot_action">Bot actions</option>
+              <option value="compressed">Compressed</option>
+            </select>
+          </div>
+          <button onclick="loadMemory(false)"
+            class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 text-sm">Search</button>
+          <span id="memory-stats" class="text-xs text-gray-400 ml-auto"></span>
+        </div>
+      </div>
+
+      <div class="grid lg:grid-cols-3 gap-4">
+        <div class="bg-white rounded-xl shadow-sm p-5">
+          <h3 class="font-semibold text-gray-800 mb-3">User Profile</h3>
+          <div id="memory-profile" class="text-sm text-gray-500">Select a user to view profile.</div>
+        </div>
+        <div class="bg-white rounded-xl shadow-sm p-5 lg:col-span-2">
+          <div class="flex flex-wrap items-end gap-3 mb-3">
+            <div class="flex-1 min-w-72">
+              <label class="block text-xs text-gray-500 mb-1">Recall Preview</label>
+              <input id="memory-preview-query" type="text" placeholder="你之前猜outbound是40-60w，你记得么？"
+                class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                onkeydown="if(event.key==='Enter')previewMemoryRecall()">
+            </div>
+            <button onclick="previewMemoryRecall()"
+              class="bg-gray-800 text-white px-4 py-2 rounded-lg hover:bg-gray-700 text-sm">Preview</button>
+          </div>
+          <pre id="memory-preview-output"
+            class="bg-gray-50 border rounded-lg p-3 text-xs whitespace-pre-wrap overflow-auto max-h-44 text-gray-700">Enter a recall question to preview what the bot would see.</pre>
+        </div>
+      </div>
+
+      <div class="bg-white rounded-xl shadow-sm p-5 mt-4">
+        <div class="flex justify-between items-center mb-3">
+          <h3 class="font-semibold text-gray-800">Memory Entries</h3>
+          <span id="memory-entry-count" class="text-xs text-gray-400"></span>
+        </div>
+        <div id="memory-results" class="space-y-3">
+          <div class="text-gray-400 text-center py-8">Select a tenant to inspect memory.</div>
+        </div>
+      </div>
+    </div>
+
     <!-- Identities Tab -->
     <div id="panel-identities" class="hidden fade-in">
       <div class="space-y-6">
@@ -1285,7 +1367,7 @@ function switchTab(tab) {
   document.getElementById(`tab-${tab}`).className =
     'tab-btn px-4 py-2 rounded-lg font-medium text-sm bg-blue-100 text-blue-700';
 
-  ['overview', 'users', 'usage', 'instances', 'logs', 'identities', 'superadmin'].forEach(p => {
+  ['overview', 'users', 'usage', 'instances', 'logs', 'memory', 'identities', 'superadmin'].forEach(p => {
     const el = document.getElementById(`panel-${p}`);
     if (el) el.classList.toggle('hidden', p !== tab);
   });
@@ -1294,6 +1376,7 @@ function switchTab(tab) {
   if (tab === 'usage') loadUsage();
   if (tab === 'instances') loadInstances();
   if (tab === 'logs') initLogsTab();
+  if (tab === 'memory') initMemoryTab();
   if (tab === 'identities') loadIdentities();
   if (tab === 'superadmin') { loadSuperAdmin(); loadProvisionRequests(); }
 }
@@ -1311,8 +1394,16 @@ async function loadOverview() {
     // Populate user tenant selector
     const sel = document.getElementById('user-tenant-select');
     sel.innerHTML = tenantsData.map(t =>
-      `<option value="${t.tenant_id}">${t.name || t.tenant_id}</option>`
+      `<option value="${escapeAttr(String(t.tenant_id || ''))}">${escapeHtml(String(t.name || t.tenant_id || ''))}</option>`
     ).join('');
+    const memSel = document.getElementById('memory-tenant-select');
+    if (memSel) {
+      const previousMemoryTenant = memSel.value;
+      memSel.innerHTML = tenantsData.map(t =>
+        `<option value="${escapeAttr(String(t.tenant_id || ''))}">${escapeHtml(String(t.name || t.tenant_id || ''))}</option>`
+      ).join('');
+      if (previousMemoryTenant) memSel.value = previousMemoryTenant;
+    }
 
     // Render cards
     const container = document.getElementById('tenant-cards');
@@ -2440,6 +2531,165 @@ document.getElementById('logs-auto-refresh')?.addEventListener('change', functio
   else loadLogs();
 });
 
+// ── Memory Inspector ──
+let memoryLastUsers = [];
+
+async function initMemoryTab() {
+  const sel = document.getElementById('memory-tenant-select');
+  if (sel.options.length === 0) {
+    if (!tenantsData.length) {
+      try {
+        const tenantRes = await api('/tenants');
+        tenantsData = tenantRes.tenants || [];
+      } catch (e) {
+        document.getElementById('memory-results').innerHTML =
+          `<div class="text-red-500 text-sm p-4">Failed to load tenants: ${escapeHtml(String(e.message || e))}</div>`;
+        return;
+      }
+    }
+    sel.innerHTML = tenantsData.map(t =>
+      `<option value="${escapeAttr(String(t.tenant_id || ''))}">${escapeHtml(String(t.name || t.tenant_id || ''))}</option>`
+    ).join('');
+  }
+  loadMemory(true);
+}
+
+function renderMemoryUsers(users, selectedUserId) {
+  memoryLastUsers = users || [];
+  const sel = document.getElementById('memory-user-select');
+  const options = ['<option value="">All users</option>'].concat(memoryLastUsers.map(user => {
+    const label = escapeHtml(String(user.name || user.user_id || '-'));
+    const uid = escapeAttr(String(user.user_id || ''));
+    const count = Number.parseInt(user.count || 0) || 0;
+    return `<option value="${uid}">${label} (${count})</option>`;
+  }));
+  sel.innerHTML = options.join('');
+  if (selectedUserId) sel.value = selectedUserId;
+}
+
+function renderMemoryProfile(profile, selectedUserId) {
+  const el = document.getElementById('memory-profile');
+  if (!selectedUserId) {
+    el.innerHTML = '<div class="text-gray-400">Select a user to view profile.</div>';
+    return;
+  }
+  if (!profile) {
+    el.innerHTML = '<div class="text-gray-400">No profile stored for this user.</div>';
+    return;
+  }
+  const prefs = Array.isArray(profile.preferences) ? profile.preferences : [];
+  const topics = Array.isArray(profile.recent_topics) ? profile.recent_topics : [];
+  el.innerHTML = `
+    <div class="space-y-3">
+      <div>
+        <div class="text-xs text-gray-400">Name</div>
+        <div class="font-medium text-gray-800">${escapeHtml(String(profile.name || selectedUserId))}</div>
+      </div>
+      <div>
+        <div class="text-xs text-gray-400">Interactions</div>
+        <div class="text-gray-700">${Number.parseInt(profile.interaction_count || 0) || 0}</div>
+      </div>
+      <div>
+        <div class="text-xs text-gray-400">Preferences</div>
+        <div class="text-gray-700">${prefs.length ? prefs.map(p => `<div>• ${escapeHtml(String(p))}</div>`).join('') : '-'}</div>
+      </div>
+      <div>
+        <div class="text-xs text-gray-400">Recent Topics</div>
+        <div>${topics.length ? topics.map(t => `<span class="inline-block bg-gray-100 text-gray-600 text-xs rounded px-2 py-0.5 mr-1 mb-1">${escapeHtml(String(t))}</span>`).join('') : '-'}</div>
+      </div>
+    </div>`;
+}
+
+function renderMemoryEntries(entries) {
+  const container = document.getElementById('memory-results');
+  document.getElementById('memory-entry-count').textContent = `${entries.length} shown`;
+  if (!entries.length) {
+    container.innerHTML = '<div class="text-gray-400 text-center py-8">No matching memory entries.</div>';
+    return;
+  }
+  container.innerHTML = entries.map(entry => {
+    const summary = escapeHtml(String(entry.summary || ''));
+    const userName = escapeHtml(String(entry.user_name || entry.user_id || '-'));
+    const userId = escapeHtml(String(entry.user_id || ''));
+    const type = escapeHtml(String(entry.type || 'diary'));
+    const time = escapeHtml(String(entry.time || ''));
+    const tags = Array.isArray(entry.tags) ? entry.tags : [];
+    const tagHtml = tags.map(t =>
+      `<span class="inline-block bg-blue-50 text-blue-600 rounded px-2 py-0.5 text-[10px] mr-1">${escapeHtml(String(t))}</span>`
+    ).join('');
+    return `
+      <div class="border rounded-lg p-3 hover:bg-gray-50">
+        <div class="flex flex-wrap items-center gap-2 mb-2">
+          <span class="text-xs bg-gray-100 text-gray-700 rounded px-2 py-0.5">${type}</span>
+          <span class="text-xs text-gray-400">${time}</span>
+          <span class="text-xs text-gray-500">${userName}</span>
+          <span class="text-[10px] text-gray-300 font-mono">${userId}</span>
+          <span class="ml-auto">${tagHtml}</span>
+        </div>
+        <div class="text-sm text-gray-800 whitespace-pre-wrap">${summary}</div>
+      </div>`;
+  }).join('');
+}
+
+async function loadMemory(refreshUsers = false) {
+  const tid = document.getElementById('memory-tenant-select').value;
+  if (!tid) return;
+  const userId = document.getElementById('memory-user-select').value;
+  const params = new URLSearchParams();
+  params.set('limit', '100');
+  const q = document.getElementById('memory-query').value.trim();
+  const tag = document.getElementById('memory-tag').value.trim();
+  const type = document.getElementById('memory-type').value;
+  if (q) params.set('q', q);
+  if (tag) params.set('tag', tag);
+  if (type) params.set('type', type);
+  if (userId) params.set('user_id', userId);
+
+  document.getElementById('memory-stats').textContent = 'Loading...';
+  try {
+    const data = await api(`/tenants/${encodeURIComponent(tid)}/memory?${params.toString()}`);
+    if (!data.ok) {
+      document.getElementById('memory-stats').textContent = data.error || 'Unavailable';
+      document.getElementById('memory-results').innerHTML =
+        `<div class="text-amber-600 text-sm p-4">${escapeHtml(String(data.error || 'Memory unavailable'))}</div>`;
+      renderMemoryProfile(null, userId);
+      return;
+    }
+    if (refreshUsers || memoryLastUsers.length === 0) renderMemoryUsers(data.users || [], userId);
+    renderMemoryProfile(data.profile, userId);
+    renderMemoryEntries(data.entries || []);
+    const stats = data.stats || {};
+    document.getElementById('memory-stats').textContent =
+      `${stats.matched_entries || 0}/${stats.total_entries || 0} matched · ${stats.users_count || 0} users`;
+  } catch (e) {
+    document.getElementById('memory-stats').textContent = 'Failed';
+    document.getElementById('memory-results').innerHTML =
+      `<div class="text-red-500 text-sm p-4">Failed to load memory: ${escapeHtml(String(e.message || e))}</div>`;
+  }
+}
+
+async function previewMemoryRecall() {
+  const tid = document.getElementById('memory-tenant-select').value;
+  const userId = document.getElementById('memory-user-select').value;
+  const query = document.getElementById('memory-preview-query').value.trim();
+  const keyword = document.getElementById('memory-query').value.trim();
+  const output = document.getElementById('memory-preview-output');
+  if (!tid) { output.textContent = 'Select a tenant first.'; return; }
+  if (!userId) { output.textContent = 'Select a user first so recall preview matches bot behavior.'; return; }
+  const params = new URLSearchParams();
+  params.set('user_id', userId);
+  params.set('query_text', query);
+  params.set('keyword', keyword);
+  params.set('limit', '10');
+  output.textContent = 'Loading preview...';
+  try {
+    const data = await api(`/tenants/${encodeURIComponent(tid)}/memory/recall-preview?${params.toString()}`);
+    output.textContent = data.formatted || '(no recall output)';
+  } catch (e) {
+    output.textContent = `Failed: ${e.message}`;
+  }
+}
+
 // ── Helpers ──
 function formatTime(iso, { allowFuture = false } = {}) {
   if (!iso) return '-';
@@ -2471,6 +2721,14 @@ function formatTime(iso, { allowFuture = false } = {}) {
 
 function escapeHtml(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function escapeAttr(s) {
+  return escapeHtml(s).replace(/'/g, '&#39;');
+}
+
+function jsArg(value) {
+  return JSON.stringify(String(value ?? '')).replace(/</g, '\\u003c');
 }
 
 function formatTokens(n) {

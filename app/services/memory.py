@@ -332,6 +332,11 @@ def recall_text(
         limit=limit,
         query_text=query_text,
     )
+    return format_recall_entries(entries)
+
+
+def format_recall_entries(entries: list[dict]) -> str:
+    """Format recalled memory entries for tool output."""
     if not entries:
         return "没有找到相关记忆。"
     lines = []
@@ -579,6 +584,99 @@ def _memory_relevance_score(entry: dict, query_bigrams: set[str]) -> float:
 
 _MEMORY_RELEVANCE_THRESHOLD = 0.08  # 至少有 8% bigram 重叠才注入
 
+_NUMERIC_FACT_RE = re.compile(r"\d")
+_NUMERIC_FACT_CUE_RE = re.compile(
+    r"(预测|估算|竞猜|猜|承诺|结论|判断|预计|预估|销量|销售|营收|收入|"
+    r"首周|首月|首年|长线|生命周期|愿望单|转化率|概率|份|万|亿|k|m|%)",
+    re.IGNORECASE,
+)
+_NUMERIC_CONTEXT_CUE_RE = re.compile(
+    r"(预测|估算|竞猜|猜|销量|销售|营收|收入|首周|首月|首年|愿望单|转化率)",
+    re.IGNORECASE,
+)
+
+
+def remember_numeric_facts(
+    *,
+    user_id: str,
+    user_name: str,
+    user_text: str,
+    reply: str,
+) -> int:
+    """Persist concrete numeric predictions/commitments from a turn.
+
+    Diary summaries are intentionally short and can drop exact numbers. This
+    deterministic side-channel keeps auditable numeric conclusions searchable.
+    """
+    snippets = _extract_numeric_fact_snippets(user_text=user_text, reply=reply)
+    if not snippets:
+        return 0
+
+    saved = 0
+    for snippet in snippets:
+        action = f"数字事实: {snippet}"
+        entry = {
+            "type": "numeric_fact",
+            "user_id": user_id[:12],
+            "user_name": user_name,
+            "action": action[:600],
+            "tags": ["预测", "数字"],
+            "time": datetime.now(timezone.utc).isoformat(),
+        }
+        try:
+            memory_store.append_journal(entry)
+            _append_index(action[:80], entry["tags"])
+            saved += 1
+        except Exception:
+            logger.debug("remember_numeric_facts failed", exc_info=True)
+            break
+    if saved:
+        logger.info("numeric facts: saved %d for %s", saved, user_name or user_id[:12])
+    return saved
+
+
+def _extract_numeric_fact_snippets(*, user_text: str, reply: str, limit: int = 5) -> list[str]:
+    """Extract short searchable snippets containing entities, numbers and scope."""
+    if not reply or not _NUMERIC_FACT_RE.search(reply):
+        return []
+    combined_context = f"{user_text}\n{reply}"
+    if not _NUMERIC_CONTEXT_CUE_RE.search(combined_context):
+        return []
+
+    raw_lines = [re.sub(r"\s+", " ", line).strip(" -\t") for line in reply.splitlines()]
+    lines = [line for line in raw_lines if line]
+    snippets: list[str] = []
+    seen: set[str] = set()
+
+    for idx, line in enumerate(lines):
+        if not _NUMERIC_FACT_RE.search(line):
+            continue
+        if not _NUMERIC_FACT_CUE_RE.search(line):
+            continue
+        window: list[str] = []
+        if idx > 0 and len(lines[idx - 1]) <= 160:
+            window.append(lines[idx - 1])
+        window.append(line)
+        for lookahead in (1, 2):
+            next_idx = idx + lookahead
+            if next_idx >= len(lines):
+                break
+            next_line = lines[next_idx]
+            if len(next_line) > 160:
+                continue
+            if _NUMERIC_FACT_RE.search(next_line) or _NUMERIC_FACT_CUE_RE.search(next_line):
+                window.append(next_line)
+        snippet = " / ".join(window)
+        snippet = re.sub(r"\s+", " ", snippet).strip()
+        key = snippet.lower()
+        if not snippet or key in seen:
+            continue
+        seen.add(key)
+        snippets.append(snippet[:500])
+        if len(snippets) >= limit:
+            break
+    return snippets
+
 
 def _format_memory_entry(e: dict) -> str:
     """格式化单条记忆条目为人类可读文本。"""
@@ -751,9 +849,22 @@ async def write_diary(
     except Exception:
         logger.debug("write_diary: LLM call failed", exc_info=True)
         # LLM 失败时回退：有工具调用就用老逻辑记录
+        remember_numeric_facts(
+            user_id=user_id,
+            user_name=user_name,
+            user_text=user_text,
+            reply=reply,
+        )
         if tool_names_called:
             _fallback_diary(user_id, user_name, user_text, reply, tool_names_called)
         return
+
+    remember_numeric_facts(
+        user_id=user_id,
+        user_name=user_name,
+        user_text=user_text,
+        reply=reply,
+    )
 
     if not diary or not diary.get("w", False):
         return  # LLM 判断不值得记录
@@ -994,7 +1105,8 @@ _DIARY_PROMPT = """\
 {"s":"摘要","t":["标签"],"p":["偏好"],"w":true,"sol":false}
 
 字段说明：
-- s: 摘要（50字以内）。如果涉及文档/文件/链接，务必把标题、ID或URL带上，方便以后找到
+- s: 摘要（50字以内）。如果涉及文档/文件/链接，务必把标题、ID或URL带上，方便以后找到。
+  如果涉及预测、估算、承诺或结论，必须保留实体名、关键数字、时间口径和结论。
 - t: 话题标签（1-3个，从：日历、任务、文档、代码、消息、搜索、表格、部署、规划、其他）
 - p: 用户表达的偏好/规则/标准/习惯/约定（没有则空数组[]）。格式「领域: 内容」
 - w: 是否值得记录（true/false）。纯寒暄("你好""谢谢")、简单确认("好的""收到")= false

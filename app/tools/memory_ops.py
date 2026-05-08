@@ -45,13 +45,24 @@ def recall_memory(args: dict) -> ToolResult:
     query_text = args.get("query_text", "")
     limit = args.get("limit", 10)
 
-    return ToolResult.success(mem.recall_text(
+    entries = mem.recall(
         user_id=user_id,
         tags=tags,
         keyword=keyword,
         limit=limit,
         query_text=query_text,
-    ))
+    )
+    text = mem.format_recall_entries(entries)
+    logger.info(
+        "recall_memory: user=%s keyword=%r tags=%s query_len=%d hits=%d chars=%d",
+        user_id[:12],
+        keyword[:80] if isinstance(keyword, str) else keyword,
+        tags,
+        len(query_text or ""),
+        len(entries),
+        len(text),
+    )
+    return ToolResult.success(text)
 
 
 def recall_org_memory(args: dict) -> ToolResult:

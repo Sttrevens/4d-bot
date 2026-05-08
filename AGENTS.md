@@ -53,6 +53,17 @@ If uncertain: start from production repo for correctness, then port back here.
 3. Avoid assuming behavior parity across repos.
 4. After fix, explicitly decide: `OSS_ONLY` vs `PORT_TO_4DGAMES_FEISHU_CODE_BOT`.
 
+## 4.5) CI/CD Effectiveness Rule
+
+Local edits, local tests, and unpushed commits do **not** trigger GitHub Actions or deploy anything.
+
+Before telling the user a fix is live/effective:
+- Confirm whether the change has been committed and pushed.
+- Confirm which branch was pushed and which workflow it triggers.
+- In this repo, `sanity.yml` runs on `main` and `codex/**`; `deploy.yml` only runs on `main`.
+- If a change is only on a feature branch, say it is pushed for CI but not deployed.
+- If the user expects deployment, the change must reach `main` and the deploy workflow must run.
+
 ## 5) Non-Goals
 
 - Do not claim both repos are identical.

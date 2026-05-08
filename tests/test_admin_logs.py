@@ -3,6 +3,102 @@ import json
 
 
 
+def test_memory_list_api_filters_and_serializes_entries(monkeypatch):
+    from app.admin import routes
+
+    entries = [
+        {
+            "type": "numeric_fact",
+            "user_id": "ou_743c3f5d",
+            "user_name": "吴天骄",
+            "action": "数字事实: Outbound 首周销量预测 40-60w",
+            "tags": ["预测", "数字"],
+            "time": "2026-04-18T00:00:00+00:00",
+        },
+        {
+            "user_id": "ou_other",
+            "user_name": "Other",
+            "action": "普通聊天",
+            "tags": ["其他"],
+            "time": "2026-05-01T00:00:00+00:00",
+        },
+    ]
+
+    monkeypatch.setattr(routes.redis, "available", lambda: True)
+    monkeypatch.setattr(routes.memory_store, "read_journal_all", lambda: entries)
+    monkeypatch.setattr(routes.memory_store, "read_json", lambda key: {"name": "吴天骄"} if key.startswith("users/") else None)
+
+    response = asyncio.run(routes.api_tenant_memory(
+        "pm-bot",
+        q="outbound",
+        user_id="ou_743c3f5d",
+        tag="预测",
+        type="numeric_fact",
+        _token="test-token",
+    ))
+    data = json.loads(response.body)
+
+    assert data["ok"] is True
+    assert data["stats"]["total_entries"] == 2
+    assert data["stats"]["matched_entries"] == 1
+    assert data["entries"][0]["summary"] == "数字事实: Outbound 首周销量预测 40-60w"
+    assert data["profile"]["name"] == "吴天骄"
+
+
+def test_memory_list_api_returns_clear_unavailable_state(monkeypatch):
+    from app.admin import routes
+
+    monkeypatch.setattr(routes.redis, "available", lambda: False)
+
+    response = asyncio.run(routes.api_tenant_memory("pm-bot", _token="test-token"))
+    data = json.loads(response.body)
+
+    assert data["ok"] is False
+    assert data["error"] == "Redis unavailable"
+    assert data["entries"] == []
+
+
+def test_memory_recall_preview_sets_tenant_context_and_returns_entries(monkeypatch):
+    from app.admin import routes
+
+    captured = {}
+    entry = {
+        "type": "numeric_fact",
+        "user_id": "ou_743c3f5d",
+        "user_name": "吴天骄",
+        "action": "数字事实: Outbound 首周销量预测 40-60w",
+        "tags": ["预测", "数字"],
+        "time": "2026-04-18T00:00:00+00:00",
+    }
+
+    def fake_recall(*, user_id="", keyword="", limit=10, query_text=""):
+        captured.update({
+            "user_id": user_id,
+            "keyword": keyword,
+            "limit": limit,
+            "query_text": query_text,
+        })
+        return [entry]
+
+    monkeypatch.setattr(routes.redis, "available", lambda: True)
+    monkeypatch.setattr(routes.memory, "recall", fake_recall)
+    monkeypatch.setattr(routes.memory, "recall_text", lambda **_kwargs: "formatted recall")
+
+    response = asyncio.run(routes.api_tenant_memory_recall_preview(
+        "pm-bot",
+        user_id="ou_743c3f5d",
+        query_text="你之前猜outbound是40-60w？",
+        keyword="outbound",
+        _token="test-token",
+    ))
+    data = json.loads(response.body)
+
+    assert captured["user_id"] == "ou_743c3f5d"
+    assert captured["keyword"] == "outbound"
+    assert data["formatted"] == "formatted recall"
+    assert data["entries"][0]["summary"] == "数字事实: Outbound 首周销量预测 40-60w"
+
+
 def test_instance_logs_uses_full_source_when_redis_snapshot_is_short(monkeypatch):
     from app.admin import routes
     from app.tenant.registry import tenant_registry
