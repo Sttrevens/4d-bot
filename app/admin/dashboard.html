@@ -2944,6 +2944,13 @@ function renderMemoryProfile(profile, selectedUserId) {
   }
   const prefs = Array.isArray(profile.preferences) ? profile.preferences : [];
   const topics = Array.isArray(profile.recent_topics) ? profile.recent_topics : [];
+  const identityFacts = Array.isArray(profile.identity_facts) ? profile.identity_facts : [];
+  const currentGoals = Array.isArray(profile.current_goals) ? profile.current_goals : [];
+  const openLoops = Array.isArray(profile.open_loops) ? profile.open_loops : [];
+  const importantEntities = Array.isArray(profile.important_entities) ? profile.important_entities : [];
+  const communicationStyle = Array.isArray(profile.communication_style) ? profile.communication_style : [];
+  const lastNeed = String(profile.last_user_need || '');
+  const listHtml = items => items.length ? items.map(p => `<div>• ${escapeHtml(String(p))}</div>`).join('') : '-';
   setTrustedMarkup(el, `
     <div class="space-y-3">
       <div>
@@ -2955,8 +2962,32 @@ function renderMemoryProfile(profile, selectedUserId) {
         <div class="text-gray-700">${Number.parseInt(profile.interaction_count || 0) || 0}</div>
       </div>
       <div>
+        <div class="text-xs text-gray-400">Identity / Background</div>
+        <div class="text-gray-700">${listHtml(identityFacts)}</div>
+      </div>
+      <div>
+        <div class="text-xs text-gray-400">Current Goals</div>
+        <div class="text-gray-700">${listHtml(currentGoals)}</div>
+      </div>
+      <div>
+        <div class="text-xs text-gray-400">Open Loops</div>
+        <div class="text-gray-700">${listHtml(openLoops)}</div>
+      </div>
+      <div>
+        <div class="text-xs text-gray-400">Last Need</div>
+        <div class="text-gray-700">${lastNeed ? escapeHtml(lastNeed) : '-'}</div>
+      </div>
+      <div>
+        <div class="text-xs text-gray-400">Important Entities</div>
+        <div>${importantEntities.length ? importantEntities.map(t => `<span class="inline-block bg-indigo-50 text-indigo-600 text-xs rounded px-2 py-0.5 mr-1 mb-1">${escapeHtml(String(t))}</span>`).join('') : '-'}</div>
+      </div>
+      <div>
+        <div class="text-xs text-gray-400">Communication Style</div>
+        <div class="text-gray-700">${listHtml(communicationStyle)}</div>
+      </div>
+      <div>
         <div class="text-xs text-gray-400">Preferences</div>
-        <div class="text-gray-700">${prefs.length ? prefs.map(p => `<div>• ${escapeHtml(String(p))}</div>`).join('') : '-'}</div>
+        <div class="text-gray-700">${listHtml(prefs)}</div>
       </div>
       <div>
         <div class="text-xs text-gray-400">Recent Topics</div>

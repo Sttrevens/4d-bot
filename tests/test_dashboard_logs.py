@@ -74,6 +74,16 @@ def test_dashboard_dynamic_rendering_does_not_use_inline_handlers_or_inner_html(
     assert "insertAdjacentHTML" not in dashboard
 
 
+def test_dashboard_memory_profile_shows_rich_user_model_fields():
+    dashboard = Path("app/admin/dashboard.html").read_text(encoding="utf-8")
+
+    assert "Identity / Background" in dashboard
+    assert "Current Goals" in dashboard
+    assert "Open Loops" in dashboard
+    assert "Important Entities" in dashboard
+    assert "Communication Style" in dashboard
+
+
 def test_dashboard_log_colorizer_uses_text_nodes_not_markup_fragments():
     dashboard = Path("app/admin/dashboard.html").read_text(encoding="utf-8")
 

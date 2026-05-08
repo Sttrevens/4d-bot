@@ -29,6 +29,12 @@ _DEFAULT_USER_PROFILE = {
     "preferences": [],       # 用户偏好/习惯
     "expertise": [],          # 用户擅长的领域
     "recent_topics": [],      # 最近关注的话题
+    "identity_facts": [],     # 用户是谁/角色/背景
+    "current_goals": [],      # 当前正在推进的目标
+    "open_loops": [],         # 未完成/需要跟进的事
+    "important_entities": [], # 用户关注的人、项目、产品、对象
+    "communication_style": [],# 用户偏好的互动方式
+    "last_user_need": "",
     "interaction_count": 0,
     "first_seen": "",
     "last_seen": "",
@@ -481,7 +487,30 @@ def get_user_profile(user_id: str) -> dict:
     profile = memory_store.read_json(key)
     if profile is None:
         return dict(_DEFAULT_USER_PROFILE)
+    for k, v in _DEFAULT_USER_PROFILE.items():
+        profile.setdefault(k, [] if isinstance(v, list) else v)
     return profile
+
+
+_PROFILE_LIST_FIELDS = (
+    "preferences",
+    "expertise",
+    "recent_topics",
+    "identity_facts",
+    "current_goals",
+    "open_loops",
+    "important_entities",
+    "communication_style",
+)
+
+
+def _as_list(value) -> list:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    text = str(value).strip()
+    return [text] if text else []
 
 
 def update_user_profile(user_id: str, updates: dict) -> bool:
@@ -489,15 +518,15 @@ def update_user_profile(user_id: str, updates: dict) -> bool:
     profile = get_user_profile(user_id)
 
     # 合并简单字段
-    for field in ("name", "architecture"):
-        if field in updates:
+    for field in ("name", "architecture", "last_user_need"):
+        if field in updates and str(updates[field] or "").strip():
             profile[field] = updates[field]
 
     # 合并列表字段（去重，保留最近 20 项）
-    for field in ("preferences", "expertise", "recent_topics"):
+    for field in _PROFILE_LIST_FIELDS:
         if field in updates:
-            existing = profile.get(field, [])
-            new_items = updates[field] if isinstance(updates[field], list) else [updates[field]]
+            existing = _as_list(profile.get(field, []))
+            new_items = _as_list(updates[field])
             merged = list(dict.fromkeys(existing + new_items))  # 去重保序
             profile[field] = merged[-20:]  # 只保留最近 20 项
 
@@ -509,6 +538,41 @@ def update_user_profile(user_id: str, updates: dict) -> bool:
 
     key = f"users/{user_id[:12]}"
     return memory_store.write_json(key, profile)
+
+
+def _profile_updates_from_diary(
+    *,
+    user_name: str,
+    summary: str,
+    tags: list[str],
+    prefs: list[str],
+    diary: dict,
+) -> dict:
+    """Convert diary extraction into durable user-model profile updates."""
+    updates: dict = {"name": user_name}
+    if tags:
+        updates["recent_topics"] = tags[:3]
+    if prefs:
+        updates["preferences"] = prefs
+
+    field_map = {
+        "uf": "identity_facts",
+        "g": "current_goals",
+        "ol": "open_loops",
+        "ent": "important_entities",
+        "style": "communication_style",
+    }
+    for source, target in field_map.items():
+        values = _as_list(diary.get(source))
+        if values:
+            updates[target] = values
+
+    need = str(diary.get("need") or "").strip()
+    if need:
+        updates["last_user_need"] = need[:300]
+    elif summary:
+        updates["last_user_need"] = summary[:300]
+    return updates
 
 
 def get_project_knowledge(repo: str) -> dict:
@@ -723,7 +787,33 @@ async def build_memory_context(
     if profile.get("interaction_count", 0) > 0:
         prefs = profile.get("preferences", [])
         topics = profile.get("recent_topics", [])
+        identity_facts = profile.get("identity_facts", [])
+        current_goals = profile.get("current_goals", [])
+        open_loops = profile.get("open_loops", [])
+        important_entities = profile.get("important_entities", [])
+        communication_style = profile.get("communication_style", [])
+        last_need = str(profile.get("last_user_need", "") or "").strip()
         profile_lines = [f"用户画像({profile.get('name', user_name)}):"]
+        if identity_facts:
+            profile_lines.append("  身份/背景:")
+            for item in identity_facts[-5:]:
+                profile_lines.append(f"    - {item}")
+        if current_goals or last_need:
+            profile_lines.append("  当前目标/需要:")
+            for item in current_goals[-5:]:
+                profile_lines.append(f"    - {item}")
+            if last_need:
+                profile_lines.append(f"    - 最近需求: {last_need}")
+        if open_loops:
+            profile_lines.append("  未完成事项:")
+            for item in open_loops[-5:]:
+                profile_lines.append(f"    - {item}")
+        if important_entities:
+            profile_lines.append(f"  重要对象: {', '.join(important_entities[-8:])}")
+        if communication_style:
+            profile_lines.append("  沟通风格:")
+            for item in communication_style[-5:]:
+                profile_lines.append(f"    - {item}")
         if prefs:
             profile_lines.append("  偏好/规则:")
             for p in prefs[-5:]:
@@ -892,30 +982,23 @@ async def write_diary(
     except Exception:
         pass
 
-    # 偏好写入用户画像
-    if prefs:
-        try:
-            update_user_profile(user_id, {
-                "name": user_name,
-                "preferences": prefs,
-            })
+    # 用户画像：把“用户是谁/正在做什么/需要什么”作为长期模型维护。
+    try:
+        update_user_profile(user_id, _profile_updates_from_diary(
+            user_name=user_name,
+            summary=summary,
+            tags=tags,
+            prefs=prefs,
+            diary=diary,
+        ))
+        if prefs:
             # 偏好也写入 journal 以便按标签召回
             for pref in prefs:
                 remember(user_id, user_name, f"用户偏好: {pref}", "", ["偏好"])
             logger.info("diary: saved %d preference(s) for %s: %s",
                         len(prefs), user_name, "; ".join(p[:40] for p in prefs))
-        except Exception:
-            logger.debug("write_diary: preference save failed", exc_info=True)
-
-    # 更新用户画像：最近话题
-    if tags:
-        try:
-            update_user_profile(user_id, {
-                "name": user_name,
-                "recent_topics": tags[:3],
-            })
-        except Exception:
-            pass
+    except Exception:
+        logger.debug("write_diary: user profile save failed", exc_info=True)
 
     logger.info("diary: %s [%s] %s", user_name, ",".join(tags), summary[:60])
 
@@ -1102,29 +1185,38 @@ _DIARY_PROMPT = """\
 你是日记助手。根据用户和bot的对话，生成一条日记条目。
 
 输出严格 JSON（不要输出其他内容）：
-{"s":"摘要","t":["标签"],"p":["偏好"],"w":true,"sol":false}
+{"s":"摘要","t":["标签"],"p":["偏好"],"uf":["用户事实"],"g":["当前目标"],"ol":["未完成事项"],"ent":["重要对象"],"style":["沟通风格"],"need":"最近需求","w":true,"sol":false}
 
 字段说明：
 - s: 摘要（50字以内）。如果涉及文档/文件/链接，务必把标题、ID或URL带上，方便以后找到。
   如果涉及预测、估算、承诺或结论，必须保留实体名、关键数字、时间口径和结论。
 - t: 话题标签（1-3个，从：日历、任务、文档、代码、消息、搜索、表格、部署、规划、其他）
 - p: 用户表达的偏好/规则/标准/习惯/约定（没有则空数组[]）。格式「领域: 内容」
+- uf: 关于用户是谁、角色、团队、背景、长期职责的稳定事实（没有则空数组[]）。
+- g: 用户正在做什么、当前目标、正在推进的项目或想达成的结果（没有则空数组[]）。
+- ol: 需要后续跟进的未完成事项、待验证问题、承诺的下一步（没有则空数组[]）。
+- ent: 用户当前关注的重要人、项目、产品、游戏、公司、bot、仓库等实体名（没有则空数组[]）。
+- style: 用户希望你怎样互动、汇报、协作的风格（没有则空数组[]）。
+- need: 用户这轮真正需要什么。尽量写成自然语言；如果没有明确需求则空字符串。
 - w: 是否值得记录（true/false）。纯寒暄("你好""谢谢")、简单确认("好的""收到")= false
 - sol: 是否包含可复用的解决方案（true/false）。当 bot 帮用户解决了具体问题（修 bug、配置、排错等），
   其他用户遇到类似问题也能借鉴时 = true。纯查询/闲聊 = false
 
 示例：
 用户: 帮我查一下明天有什么会 / Bot: 明天有3个会议...
-→ {"s":"查询明天的会议安排，共3个","t":["日历"],"p":[],"w":true,"sol":false}
+→ {"s":"查询明天的会议安排，共3个","t":["日历"],"p":[],"uf":[],"g":["了解明天会议安排"],"ol":[],"ent":[],"style":[],"need":"查询明天有哪些会议","w":true,"sol":false}
 
 用户: 以后开会标题统一用「部门-主题-日期」格式 / Bot: 好的，我记住了
-→ {"s":"用户设定了会议命名规则","t":["日历"],"p":["日历命名: 会议标题格式为「部门-主题-日期」"],"w":true,"sol":false}
+→ {"s":"用户设定了会议命名规则","t":["日历"],"p":["日历命名: 会议标题格式为「部门-主题-日期」"],"uf":[],"g":[],"ol":[],"ent":[],"style":["偏好明确、可复用的格式约定"],"need":"记录会议命名规则","w":true,"sol":false}
 
 用户: 碰撞检测那个 bug 怎么修？/ Bot: 发现是 hitbox 偏移了 2px，改了 collision.py 第 47 行
-→ {"s":"修复碰撞检测 bug: hitbox 偏移 2px，改 collision.py:47","t":["代码"],"p":[],"w":true,"sol":true}
+→ {"s":"修复碰撞检测 bug: hitbox 偏移 2px，改 collision.py:47","t":["代码"],"p":[],"uf":[],"g":["修复碰撞检测 bug"],"ol":[],"ent":["collision.py"],"style":[],"need":"确认碰撞检测 bug 的修复方法","w":true,"sol":true}
+
+用户: dashboard 里的 memory 记得东西没用，不像智能体那样知道用户是谁、在做什么、需要什么 / Bot: 我会改成长期用户模型
+→ {"s":"用户要求改进 memory: 记住用户是谁、在做什么、需要什么","t":["代码","规划"],"p":["协作: 直接指出问题并落地修复"],"uf":["用户负责评估 bot 产品体验和线上行为"],"g":["提升 bot 长期记忆的用户理解能力"],"ol":["验证 memory dashboard 能否展示有效用户画像"],"ent":["memory dashboard","4d-bot"],"style":["希望直接承认问题并给出可执行修复"],"need":"让 bot 的记忆更像自然智能体的长期用户模型","w":true,"sol":false}
 
 用户: 谢谢 / Bot: 不客气
-→ {"s":"","t":[],"p":[],"w":false,"sol":false}\
+→ {"s":"","t":[],"p":[],"uf":[],"g":[],"ol":[],"ent":[],"style":[],"need":"","w":false,"sol":false}\
 """
 
 
@@ -1285,7 +1377,7 @@ async def _llm_json_call(system_prompt: str, user_content: str) -> dict | list |
                 {"role": "user", "content": user_content},
             ],
             temperature=0,
-            max_tokens=200,
+            max_tokens=420,
         )
         answer = resp.choices[0].message.content.strip()
         # 尝试提取 JSON（兼容 LLM 输出前后有多余文本）

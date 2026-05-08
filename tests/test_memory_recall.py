@@ -1,3 +1,5 @@
+import asyncio
+
 from app.services import memory
 
 
@@ -76,3 +78,100 @@ def test_diary_prompt_requires_entity_number_time_scope_and_conclusion():
     assert "数字" in memory._DIARY_PROMPT
     assert "时间口径" in memory._DIARY_PROMPT
     assert "结论" in memory._DIARY_PROMPT
+
+
+def test_write_diary_updates_rich_user_model_from_diary(monkeypatch):
+    stored = {}
+    journal = []
+
+    def fake_read_json(key):
+        return stored.get(key)
+
+    def fake_write_json(key, value):
+        stored[key] = value
+        return True
+
+    def fake_append_journal(entry, channel_id=""):
+        journal.append(entry)
+        return len(journal)
+
+    async def fake_diary(*_args, **_kwargs):
+        return {
+            "w": True,
+            "s": "讨论 dashboard 记忆质量，希望像陪伴助手一样理解用户",
+            "t": ["记忆", "产品"],
+            "p": [],
+            "sol": False,
+            "uf": ["吴天骄负责推进 4D bot 的产品体验和线上质量"],
+            "g": ["让 bot 记住用户是谁、在做什么、需要什么"],
+            "ol": ["检查 dashboard memory 入口中记忆内容是否有用"],
+            "ent": ["pm-bot", "4d-bot", "memory dashboard"],
+            "style": ["喜欢直接指出问题并要求落地修复"],
+            "need": "希望 bot 的长期记忆像智能体或陪伴助手一样形成用户理解",
+        }
+
+    monkeypatch.setattr(memory.memory_store, "read_json", fake_read_json)
+    monkeypatch.setattr(memory.memory_store, "write_json", fake_write_json)
+    monkeypatch.setattr(memory.memory_store, "append_journal", fake_append_journal)
+    monkeypatch.setattr(memory, "_append_index", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(memory, "_llm_diary_entry", fake_diary)
+    monkeypatch.setattr(memory, "remember_numeric_facts", lambda **_kwargs: 0)
+
+    asyncio.run(memory.write_diary(
+        user_id="ou_743c3f5d599cbe5621934727a20e8551",
+        user_name="吴天骄",
+        user_text="dashboard里的memory记得东西都没什么卵用",
+        reply="你说得对，我会修成更像智能体的长期用户模型。",
+    ))
+
+    profile = stored["users/ou_743c3f5d5"]
+    assert "吴天骄负责推进 4D bot 的产品体验和线上质量" in profile["identity_facts"]
+    assert "让 bot 记住用户是谁、在做什么、需要什么" in profile["current_goals"]
+    assert "检查 dashboard memory 入口中记忆内容是否有用" in profile["open_loops"]
+    assert "memory dashboard" in profile["important_entities"]
+    assert "喜欢直接指出问题并要求落地修复" in profile["communication_style"]
+    assert profile["last_user_need"] == "希望 bot 的长期记忆像智能体或陪伴助手一样形成用户理解"
+
+
+def test_build_memory_context_includes_rich_user_model(monkeypatch):
+    profile = {
+        "name": "吴天骄",
+        "interaction_count": 7,
+        "preferences": ["汇报: 直接说结论"],
+        "recent_topics": ["记忆", "dashboard"],
+        "identity_facts": ["吴天骄负责推进 4D bot 的产品体验和线上质量"],
+        "current_goals": ["提升 bot 长期记忆的用户理解能力"],
+        "open_loops": ["验证 memory dashboard 能否查到有效画像"],
+        "important_entities": ["pm-bot", "Outbound"],
+        "communication_style": ["喜欢直接指出问题并要求落地修复"],
+        "last_user_need": "希望 bot 能自然记住用户是谁、在做什么、需要什么",
+    }
+
+    async def no_recall_decision(_text):
+        return {"r": False, "t": [], "k": ""}
+
+    monkeypatch.setattr(memory, "get_user_profile", lambda _user_id: profile)
+    monkeypatch.setattr(memory, "_llm_recall_decision", no_recall_decision)
+    monkeypatch.setattr(memory, "recall", lambda **_kwargs: [])
+
+    context = asyncio.run(memory.build_memory_context(
+        "ou_743c3f5d599cbe5621934727a20e8551",
+        "吴天骄",
+        "继续处理记忆系统",
+    ))
+
+    assert "身份/背景" in context
+    assert "当前目标/需要" in context
+    assert "未完成事项" in context
+    assert "重要对象" in context
+    assert "沟通风格" in context
+    assert "长期记忆的用户理解能力" in context
+
+
+def test_diary_prompt_requires_rich_user_model_fields():
+    assert "用户是谁" in memory._DIARY_PROMPT
+    assert "正在做什么" in memory._DIARY_PROMPT
+    assert "需要什么" in memory._DIARY_PROMPT
+    assert '"uf"' in memory._DIARY_PROMPT
+    assert '"g"' in memory._DIARY_PROMPT
+    assert '"ol"' in memory._DIARY_PROMPT
