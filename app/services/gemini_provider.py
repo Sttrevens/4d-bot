@@ -45,6 +45,7 @@ from app.harness import (
     should_nudge_unmatched_reads,
     rewrite_web_search_query,
 )
+from app.harness.tool_output_ledger import format_tool_output_for_model
 from app.services.base_agent import (
     _build_system_prompt,
     _strip_degenerate_repetition,
@@ -1329,8 +1330,18 @@ async def _run_sub_agent(
             # Sub-agent URL 溯源：在截断前从完整数据中提取 URL
             _sub_seen_urls.update(extract_urls(result_str))
 
-            if len(result_str) > _MAX_TOOL_RESULT_LEN:
-                result_str = result_str[:_MAX_TOOL_RESULT_LEN] + "\n...[结果已截断]"
+            result_str = format_tool_output_for_model(
+                tenant_id=tenant.tenant_id,
+                tool_name=func_name,
+                content=result_str,
+                max_inline_chars=_MAX_TOOL_RESULT_LEN,
+                metadata={
+                    "provider": "gemini",
+                    "agent": "sub",
+                    "chat_id": chat_id,
+                    "sender_id": sender_id,
+                },
+            )
 
             outcome = _extract_outcome(func_name, result_str, func_args)
             action_outcomes.append((func_name, outcome))
@@ -2753,11 +2764,18 @@ async def handle_message(
             # URL 溯源：在截断前从完整数据中提取所有 URL（截断后的 URL 仍可用于溯源验证）
             _seen_urls.update(extract_urls(result_str))
 
-            if len(result_str) > _MAX_TOOL_RESULT_LEN:
-                result_str = (
-                    result_str[:_MAX_TOOL_RESULT_LEN]
-                    + f"\n\n... (截断，原文 {len(result_str)} 字符)"
-                )
+            result_str = format_tool_output_for_model(
+                tenant_id=tenant.tenant_id,
+                tool_name=func_name,
+                content=result_str,
+                max_inline_chars=_MAX_TOOL_RESULT_LEN,
+                metadata={
+                    "provider": "gemini",
+                    "agent": "main",
+                    "chat_id": effective_chat_id,
+                    "sender_id": sender_id,
+                },
+            )
 
             response_parts.append(types.Part(
                 function_response=types.FunctionResponse(

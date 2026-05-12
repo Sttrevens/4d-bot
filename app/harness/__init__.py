@@ -94,6 +94,20 @@ from app.harness.tool_escalation import (
     is_light_advice_turn,
 )
 from app.harness.tool_runtime import invoke_tool_handler
+from app.harness.tool_output_ledger import (
+    ToolOutputLedger,
+    ToolOutputRecord,
+    format_tool_output_for_model,
+    get_tool_output_ledger,
+)
+from app.harness.scenario_replay import (
+    ScenarioReplayError,
+    ScenarioReplayResult,
+    replay_scenario,
+    replay_scenario_file,
+)
+from app.harness.trajectory import TrajectoryRecorder
+from app.harness.benchmark import run_benchmark_suite, run_benchmark_suite_sync
 from app.harness.runtime_errors import (
     CODE_BUG,
     IGNORED,
@@ -183,6 +197,17 @@ __all__ = [
     "build_tool_settle_nudge",
     "is_light_advice_turn",
     "invoke_tool_handler",
+    "ToolOutputLedger",
+    "ToolOutputRecord",
+    "format_tool_output_for_model",
+    "get_tool_output_ledger",
+    "ScenarioReplayError",
+    "ScenarioReplayResult",
+    "replay_scenario",
+    "replay_scenario_file",
+    "TrajectoryRecorder",
+    "run_benchmark_suite",
+    "run_benchmark_suite_sync",
     "CODE_BUG",
     "IGNORED",
     "MANUAL_DIAGNOSTIC",

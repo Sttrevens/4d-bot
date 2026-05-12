@@ -68,7 +68,7 @@ jobs:
 
       - name: Run guardrail regression tests
         run: |
-          pytest -q tests/test_action_claims.py tests/test_turn_mode.py tests/test_grounding.py tests/test_unmatched_reads.py tests/test_session_facts.py tests/test_tool_escalation.py tests/test_empty_fallback.py
+          bash scripts/run_tests.sh sanity
 
       - name: Run dashboard browser regression tests
         run: |

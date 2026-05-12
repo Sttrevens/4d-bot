@@ -244,9 +244,14 @@ from app.tools.cron_agent_ops import (
     TOOL_DEFINITIONS as CRON_AGENT_TOOLS,
     TOOL_MAP as CRON_AGENT_TOOL_MAP,
 )
+from app.tools.tool_output_ops import (
+    TOOL_DEFINITIONS as TOOL_OUTPUT_TOOLS,
+    TOOL_MAP as TOOL_OUTPUT_TOOL_MAP,
+)
 from app.services import user_registry
 from app.services import memory as bot_memory
 from app.services import planner as bot_planner
+from app.plugins.registry import plugin_registry
 
 logger = logging.getLogger(__name__)
 
@@ -355,6 +360,7 @@ ALL_TOOL_MAP = {
     **IMAGE_TOOL_MAP,
     **SKILL_MGMT_TOOL_MAP,
     **CRON_AGENT_TOOL_MAP,
+    **TOOL_OUTPUT_TOOL_MAP,
 }
 
 
@@ -483,6 +489,7 @@ _ALL_TOOL_DEFS = (
     + IMAGE_TOOLS
     + SKILL_MGMT_TOOLS
     + CRON_AGENT_TOOLS
+    + TOOL_OUTPUT_TOOLS
 )
 
 
@@ -805,6 +812,7 @@ _TOOL_GROUPS: dict[str, frozenset[str]] = {
         "save_memory", "recall_memory",
         "list_capability_modules", "load_capability_module", "save_capability_module",
         "export_file",  # 几乎所有任务最终可能需要导出
+        "read_tool_output",
         # 跨平台身份工具（所有平台可用）
         "search_known_user", "initiate_identity_verification",
         "confirm_identity_verification", "get_user_identity",
@@ -969,9 +977,43 @@ def _select_tool_groups(user_text: str, platform: str = "") -> set[str]:
 
 def _get_group_tool_names(groups: set[str]) -> set[str]:
     """获取指定工具组中所有工具的名称集合。"""
-    names: set[str] = set()
+    if not groups:
+        return set()
+    plugin_registry.discover()
+    names = plugin_registry.get_group_tool_names(groups)
     for g in groups:
-        names |= _TOOL_GROUPS.get(g, frozenset())
+        names |= _SYNTHETIC_TOOL_GROUPS.get(g, frozenset())
+    return names
+
+
+_SYNTHETIC_TOOL_GROUPS: dict[str, frozenset[str]] = {
+    "core": frozenset({"think"}),
+}
+
+
+def _get_current_tool_platform(tenant) -> str:
+    from app.tenant.context import get_current_channel
+    current_ch = get_current_channel()
+    return current_ch.platform if current_ch else tenant.platform
+
+
+def _get_registry_tool_names_for_tenant(
+    tenant,
+    *,
+    platform: str,
+    groups: set[str] | None = None,
+) -> set[str]:
+    """Return built-in tool names allowed by plugin registry metadata."""
+    defs, tool_map = plugin_registry.get_tools_for_tenant(
+        tenant,
+        platform=platform,
+        groups=groups,
+    )
+    names = {t["name"] for t in defs} | set(tool_map)
+    if not tenant.tools_enabled or "think" in tenant.tools_enabled:
+        names.add("think")
+    for group in groups or set():
+        names |= _SYNTHETIC_TOOL_GROUPS.get(group, frozenset())
     return names
 
 
@@ -1034,25 +1076,19 @@ def _expand_tool_group(
         )
         return [], {}
 
-    group_tools = _TOOL_GROUPS.get(group_name, frozenset())
+    group_tools = _get_group_tool_names({group_name})
     if not group_tools:
         return [], {}
 
     # 只加载尚未存在的工具
     new_tool_names = group_tools - current_tool_names
 
-    # 应用租户级过滤（权限/平台/白名单）
-    if not tenant.self_iteration_enabled:
-        new_tool_names -= _SELF_ITERATION_TOOLS
-    if not getattr(tenant, "instance_management_enabled", False):
-        new_tool_names -= _INSTANCE_MGMT_TOOLS
-    if tenant.platform != "feishu":
-        new_tool_names -= _FEISHU_ONLY_TOOLS
-    if tenant.platform == "feishu":
-        new_tool_names -= _WECOM_ONLY_TOOLS
-    if tenant.tools_enabled:
-        allowed = set(tenant.tools_enabled)
-        new_tool_names &= allowed
+    current_platform = _get_current_tool_platform(tenant)
+    new_tool_names &= _get_registry_tool_names_for_tenant(
+        tenant,
+        platform=current_platform,
+        groups={group_name},
+    )
 
     if not new_tool_names:
         return [], {}
@@ -1086,43 +1122,13 @@ def _get_tenant_tools(
     override_groups: 子 agent 指定的工具组。传入时跳过关键词匹配，
     直接按指定组过滤，且不追加 request_more_tools 元工具。
     """
-    tool_map = dict(ALL_TOOL_MAP)
-    tool_defs = list(_ALL_TOOL_DEFS)
-
-    # 非自迭代租户：移除 self_* 和 server_* 运维工具
-    if not tenant.self_iteration_enabled:
-        for name in _SELF_ITERATION_TOOLS:
-            tool_map.pop(name, None)
-        tool_defs = [t for t in tool_defs if t["name"] not in _SELF_ITERATION_TOOLS]
-
-    # 非实例管理租户：移除 provision/instance 管理工具
-    if not getattr(tenant, "instance_management_enabled", False):
-        for name in _INSTANCE_MGMT_TOOLS:
-            tool_map.pop(name, None)
-        tool_defs = [t for t in tool_defs if t["name"] not in _INSTANCE_MGMT_TOOLS]
-
-    # 平台过滤：基于当前 channel 平台（而非 tenant.platform，支持多 channel）
-    from app.tenant.context import get_current_channel
-    current_ch = get_current_channel()
-    current_platform = current_ch.platform if current_ch else tenant.platform
-
-    # 非飞书平台（企微等）：移除飞书专属工具（日历/任务/文档/多维表格/消息等）
-    if current_platform != "feishu":
-        for name in _FEISHU_ONLY_TOOLS:
-            tool_map.pop(name, None)
-        tool_defs = [t for t in tool_defs if t["name"] not in _FEISHU_ONLY_TOOLS]
-
-    # 飞书平台：移除企微专属工具（文件导出 — 飞书用云文档）
-    if current_platform == "feishu":
-        for name in _WECOM_ONLY_TOOLS:
-            tool_map.pop(name, None)
-        tool_defs = [t for t in tool_defs if t["name"] not in _WECOM_ONLY_TOOLS]
-
-    # tools_enabled 白名单（非空时仅保留指定工具）
-    if tenant.tools_enabled:
-        allowed = set(tenant.tools_enabled) | {"think"}
-        tool_map = {k: v for k, v in tool_map.items() if k in allowed}
-        tool_defs = [t for t in tool_defs if t["name"] in allowed]
+    current_platform = _get_current_tool_platform(tenant)
+    allowed_builtin_names = _get_registry_tool_names_for_tenant(
+        tenant,
+        platform=current_platform,
+    )
+    tool_map = {k: v for k, v in ALL_TOOL_MAP.items() if k in allowed_builtin_names}
+    tool_defs = [t for t in _ALL_TOOL_DEFS if t["name"] in allowed_builtin_names]
 
     # ── 工具分组按需加载（减少 context） ──
     # override_groups 优先（子 agent 精确指定工具组）

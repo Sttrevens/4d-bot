@@ -82,6 +82,20 @@ class TestGetGroupToolNames:
         names = _get_group_tool_names(set())
         assert len(names) == 0
 
+    def test_group_membership_comes_from_plugin_registry(self, monkeypatch):
+        from app.plugins.registry import plugin_registry
+        from app.services.base_agent import _get_group_tool_names
+        from app.tools.browser_ops import TOOL_MAP as BROWSER_TOOL_MAP
+
+        plugin_registry.discover()
+        entry = plugin_registry.get_plugin("browser_ops")
+        assert entry is not None
+        monkeypatch.setattr(entry.manifest, "group", "content")
+
+        names = _get_group_tool_names({"research"})
+
+        assert not (set(BROWSER_TOOL_MAP) & names)
+
 
 class TestGetTenantToolsLazyLoading:
     """_get_tenant_tools with user_text: 验证懒加载过滤"""
@@ -130,6 +144,15 @@ class TestGetTenantToolsLazyLoading:
         assert "request_more_tools" in tool_names
         assert "request_more_tools" in tool_map
 
+    def test_read_tool_output_is_core_tool(self):
+        from app.services.base_agent import _get_tenant_tools
+        tenant = self._make_tenant("wecom_kf")
+        tools, tool_map = _get_tenant_tools(tenant, user_text="帮我调研小红书")
+        tool_names = {t["function"]["name"] for t in tools}
+
+        assert "read_tool_output" in tool_names
+        assert "read_tool_output" in tool_map
+
     def test_tool_map_stays_complete(self):
         """tool_map 应保持完整（支持动态扩展后调用）"""
         from app.services.base_agent import _get_tenant_tools, ALL_TOOL_MAP
@@ -139,6 +162,23 @@ class TestGetTenantToolsLazyLoading:
         # 因为 request_more_tools 动态扩展后 LLM 需要能调用新工具
         assert "web_search" in tool_map  # core
         assert "think" in tool_map  # always
+
+    def test_tenant_tool_visibility_comes_from_plugin_registry(self, monkeypatch):
+        from app.plugins.registry import plugin_registry
+        from app.services.base_agent import _get_tenant_tools
+        from app.tools.calendar_ops import TOOL_MAP as CALENDAR_TOOL_MAP
+
+        plugin_registry.discover()
+        entry = plugin_registry.get_plugin("calendar_ops")
+        assert entry is not None
+        monkeypatch.setattr(entry.manifest, "platforms", ["qq"])
+
+        tenant = self._make_tenant("feishu")
+        tools, tool_map = _get_tenant_tools(tenant, user_text="")
+        tool_names = {t["function"]["name"] for t in tools}
+
+        assert not (set(CALENDAR_TOOL_MAP) & tool_names)
+        assert not (set(CALENDAR_TOOL_MAP) & set(tool_map))
 
 
 class TestExpandToolGroup:

@@ -1,0 +1,55 @@
+{
+  "id": "basic_tool_replay",
+  "context": {
+    "tenant_id": "pm-bot",
+    "platform": "feishu"
+  },
+  "user_text": "帮我查一下 Hermes 工单 H-100，然后把交付凭证发给我。",
+  "expected_visible_tools": [
+    "lookup_ticket",
+    "send_delivery_receipt"
+  ],
+  "scripted_model_tool_calls": [
+    {
+      "name": "lookup_ticket",
+      "arguments": {
+        "ticket_id": "H-100"
+      }
+    },
+    {
+      "name": "send_delivery_receipt",
+      "arguments": {
+        "ticket_id": "H-100",
+        "ledger_id": "ledger-file-42"
+      }
+    }
+  ],
+  "scripted_tool_results": [
+    {
+      "name": "lookup_ticket",
+      "text": "工单 H-100 已完成，交付物 ledger_id=ledger-ticket-7。"
+    },
+    {
+      "name": "send_delivery_receipt",
+      "text": "已发送交付凭证，delivery evidence ledger_id=ledger-file-42。"
+    }
+  ],
+  "final_text": "Hermes 工单 H-100 已完成，交付凭证已发送。",
+  "expect": {
+    "final": "Hermes 工单 H-100 已完成，交付凭证已发送。"
+  },
+  "assertions": {
+    "final_text_contains": [
+      "H-100 已完成",
+      "交付凭证已发送"
+    ],
+    "expected_call_sequence": [
+      "lookup_ticket",
+      "send_delivery_receipt"
+    ],
+    "tool_output_ledger_ids": [
+      "ledger-ticket-7",
+      "ledger-file-42"
+    ]
+  }
+}
