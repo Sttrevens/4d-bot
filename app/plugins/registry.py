@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import ast
 import importlib
 import logging
 import time
@@ -39,6 +40,7 @@ class ToolManifest:
     requires_self_iteration: bool = False    # 需要 self_iteration_enabled
     requires_instance_mgmt: bool = False     # 需要 instance_management_enabled
     inject_tenant_id: bool = False           # 工具调用时注入 tenant_id
+    public_tools: list[str] = field(default_factory=list)  # 模块受限时仍公开的工具
     description: str = ""                    # 人类可读描述
 
 
@@ -90,21 +92,27 @@ _DEFAULT_MANIFESTS: dict[str, dict] = {
     "bitable_ops":      {"group": "feishu_collab", "platforms": ["feishu"]},
     "mail_ops":         {"group": "feishu_collab", "platforms": ["feishu"]},
     "openapi_ops":      {"group": "feishu_collab", "platforms": ["feishu"]},
+    "cerul_ops":        {"group": "core"},
     "file_ops":         {"group": "code_dev"},
     "git_ops":          {"group": "code_dev"},
     "github_ops":       {"group": "code_dev"},
     "repo_search":      {"group": "code_dev"},
     "issue_ops":        {"group": "code_dev"},
+    "unity_ops":        {"group": "code_dev"},
+    "remote_dev_ops":   {"group": "code_dev"},
     "self_ops":         {"group": "devops", "requires_self_iteration": True},
     "server_ops":       {"group": "devops", "requires_self_iteration": True},
+    "railway_ops":      {"group": "devops", "requires_self_iteration": True},
     "social_media_ops": {"group": "research"},
     "xhs_ops":          {"group": "research"},
     "browser_ops":      {"group": "research"},
+    "leadgen_ops":      {"group": "leadgen"},
+    "outreach_ops":     {"group": "leadgen"},
     "file_export":      {"group": "content"},
     "video_url_ops":    {"group": "content"},
     "image_ops":        {"group": "content"},
     "provision_ops":    {"group": "admin", "requires_instance_mgmt": True},
-    "customer_ops":     {"group": "admin", "requires_instance_mgmt": True},
+    "customer_ops":     {"group": "admin", "requires_instance_mgmt": True, "public_tools": ["notify_admin"]},
     "env_ops":          {"group": "admin"},
     "capability_ops":   {"group": "admin"},
     "custom_tool_ops":  {"group": "extension", "inject_tenant_id": True},
@@ -114,11 +122,43 @@ _DEFAULT_MANIFESTS: dict[str, dict] = {
     "web_search":       {"group": "core"},
     "memory_ops":       {"group": "core"},
     "module_ops":       {"group": "core"},
-    "reminder_ops":     {"group": "core"},
+    "reminder_ops":     {"group": "automation"},
     "identity_ops":     {"group": "core"},
     "sandbox":          {"group": "core"},
     "sandbox_caps":     {"group": "core"},
+    "cron_agent_ops":   {"group": "automation"},
+    "tool_output_ops":  {"group": "core"},
 }
+
+
+def _read_tool_manifest(py_file: Path) -> dict[str, Any]:
+    """Read literal TOOL_MANIFEST from source without importing the module."""
+    try:
+        tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=str(py_file))
+    except (OSError, SyntaxError):
+        logger.warning("plugin manifest parse failed: %s", py_file, exc_info=True)
+        return {}
+
+    for node in tree.body:
+        value_node: ast.AST | None = None
+        if isinstance(node, ast.Assign):
+            if any(isinstance(target, ast.Name) and target.id == "TOOL_MANIFEST" for target in node.targets):
+                value_node = node.value
+        elif isinstance(node, ast.AnnAssign):
+            if isinstance(node.target, ast.Name) and node.target.id == "TOOL_MANIFEST":
+                value_node = node.value
+
+        if value_node is None:
+            continue
+
+        try:
+            value = ast.literal_eval(value_node)
+        except (ValueError, TypeError):
+            logger.warning("plugin manifest is not a literal dict: %s", py_file, exc_info=True)
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    return {}
 
 
 class PluginRegistry:
@@ -129,13 +169,15 @@ class PluginRegistry:
         self._discovered = False
         self._discover_time: float = 0
 
-    def discover(self, tools_dir: str | None = None) -> int:
+    def discover(self, tools_dir: str | None = None, *, force: bool = False) -> int:
         """扫描 app/tools/ 目录，发现所有工具模块。
 
         只读取文件名和 TOOL_MANIFEST（如果有），不 import 整个模块。
         返回发现的模块数。
         """
         if tools_dir is None:
+            if self._discovered and not force:
+                return len(self._plugins)
             tools_dir = str(Path(__file__).parent.parent / "tools")
 
         tools_path = Path(tools_dir)
@@ -150,7 +192,7 @@ class PluginRegistry:
                 continue
 
             module_name = f"app.tools.{name}"
-            defaults = _DEFAULT_MANIFESTS.get(name, {})
+            defaults = {**_DEFAULT_MANIFESTS.get(name, {}), **_read_tool_manifest(py_file)}
             manifest = ToolManifest(
                 module_name=module_name,
                 group=defaults.get("group", "core"),
@@ -158,6 +200,7 @@ class PluginRegistry:
                 requires_self_iteration=defaults.get("requires_self_iteration", False),
                 requires_instance_mgmt=defaults.get("requires_instance_mgmt", False),
                 inject_tenant_id=defaults.get("inject_tenant_id", False),
+                public_tools=defaults.get("public_tools", []),
                 description=defaults.get("description", ""),
             )
             self._plugins[name] = PluginEntry(manifest=manifest)
@@ -207,7 +250,11 @@ class PluginRegistry:
             # 权限过滤
             if manifest.requires_self_iteration and not tenant.self_iteration_enabled:
                 continue
-            if manifest.requires_instance_mgmt and not getattr(tenant, "instance_management_enabled", False):
+            instance_restricted = (
+                manifest.requires_instance_mgmt
+                and not getattr(tenant, "instance_management_enabled", False)
+            )
+            if instance_restricted and not manifest.public_tools:
                 continue
 
             # 工具组过滤
@@ -216,6 +263,11 @@ class PluginRegistry:
 
             # 加载模块
             defs, map_ = entry.load()
+
+            if instance_restricted:
+                public = set(manifest.public_tools)
+                defs = [d for d in defs if d["name"] in public]
+                map_ = {k: v for k, v in map_.items() if k in public}
 
             # tools_enabled 白名单过滤
             if tools_whitelist:

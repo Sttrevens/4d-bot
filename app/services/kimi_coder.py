@@ -32,6 +32,7 @@ from app.harness import (
     should_compact_history,
     should_nudge_unmatched_reads,
 )
+from app.harness.tool_output_ledger import format_tool_output_for_model
 from app.services.base_agent import (
     # 工具注册表
     ALL_TOOL_MAP,
@@ -420,11 +421,18 @@ async def handle_message(
                 result_str = result
             else:
                 result_str = str(result)
-            if len(result_str) > _MAX_TOOL_RESULT_LEN:
-                result_str = (
-                    result_str[:_MAX_TOOL_RESULT_LEN]
-                    + f"\n\n... (结果已截断，原文 {len(result_str)} 字符，仅展示前 {_MAX_TOOL_RESULT_LEN})"
-                )
+            result_str = format_tool_output_for_model(
+                tenant_id=tenant.tenant_id,
+                tool_name=func_name,
+                content=result_str,
+                max_inline_chars=_MAX_TOOL_RESULT_LEN,
+                metadata={
+                    "provider": "kimi",
+                    "agent": "main",
+                    "chat_id": chat_id,
+                    "sender_id": sender_id,
+                },
+            )
             messages.append(
                 {
                     "role": "tool",
