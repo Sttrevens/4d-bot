@@ -994,7 +994,14 @@ _SYNTHETIC_TOOL_GROUPS: dict[str, frozenset[str]] = {
 def _get_current_tool_platform(tenant) -> str:
     from app.tenant.context import get_current_channel
     current_ch = get_current_channel()
-    return current_ch.platform if current_ch else tenant.platform
+    if current_ch:
+        try:
+            if current_ch.platform in set(tenant.get_channel_platforms()):
+                return current_ch.platform
+        except Exception:
+            if current_ch.platform == getattr(tenant, "platform", ""):
+                return current_ch.platform
+    return tenant.platform
 
 
 def _get_registry_tool_names_for_tenant(
@@ -1199,6 +1206,15 @@ def _get_tenant_tools(
                 tool_map.update(skill_tool_map)
         except Exception:
             logger.warning("failed to load skill tools for tenant %s", tenant.tenant_id, exc_info=True)
+
+    # Final fail-safe: platform-exclusive built-ins must not leak even if the
+    # plugin registry was mutated by tests or hot-reload state.
+    if current_platform != "feishu":
+        tool_defs = [t for t in tool_defs if t.get("name") not in _FEISHU_ONLY_TOOLS]
+        tool_map = {k: v for k, v in tool_map.items() if k not in _FEISHU_ONLY_TOOLS}
+    if current_platform == "feishu" and _WECOM_ONLY_TOOLS:
+        tool_defs = [t for t in tool_defs if t.get("name") not in _WECOM_ONLY_TOOLS]
+        tool_map = {k: v for k, v in tool_map.items() if k not in _WECOM_ONLY_TOOLS}
 
     return _to_openai_tools(tool_defs), tool_map
 

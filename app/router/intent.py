@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import re
 import time
@@ -229,6 +230,37 @@ async def route_message(
 
     multimodal, mm_reason = _is_multimodal(user_text, image_urls)
 
+    runtime_reply = await _try_hermes_runtime(
+        tenant=tenant,
+        user_text=user_text,
+        sender_id=sender_id,
+        sender_name=sender_name,
+        history_key=history_key,
+        chat_id=chat_id,
+        chat_type=chat_type,
+        mode=mode,
+        chat_context=chat_context,
+        image_urls=image_urls,
+        run_id="",
+        channel_platform=channel_platform,
+    )
+    if runtime_reply is not None:
+        chat_history.add_assistant(history_key, _enrich_reply(runtime_reply))
+        remember_visual_turn(
+            sender_id=sender_id,
+            user_text=user_text,
+            image_urls=image_urls,
+            assistant_reply=runtime_reply,
+        )
+        remember_recent_topic(
+            sender_id=sender_id,
+            user_text=user_text,
+            image_urls=image_urls,
+            assistant_reply=runtime_reply,
+        )
+        _record(tenant.tenant_id, sender_id, "hermes-runtime", "hermes", t_start)
+        return runtime_reply
+
     if tenant.coding_model and not multimodal:
         logger.info("text-only → routing to %s", tenant.coding_model)
         model_used = tenant.coding_model
@@ -286,6 +318,84 @@ async def route_message(
     )
     _record(tenant.tenant_id, sender_id, model_used, provider_used, t_start)
     return reply
+
+
+async def _try_hermes_runtime(
+    *,
+    tenant,
+    user_text: str,
+    sender_id: str,
+    sender_name: str,
+    history_key: str,
+    chat_id: str,
+    chat_type: str,
+    mode: str,
+    chat_context: str,
+    image_urls: list[str] | None,
+    run_id: str,
+    channel_platform: str,
+) -> str | None:
+    from app.hermes_runtime.client import (
+        HermesRuntimeClient,
+        build_runtime_request,
+        store_shadow_response,
+    )
+    from app.hermes_runtime.selector import select_runtime
+    from app.tenant.context import get_current_sender, get_current_channel
+
+    runtime_run_id = run_id or f"runtime-{int(time.time() * 1000)}"
+    choice = select_runtime(tenant, sender_id=sender_id, run_id=runtime_run_id)
+    if choice == "legacy":
+        return None
+
+    sender_ctx = get_current_sender()
+    current_ch = get_current_channel()
+    request = build_runtime_request(
+        tenant,
+        run_id=runtime_run_id,
+        user_text=user_text,
+        sender_id=sender_id,
+        sender_name=sender_name,
+        identity_id=sender_ctx.identity_id if sender_ctx else "",
+        history_key=history_key,
+        chat_id=chat_id,
+        chat_type=chat_type,
+        mode=mode,
+        chat_context=chat_context,
+        image_urls=image_urls,
+        channel_id=current_ch.channel_id if current_ch else "",
+        platform=channel_platform,
+        shadow_mode=(choice == "legacy_shadow_hermes"),
+    )
+    timeout = int(getattr(tenant, "hermes_runtime_timeout_seconds", 180) or 180)
+    client = HermesRuntimeClient(timeout_seconds=timeout)
+
+    if choice == "legacy_shadow_hermes":
+        async def _shadow() -> None:
+            response = await client.run_turn(request)
+            store_shadow_response(tenant.tenant_id, runtime_run_id, response)
+
+        with contextlib.suppress(Exception):
+            asyncio.create_task(_shadow())
+        return None
+
+    response = await client.run_turn(request)
+    if response.status == "completed" and response.final_text:
+        return response.final_text
+
+    if bool(getattr(tenant, "hermes_runtime_fallback_to_legacy", True)):
+        logger.warning(
+            "hermes runtime failed; falling back to legacy tenant=%s run=%s status=%s error=%s",
+            tenant.tenant_id,
+            runtime_run_id,
+            response.status,
+            response.error.code if response.error else "",
+        )
+        return None
+
+    if response.error:
+        return f"抱歉，Hermes runtime 暂时不可用：{response.error.message}"
+    return "抱歉，Hermes runtime 没有返回可发送的结果。"
 
 
 def _enrich_reply(reply: str) -> str:
