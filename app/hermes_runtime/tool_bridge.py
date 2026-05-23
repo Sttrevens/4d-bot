@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from app.hermes_runtime.checkpoint import build_side_effect_ledger_entry
 from app.hermes_runtime.side_effects import classify_side_effect
 from app.hermes_runtime.tool_policy import side_effect_class_for_tool, tool_concurrency_key
 from app.hermes_runtime.types import RuntimePolicy
@@ -132,6 +133,10 @@ def execute_tool_call(
     policy: RuntimePolicy,
     tool_name: str,
     args: dict[str, Any] | None = None,
+    *,
+    run_id: str = "",
+    tenant_id: str = "",
+    ledger: list[dict[str, Any]] | None = None,
 ) -> RuntimeToolResult:
     args = args or {}
     if policy.allowed_tool_names and tool_name not in set(policy.allowed_tool_names):
@@ -150,6 +155,17 @@ def execute_tool_call(
             outcome="blocked",
         )
     args = _handler_args(toolset, tool_name, args)
+    effect = classify_side_effect(tool_name, args)
+    ledger_entry: dict[str, Any] | None = None
+    if ledger is not None and effect.side_effect:
+        ledger_entry = build_side_effect_ledger_entry(
+            run_id=run_id,
+            tenant_id=tenant_id,
+            tool_name=tool_name,
+            args=args,
+            status="started",
+        )
+        ledger.append(ledger_entry)
     start = time.monotonic()
     try:
         result = handler(args)
@@ -161,15 +177,32 @@ def execute_tool_call(
                 outcome="retryable_error",
             )
         duration_ms = int((time.monotonic() - start) * 1000)
+        if ledger_entry is not None:
+            ledger_entry["status"] = "completed"
+            ledger_entry["duration_ms"] = duration_ms
         return normalize_tool_result(result, tool_name=tool_name, duration_ms=duration_ms)
     except Exception as exc:
         duration_ms = int((time.monotonic() - start) * 1000)
+        if ledger_entry is not None:
+            ledger_entry["status"] = "unknown"
+            ledger_entry["duration_ms"] = duration_ms
+            return RuntimeToolResult(
+                ok=False,
+                content=(
+                    f"Runtime lost reliable state for side-effecting tool "
+                    f"'{tool_name}': {exc}"
+                ),
+                code="side_effect_unknown",
+                outcome="blocked",
+                side_effect=effect.side_effect,
+                duration_ms=duration_ms,
+            )
         return RuntimeToolResult(
             ok=False,
             content=f"Error executing tool '{tool_name}': {exc}",
             code="tool_bridge_error",
             outcome="retryable_error",
-            side_effect=classify_side_effect(tool_name).side_effect,
+            side_effect=effect.side_effect,
             duration_ms=duration_ms,
         )
 
