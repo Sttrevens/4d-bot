@@ -22,6 +22,7 @@ class RuntimeToolSchema:
 class RuntimeToolset:
     tools: list[RuntimeToolSchema] = field(default_factory=list)
     handlers: dict[str, Callable[[dict], Any]] = field(default_factory=dict)
+    tenant_id: str = ""
 
 
 @dataclass(slots=True)
@@ -78,7 +79,32 @@ def build_runtime_toolset(
     ]
     visible_names = {schema.name for schema in schemas}
     handlers = {name: handler for name, handler in tool_map.items() if name in visible_names or not visible_names}
-    return RuntimeToolset(tools=schemas, handlers=handlers)
+    return RuntimeToolset(
+        tools=schemas,
+        handlers=handlers,
+        tenant_id=str(getattr(tenant, "tenant_id", "") or ""),
+    )
+
+
+def _tool_requires_runtime_tenant(tool_name: str) -> bool:
+    try:
+        from app.services import base_agent
+
+        return tool_name in base_agent._CUSTOM_TOOL_META_NAMES
+    except Exception:
+        return tool_name in {
+            "install_agent_skill_from_github",
+            "list_agent_skill_files",
+            "read_agent_skill_file",
+            "export_agent_skill_template",
+        }
+
+
+def _handler_args(toolset: RuntimeToolset, tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(args)
+    if toolset.tenant_id and _tool_requires_runtime_tenant(tool_name):
+        normalized["tenant_id"] = toolset.tenant_id
+    return normalized
 
 
 def normalize_tool_result(result: Any, *, tool_name: str, duration_ms: int = 0) -> RuntimeToolResult:
@@ -123,6 +149,7 @@ def execute_tool_call(
             code="tool_unavailable",
             outcome="blocked",
         )
+    args = _handler_args(toolset, tool_name, args)
     start = time.monotonic()
     try:
         result = handler(args)
@@ -169,6 +196,7 @@ async def execute_tool_call_async(
             code="tool_unavailable",
             outcome="blocked",
         )
+    args = _handler_args(toolset, tool_name, args)
     start = time.monotonic()
     try:
         result = handler(args)

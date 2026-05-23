@@ -58,6 +58,66 @@ def test_execute_tool_call_normalizes_tool_result():
     assert result.side_effect is False
 
 
+def test_execute_tool_call_injects_runtime_tenant_for_repo_skill_tools():
+    from app.hermes_runtime.tool_bridge import RuntimeToolset, execute_tool_call
+    from app.hermes_runtime.types import RuntimePolicy
+
+    seen_args = {}
+
+    def read_agent_skill_file(args):
+        seen_args.update(args)
+        return ToolResult.success(args["tenant_id"])
+
+    toolset = RuntimeToolset(
+        tenant_id="tenant-a",
+        handlers={"read_agent_skill_file": read_agent_skill_file},
+    )
+    policy = RuntimePolicy(allowed_tool_names=["read_agent_skill_file"])
+
+    result = execute_tool_call(
+        toolset,
+        policy,
+        "read_agent_skill_file",
+        {"tenant_id": "tenant-b", "skill_name": "demo", "path": "SKILL.md"},
+    )
+
+    assert result.ok
+    assert result.content == "tenant-a"
+    assert seen_args["tenant_id"] == "tenant-a"
+
+
+async def test_execute_tool_calls_injects_runtime_tenant_for_async_repo_skill_tools():
+    from app.hermes_runtime.tool_bridge import RuntimeToolset, execute_tool_calls
+    from app.hermes_runtime.types import RuntimePolicy
+
+    seen_args = {}
+
+    async def read_agent_skill_file(args):
+        seen_args.update(args)
+        return ToolResult.success(args["tenant_id"])
+
+    toolset = RuntimeToolset(
+        tenant_id="tenant-a",
+        handlers={"read_agent_skill_file": read_agent_skill_file},
+    )
+    policy = RuntimePolicy(allowed_tool_names=["read_agent_skill_file"])
+
+    results = await execute_tool_calls(
+        toolset,
+        policy,
+        [
+            {
+                "tool_name": "read_agent_skill_file",
+                "args": {"tenant_id": "tenant-b", "skill_name": "demo", "path": "SKILL.md"},
+            }
+        ],
+    )
+
+    assert results[0].ok
+    assert results[0].content == "tenant-a"
+    assert seen_args["tenant_id"] == "tenant-a"
+
+
 def test_tool_policy_serializes_writes_to_same_target():
     from app.hermes_runtime.tool_policy import tool_concurrency_key
 
