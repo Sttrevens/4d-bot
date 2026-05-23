@@ -124,6 +124,9 @@ async def route_message(
     chat_id: str = "",
     chat_type: str = "",
     inbox: asyncio.Queue[str] | None = None,
+    run_id: str = "",
+    resume_token: str = "",
+    lease_id: str = "",
 ) -> str:
     """将用户消息交给统一 agent 处理"""
     from app.tenant.context import get_current_tenant, get_current_channel, set_current_sender, get_current_sender
@@ -241,7 +244,7 @@ async def route_message(
         mode=mode,
         chat_context=chat_context,
         image_urls=image_urls,
-        run_id="",
+        run_id=run_id,
         channel_platform=channel_platform,
     )
     if runtime_reply is not None:

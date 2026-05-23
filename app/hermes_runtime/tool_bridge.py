@@ -88,17 +88,18 @@ def build_runtime_toolset(
 
 
 def _tool_requires_runtime_tenant(tool_name: str) -> bool:
+    repo_skill_tool_names = {
+        "install_agent_skill_from_github",
+        "list_agent_skill_files",
+        "read_agent_skill_file",
+        "export_agent_skill_template",
+    }
     try:
         from app.services import base_agent
 
-        return tool_name in base_agent._CUSTOM_TOOL_META_NAMES
+        return tool_name in base_agent._CUSTOM_TOOL_META_NAMES or tool_name in repo_skill_tool_names
     except Exception:
-        return tool_name in {
-            "install_agent_skill_from_github",
-            "list_agent_skill_files",
-            "read_agent_skill_file",
-            "export_agent_skill_template",
-        }
+        return tool_name in repo_skill_tool_names
 
 
 def _handler_args(toolset: RuntimeToolset, tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
@@ -116,7 +117,7 @@ def normalize_tool_result(result: Any, *, tool_name: str, duration_ms: int = 0) 
             content=str(result),
             code=result.code,
             retry_hint=result.retry_hint,
-            outcome=result.outcome,
+            outcome=getattr(result, "outcome", "ok" if result.ok else "retryable_error"),
             side_effect=side_effect,
             duration_ms=duration_ms,
         )
