@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from app.hermes_runtime.side_effects import classify_side_effect
+from app.hermes_runtime.tool_policy import side_effect_class_for_tool, tool_concurrency_key
 from app.hermes_runtime.types import RuntimePolicy
 from app.tools.tool_result import ToolResult
 
@@ -143,3 +145,85 @@ def execute_tool_call(
             side_effect=classify_side_effect(tool_name).side_effect,
             duration_ms=duration_ms,
         )
+
+
+async def execute_tool_call_async(
+    toolset: RuntimeToolset,
+    policy: RuntimePolicy,
+    tool_name: str,
+    args: dict[str, Any] | None = None,
+) -> RuntimeToolResult:
+    args = args or {}
+    if policy.allowed_tool_names and tool_name not in set(policy.allowed_tool_names):
+        return RuntimeToolResult(
+            ok=False,
+            content=f"Tool '{tool_name}' is not allowed for this runtime request.",
+            code="policy_denied",
+            outcome="blocked",
+        )
+    handler = toolset.handlers.get(tool_name)
+    if handler is None:
+        return RuntimeToolResult(
+            ok=False,
+            content=f"Unknown or unloaded tool: {tool_name}",
+            code="tool_unavailable",
+            outcome="blocked",
+        )
+    start = time.monotonic()
+    try:
+        result = handler(args)
+        if inspect.isawaitable(result):
+            result = await result
+        duration_ms = int((time.monotonic() - start) * 1000)
+        return normalize_tool_result(result, tool_name=tool_name, duration_ms=duration_ms)
+    except Exception as exc:
+        duration_ms = int((time.monotonic() - start) * 1000)
+        return RuntimeToolResult(
+            ok=False,
+            content=f"Error executing tool '{tool_name}': {exc}",
+            code="tool_bridge_error",
+            outcome="retryable_error",
+            side_effect=classify_side_effect(tool_name).side_effect,
+            duration_ms=duration_ms,
+        )
+
+
+def _call_name_and_args(call: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    tool_name = str(call.get("tool_name") or call.get("name") or "")
+    args = call.get("args") or call.get("arguments") or {}
+    if not isinstance(args, dict):
+        args = {}
+    return tool_name, args
+
+
+def _execution_lock_key(tool_name: str, args: dict[str, Any]) -> str:
+    if side_effect_class_for_tool(tool_name) == "unknown":
+        return "__unknown_side_effect__"
+    return tool_concurrency_key(tool_name, args)
+
+
+async def execute_tool_calls(
+    toolset: RuntimeToolset,
+    policy: RuntimePolicy,
+    calls: list[dict[str, Any]],
+) -> list[RuntimeToolResult]:
+    locks: dict[str, asyncio.Lock] = {}
+    results: list[RuntimeToolResult | None] = [None] * len(calls)
+
+    async def run_one(index: int, call: dict[str, Any]) -> None:
+        tool_name, args = _call_name_and_args(call)
+        lock_key = _execution_lock_key(tool_name, args)
+        if lock_key:
+            lock = locks.setdefault(lock_key, asyncio.Lock())
+            async with lock:
+                results[index] = await execute_tool_call_async(toolset, policy, tool_name, args)
+            return
+        results[index] = await execute_tool_call_async(toolset, policy, tool_name, args)
+
+    await asyncio.gather(*(run_one(index, call) for index, call in enumerate(calls)))
+    return [
+        result
+        if result is not None
+        else RuntimeToolResult(ok=False, content="Tool call did not produce a result.", code="tool_bridge_error")
+        for result in results
+    ]

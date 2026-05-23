@@ -1,3 +1,6 @@
+import asyncio
+import time
+
 from app.tenant.config import TenantConfig
 from app.tools.tool_result import ToolResult
 
@@ -65,3 +68,84 @@ def test_tool_policy_serializes_writes_to_same_target():
     assert a == b
     assert a
     assert c == ""
+
+
+async def test_execute_tool_calls_awaits_async_handlers_and_preserves_order():
+    from app.hermes_runtime.tool_bridge import RuntimeToolset, execute_tool_calls
+    from app.hermes_runtime.types import RuntimePolicy
+
+    async def slow_read(args):
+        await asyncio.sleep(0.03)
+        return ToolResult.success(f"slow {args['value']}")
+
+    async def fast_read(args):
+        await asyncio.sleep(0.01)
+        return ToolResult.success(f"fast {args['value']}")
+
+    toolset = RuntimeToolset(handlers={"read_file": slow_read, "web_search": fast_read})
+    policy = RuntimePolicy(allowed_tool_names=["read_file", "web_search"])
+
+    results = await execute_tool_calls(
+        toolset,
+        policy,
+        [
+            {"tool_name": "read_file", "args": {"value": "first"}},
+            {"tool_name": "web_search", "args": {"value": "second"}},
+        ],
+    )
+
+    assert [result.content for result in results] == ["slow first", "fast second"]
+    assert all(result.ok for result in results)
+
+
+async def test_execute_tool_calls_runs_reads_concurrently_and_serializes_same_target_writes():
+    from app.hermes_runtime.tool_bridge import RuntimeToolset, execute_tool_calls
+    from app.hermes_runtime.types import RuntimePolicy
+
+    write_active = 0
+    max_write_active = 0
+
+    async def read_file(args):
+        await asyncio.sleep(0.05)
+        return ToolResult.success(args["path"])
+
+    async def update_calendar_event(args):
+        nonlocal write_active, max_write_active
+        write_active += 1
+        max_write_active = max(max_write_active, write_active)
+        await asyncio.sleep(0.02)
+        write_active -= 1
+        return ToolResult.success(args["event_id"])
+
+    toolset = RuntimeToolset(
+        handlers={
+            "read_file": read_file,
+            "update_calendar_event": update_calendar_event,
+        }
+    )
+    policy = RuntimePolicy(allowed_tool_names=["read_file", "update_calendar_event"])
+
+    read_started = time.monotonic()
+    read_results = await execute_tool_calls(
+        toolset,
+        policy,
+        [
+            {"tool_name": "read_file", "args": {"path": "a.md"}},
+            {"tool_name": "read_file", "args": {"path": "b.md"}},
+        ],
+    )
+    read_elapsed = time.monotonic() - read_started
+
+    write_results = await execute_tool_calls(
+        toolset,
+        policy,
+        [
+            {"tool_name": "update_calendar_event", "args": {"event_id": "evt-1"}},
+            {"tool_name": "update_calendar_event", "args": {"event_id": "evt-1"}},
+        ],
+    )
+
+    assert [result.content for result in read_results] == ["a.md", "b.md"]
+    assert read_elapsed < 0.09
+    assert [result.content for result in write_results] == ["evt-1", "evt-1"]
+    assert max_write_active == 1
