@@ -1,5 +1,6 @@
 import asyncio
 import json
+from datetime import datetime, timedelta, timezone
 
 
 
@@ -108,9 +109,10 @@ def test_memory_recall_preview_sets_tenant_context_and_returns_entries(monkeypat
 def test_memory_quality_api_returns_user_model_quality(monkeypatch):
     from app.admin import routes
 
+    future_expiry = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
     profile = {
         "name": "吴天骄",
-        "short_term_state": [{"text": "最近因为发布延期很烦", "expires_at": "2026-05-15T00:00:00+00:00"}],
+        "short_term_state": [{"text": "最近因为发布延期很烦", "expires_at": future_expiry}],
         "support_preferences": ["情绪低落时先陪着拆问题"],
         "low_confidence_candidates": [{"text": "疑似一时状态"}],
         "quarantined_memory": [],

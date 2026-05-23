@@ -18,6 +18,7 @@ class ToolResult:
     content: str
     code: str = ""  # 错误码: not_found, permission, invalid_param, api_error, blocked, internal
     retry_hint: str = ""  # 给 LLM 的重试建议：参数应为何格式、推荐用哪个工具
+    outcome: str = "ok"  # ok | retryable_error | terminal_error | blocked
 
     def __str__(self) -> str:
         if self.retry_hint and not self.ok:
@@ -26,25 +27,57 @@ class ToolResult:
 
     @staticmethod
     def success(content: str) -> ToolResult:
-        return ToolResult(ok=True, content=content)
+        return ToolResult(ok=True, content=content, outcome="ok")
+
+    @staticmethod
+    def partial_success(content: str, code: str = "partial_success", retry_hint: str = "") -> ToolResult:
+        return ToolResult(
+            ok=True,
+            content=content,
+            code=code,
+            retry_hint=retry_hint,
+            outcome="partial_success",
+        )
 
     @staticmethod
     def error(content: str, code: str = "error", retry_hint: str = "") -> ToolResult:
-        return ToolResult(ok=False, content=content, code=code, retry_hint=retry_hint)
+        return ToolResult(
+            ok=False,
+            content=content,
+            code=code,
+            retry_hint=retry_hint,
+            outcome="terminal_error",
+        )
+
+    @staticmethod
+    def retryable_error(content: str, code: str = "retryable_error", retry_hint: str = "") -> ToolResult:
+        return ToolResult(
+            ok=False,
+            content=content,
+            code=code,
+            retry_hint=retry_hint,
+            outcome="retryable_error",
+        )
 
     @staticmethod
     def blocked(content: str) -> ToolResult:
         """写入被安全机制拦截（语法错误、缩水保护等）"""
-        return ToolResult(ok=False, content=content, code="blocked")
+        return ToolResult(ok=False, content=content, code="blocked", outcome="blocked")
 
     @staticmethod
     def not_found(content: str) -> ToolResult:
-        return ToolResult(ok=False, content=content, code="not_found")
+        return ToolResult(ok=False, content=content, code="not_found", outcome="terminal_error")
 
     @staticmethod
     def invalid_param(content: str, retry_hint: str = "") -> ToolResult:
-        return ToolResult(ok=False, content=content, code="invalid_param", retry_hint=retry_hint)
+        return ToolResult(
+            ok=False,
+            content=content,
+            code="invalid_param",
+            retry_hint=retry_hint,
+            outcome="terminal_error",
+        )
 
     @staticmethod
     def api_error(content: str) -> ToolResult:
-        return ToolResult(ok=False, content=content, code="api_error")
+        return ToolResult(ok=False, content=content, code="api_error", outcome="retryable_error")

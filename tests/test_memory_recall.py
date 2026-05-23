@@ -2,6 +2,7 @@ from app.harness.memory_recall import build_memory_recall_plan
 from app.services import memory
 from app.tools import memory_ops
 import asyncio
+from datetime import datetime, timedelta, timezone
 
 
 def test_recall_plan_deep_scans_for_first_person_state_question():
@@ -256,6 +257,7 @@ def test_build_memory_context_includes_rich_user_model(monkeypatch):
 
 
 def test_memory_context_includes_short_term_state_as_background_not_instruction(monkeypatch):
+    future_expiry = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
     profile = {
         "name": "吴天骄",
         "interaction_count": 9,
@@ -271,7 +273,7 @@ def test_memory_context_includes_short_term_state_as_background_not_instruction(
             "kind": "emotional_state",
             "confidence": 0.55,
             "sensitivity": "medium",
-            "expires_at": "2026-05-15T00:00:00+00:00",
+            "expires_at": future_expiry,
         }],
         "support_preferences": ["情绪低落时先共情，再拆解下一步"],
         "relationship_notes": ["逐渐信任 bot 能直接承认问题"],
