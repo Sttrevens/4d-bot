@@ -2,21 +2,86 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from typing import Awaitable, Callable
 
+import httpx
+
 from app.hermes_runtime.types import (
+    RuntimeArtifact,
     RuntimeConversation,
+    RuntimeErrorInfo,
     RuntimeInput,
     RuntimeOptions,
     RuntimePolicy,
     RuntimeRequest,
     RuntimeResponse,
     RuntimeSender,
+    RuntimeToolCallRecord,
+    RuntimeUsage,
 )
 from app.services import redis_client as redis
 
 
 RuntimeWorker = Callable[[RuntimeRequest], Awaitable[RuntimeResponse]]
+
+
+class RuntimeBadResponseError(ValueError):
+    pass
+
+
+def _sidecar_base_url() -> str:
+    return os.getenv("HERMES_RUNTIME_URL", "").strip().rstrip("/")
+
+
+def _turn_path() -> str:
+    path = os.getenv("HERMES_RUNTIME_TURN_PATH", "/v1/runtime/turn").strip() or "/v1/runtime/turn"
+    return path if path.startswith("/") else f"/{path}"
+
+
+def _health_path() -> str:
+    path = os.getenv("HERMES_RUNTIME_HEALTH_PATH", "/health").strip() or "/health"
+    return path if path.startswith("/") else f"/{path}"
+
+
+def _runtime_response_from_dict(data: dict) -> RuntimeResponse:
+    if not isinstance(data, dict):
+        raise RuntimeBadResponseError("sidecar response must be a JSON object")
+    run_id = str(data.get("run_id") or "")
+    if not run_id:
+        raise RuntimeBadResponseError("sidecar response missing run_id")
+    status = str(data.get("status") or "")
+    if not status:
+        raise RuntimeBadResponseError("sidecar response missing status")
+
+    try:
+        artifacts = [
+            RuntimeArtifact(**item)
+            for item in data.get("artifacts", []) or []
+            if isinstance(item, dict)
+        ]
+        tool_calls = [
+            RuntimeToolCallRecord(**item)
+            for item in data.get("tool_calls", []) or []
+            if isinstance(item, dict)
+        ]
+        usage_raw = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+        error_raw = data.get("error") if isinstance(data.get("error"), dict) else None
+
+        return RuntimeResponse(
+            run_id=run_id,
+            runtime=str(data.get("runtime") or "hermes_sidecar"),
+            status=status,
+            final_text=str(data.get("final_text") or ""),
+            artifacts=artifacts,
+            tool_calls=tool_calls,
+            usage=RuntimeUsage(**usage_raw),
+            events=list(data.get("events", []) or []),
+            resume=dict(data.get("resume") or {"resumable": False, "resume_token": ""}),
+            error=RuntimeErrorInfo(**error_raw) if error_raw else None,
+        )
+    except (TypeError, ValueError) as exc:
+        raise RuntimeBadResponseError(str(exc)) from exc
 
 
 class HermesRuntimeClient:
@@ -30,6 +95,10 @@ class HermesRuntimeClient:
         self._worker = worker
 
     async def run_turn(self, request: RuntimeRequest) -> RuntimeResponse:
+        sidecar_url = _sidecar_base_url()
+        if self._worker is None and sidecar_url:
+            return await self._run_sidecar_turn(sidecar_url, request)
+
         worker = self._worker
         if worker is None:
             from app.hermes_runtime.worker import run_runtime_turn
@@ -51,7 +120,74 @@ class HermesRuntimeClient:
                 retryable=True,
             )
 
+    async def _run_sidecar_turn(self, sidecar_url: str, request: RuntimeRequest) -> RuntimeResponse:
+        try:
+            timeout = httpx.Timeout(float(self.timeout_seconds))
+            async with httpx.AsyncClient(base_url=sidecar_url, timeout=timeout) as client:
+                response = await client.post(_turn_path(), json=request.to_dict())
+                response.raise_for_status()
+                return _runtime_response_from_dict(response.json())
+        except asyncio.TimeoutError:
+            return RuntimeResponse.failed(
+                request.run_id,
+                "runtime_timeout",
+                f"Hermes runtime exceeded {self.timeout_seconds}s",
+                retryable=True,
+            )
+        except RuntimeBadResponseError as exc:
+            return RuntimeResponse.failed(
+                request.run_id,
+                "runtime_bad_response",
+                f"Hermes runtime returned an invalid response: {exc}",
+                retryable=True,
+            )
+        except (httpx.TimeoutException, httpx.HTTPError) as exc:
+            return RuntimeResponse.failed(
+                request.run_id,
+                "runtime_unavailable",
+                f"Hermes runtime sidecar unavailable: {exc}",
+                retryable=True,
+            )
+        except ValueError as exc:
+            return RuntimeResponse.failed(
+                request.run_id,
+                "runtime_bad_response",
+                f"Hermes runtime returned invalid JSON: {exc}",
+                retryable=True,
+            )
+        except Exception as exc:
+            return RuntimeResponse.failed(
+                request.run_id,
+                "runtime_unavailable",
+                f"Hermes runtime unavailable: {exc}",
+                retryable=True,
+            )
+
     def health(self) -> dict:
+        sidecar_url = _sidecar_base_url()
+        if sidecar_url:
+            try:
+                timeout = httpx.Timeout(float(self.timeout_seconds))
+                with httpx.Client(base_url=sidecar_url, timeout=timeout) as client:
+                    response = client.get(_health_path())
+                    response.raise_for_status()
+                    data = response.json()
+                if not isinstance(data, dict):
+                    raise RuntimeBadResponseError("health response must be a JSON object")
+                return {
+                    "enabled": True,
+                    "sidecar_status": str(data.get("status") or "ok"),
+                    "sidecar_url": sidecar_url,
+                    **data,
+                }
+            except Exception as exc:
+                return {
+                    "enabled": True,
+                    "sidecar_status": "unavailable",
+                    "sidecar_url": sidecar_url,
+                    "last_error": str(exc),
+                }
+
         from app.hermes_runtime.worker import health
         return health()
 

@@ -53,3 +53,141 @@ def test_build_runtime_request_contains_allowlisted_tools_only():
     assert request.tenant_id == "pm-bot"
     assert request.policy.allowed_tool_names == ["think", "export_file"]
     assert request.runtime.profile == "default"
+
+
+@pytest.mark.asyncio
+async def test_client_posts_runtime_request_to_configured_sidecar(monkeypatch):
+    import httpx
+
+    from app.hermes_runtime.client import HermesRuntimeClient
+    from app.hermes_runtime.types import RuntimeConversation, RuntimeInput, RuntimeRequest, RuntimeSender
+
+    captured = {}
+
+    class FakeAsyncClient:
+        def __init__(self, *, base_url, timeout):
+            captured["base_url"] = str(base_url)
+            captured["timeout"] = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return None
+
+        async def post(self, path, json):
+            captured["path"] = path
+            captured["json"] = json
+            return httpx.Response(
+                200,
+                json={
+                    "run_id": json["run_id"],
+                    "runtime": "hermes_sidecar",
+                    "status": "completed",
+                    "final_text": "sidecar reply",
+                },
+                request=httpx.Request("POST", "http://hermes.test/v1/runtime/turn"),
+            )
+
+    monkeypatch.setenv("HERMES_RUNTIME_URL", "http://hermes.test/")
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+
+    request = RuntimeRequest(
+        run_id="run-sidecar-1",
+        tenant_id="pm-bot",
+        channel_id="pm-bot-feishu",
+        platform="feishu",
+        sender=RuntimeSender(sender_id="u1"),
+        conversation=RuntimeConversation(history_key="u1"),
+        input=RuntimeInput(text="hello sidecar"),
+    )
+
+    response = await HermesRuntimeClient(timeout_seconds=9).run_turn(request)
+
+    assert response.status == "completed"
+    assert response.final_text == "sidecar reply"
+    assert captured["base_url"] == "http://hermes.test"
+    assert captured["timeout"].read == 9
+    assert captured["path"] == "/v1/runtime/turn"
+    assert captured["json"]["tenant_id"] == "pm-bot"
+    assert captured["json"]["input"]["text"] == "hello sidecar"
+
+
+@pytest.mark.asyncio
+async def test_client_maps_malformed_sidecar_response_to_bad_response(monkeypatch):
+    import httpx
+
+    from app.hermes_runtime.client import HermesRuntimeClient
+    from app.hermes_runtime.types import RuntimeConversation, RuntimeInput, RuntimeRequest, RuntimeSender
+
+    class FakeAsyncClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return None
+
+        async def post(self, *_args, **_kwargs):
+            return httpx.Response(
+                200,
+                json={"status": "completed", "final_text": "missing run id"},
+                request=httpx.Request("POST", "http://hermes.test/v1/runtime/turn"),
+            )
+
+    monkeypatch.setenv("HERMES_RUNTIME_URL", "http://hermes.test")
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+
+    request = RuntimeRequest(
+        run_id="run-bad-response",
+        tenant_id="pm-bot",
+        channel_id="pm-bot-feishu",
+        platform="feishu",
+        sender=RuntimeSender(sender_id="u1"),
+        conversation=RuntimeConversation(history_key="u1"),
+        input=RuntimeInput(text="hello"),
+    )
+
+    response = await HermesRuntimeClient().run_turn(request)
+
+    assert response.status == "failed"
+    assert response.error is not None
+    assert response.error.code == "runtime_bad_response"
+    assert response.error.retryable is True
+
+
+def test_client_health_reports_configured_sidecar_url(monkeypatch):
+    import httpx
+
+    from app.hermes_runtime.client import HermesRuntimeClient
+
+    class FakeClient:
+        def __init__(self, *, base_url, timeout):
+            self.base_url = base_url
+            self.timeout = timeout
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return None
+
+        def get(self, path):
+            assert path == "/health"
+            return httpx.Response(
+                200,
+                json={"status": "ok", "source_sha": "sidecar-sha"},
+                request=httpx.Request("GET", "http://hermes.test/health"),
+            )
+
+    monkeypatch.setenv("HERMES_RUNTIME_URL", "http://hermes.test")
+    monkeypatch.setattr(httpx, "Client", FakeClient)
+
+    health = HermesRuntimeClient(timeout_seconds=7).health()
+
+    assert health["enabled"] is True
+    assert health["sidecar_status"] == "ok"
+    assert health["sidecar_url"] == "http://hermes.test"
+    assert health["source_sha"] == "sidecar-sha"

@@ -374,9 +374,9 @@ async def api_redis_debug(_token: str = Depends(_verify_token)):
 @router.get("/api/runtime/hermes/health")
 async def api_hermes_runtime_health(_token: str = Depends(_verify_token)):
     """Hermes runtime adapter health and upstream pin."""
-    from app.hermes_runtime.worker import health
+    from app.hermes_runtime.client import HermesRuntimeClient
 
-    return health()
+    return HermesRuntimeClient().health()
 
 
 # ── 租户列表 ──
