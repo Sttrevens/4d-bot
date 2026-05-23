@@ -1,5 +1,8 @@
 import pytest
 
+from app.tenant.config import TenantConfig
+from app.tools.tool_result import ToolResult
+
 
 @pytest.mark.asyncio
 async def test_client_maps_worker_exception_to_runtime_unavailable():
@@ -30,7 +33,6 @@ async def test_client_maps_worker_exception_to_runtime_unavailable():
 
 def test_build_runtime_request_contains_allowlisted_tools_only():
     from app.hermes_runtime.client import build_runtime_request
-    from app.tenant.config import TenantConfig
 
     tenant = TenantConfig(
         tenant_id="pm-bot",
@@ -191,3 +193,58 @@ def test_client_health_reports_configured_sidecar_url(monkeypatch):
     assert health["sidecar_status"] == "ok"
     assert health["sidecar_url"] == "http://hermes.test"
     assert health["source_sha"] == "sidecar-sha"
+
+
+@pytest.mark.asyncio
+async def test_local_worker_executes_planned_tool_calls_through_tool_bridge(monkeypatch):
+    from app.hermes_runtime.types import (
+        RuntimeConversation,
+        RuntimeInput,
+        RuntimePolicy,
+        RuntimeRequest,
+        RuntimeSender,
+    )
+    from app.hermes_runtime.worker import run_runtime_turn
+    from app.tenant.registry import tenant_registry
+
+    async def async_echo(args):
+        return ToolResult.success(f"echo:{args['text']}")
+
+    def fake_get_tenant_tools(tenant, user_text="", override_groups=None, suggested_groups=None):
+        return (
+            [{"type": "function", "function": {"name": "async_echo", "parameters": {}}}],
+            {"async_echo": async_echo},
+        )
+
+    monkeypatch.setenv("HERMES_RUNTIME_EXECUTE_LOCAL", "1")
+    monkeypatch.setattr("app.services.base_agent._get_tenant_tools", fake_get_tenant_tools)
+    tenant_registry.register(TenantConfig(tenant_id="pm-bot", tools_enabled=["async_echo"]))
+
+    response = await run_runtime_turn(
+        RuntimeRequest(
+            run_id="run-tools",
+            tenant_id="pm-bot",
+            channel_id="pm-bot-feishu",
+            platform="feishu",
+            sender=RuntimeSender(sender_id="u1"),
+            conversation=RuntimeConversation(history_key="u1"),
+            input=RuntimeInput(
+                text="call echo",
+                attachments=[
+                    {
+                        "kind": "hermes_tool_calls",
+                        "tool_calls": [
+                            {"tool_name": "async_echo", "args": {"text": "hello"}},
+                        ],
+                    }
+                ],
+            ),
+            policy=RuntimePolicy(allowed_tool_names=["async_echo"]),
+        )
+    )
+
+    assert response.status == "completed"
+    assert response.final_text == "async_echo: echo:hello"
+    assert response.usage.tool_calls == 1
+    assert response.tool_calls[0].tool_name == "async_echo"
+    assert response.tool_calls[0].status == "success"
