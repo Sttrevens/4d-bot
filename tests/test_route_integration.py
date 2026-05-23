@@ -96,6 +96,7 @@ class TestRouteQuotaCheck:
              patch("app.router.intent.chat_history") as mock_history, \
              patch("app.router.intent.set_current_user"), \
              patch("app.router.intent.record_usage"), \
+             patch("app.hermes_runtime.observability.record_runtime_event") as mock_runtime_event, \
              patch("app.hermes_runtime.client.HermesRuntimeClient.run_turn",
                    new_callable=AsyncMock,
                    return_value=RuntimeResponse(run_id="run-1", status="completed", final_text="Hermes 回复")), \
@@ -108,6 +109,12 @@ class TestRouteQuotaCheck:
 
             assert reply == "Hermes 回复"
             legacy_handler.assert_not_awaited()
+            selected = [call.args[0].to_dict() for call in mock_runtime_event.call_args_list
+                        if call.args[0].event == "runtime.selected"]
+            assert selected
+            assert selected[0]["run_id"] == "run-1"
+            assert selected[0]["tenant_id"] == "test-tenant"
+            assert selected[0]["platform"] == "feishu"
 
     @pytest.mark.asyncio
     async def test_hermes_runtime_failure_falls_back_to_legacy(self, mock_tenant):

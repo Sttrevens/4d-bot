@@ -87,8 +87,22 @@ async def run_runtime_turn(request: RuntimeRequest) -> RuntimeResponse:
 
 
 def health() -> dict:
+    from app.hermes_runtime.observability import health_state
+
+    enabled = os.getenv("HERMES_RUNTIME_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
+    execute_local = os.getenv("HERMES_RUNTIME_EXECUTE_LOCAL", "").strip().lower() in {"1", "true", "yes", "on"}
+    observed = health_state()
+    if observed.get("last_error"):
+        sidecar_status = "error"
+    elif execute_local:
+        sidecar_status = "configured"
+    else:
+        sidecar_status = "not_configured"
     return {
-        "enabled": os.getenv("HERMES_RUNTIME_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"},
+        "enabled": enabled,
         "source_sha": os.getenv("HERMES_RUNTIME_SOURCE_SHA", UPSTREAM_HERMES_SHA),
-        "sidecar_status": "configured" if os.getenv("HERMES_RUNTIME_EXECUTE_LOCAL") else "not_configured",
+        "sidecar_status": sidecar_status,
+        "last_success_at": observed.get("last_success_at", ""),
+        "last_error": observed.get("last_error", ""),
+        "last_error_at": observed.get("last_error_at", ""),
     }

@@ -7,6 +7,8 @@ from typing import Awaitable, Callable
 
 import httpx
 
+from app.hermes_runtime.events import make_runtime_event
+from app.hermes_runtime.observability import record_runtime_event, record_runtime_health
 from app.hermes_runtime.types import (
     RuntimeArtifact,
     RuntimeConversation,
@@ -20,7 +22,6 @@ from app.hermes_runtime.types import (
     RuntimeToolCallRecord,
     RuntimeUsage,
 )
-from app.services import redis_client as redis
 
 
 RuntimeWorker = Callable[[RuntimeRequest], Awaitable[RuntimeResponse]]
@@ -97,28 +98,36 @@ class HermesRuntimeClient:
     async def run_turn(self, request: RuntimeRequest) -> RuntimeResponse:
         sidecar_url = _sidecar_base_url()
         if self._worker is None and sidecar_url:
-            return await self._run_sidecar_turn(sidecar_url, request)
+            response = await self._run_sidecar_turn(sidecar_url, request)
+            self._record_response_event(request, response)
+            return response
 
         worker = self._worker
         if worker is None:
             from app.hermes_runtime.worker import run_runtime_turn
             worker = run_runtime_turn
         try:
-            return await asyncio.wait_for(worker(request), timeout=self.timeout_seconds)
+            response = await asyncio.wait_for(worker(request), timeout=self.timeout_seconds)
+            self._record_response_event(request, response)
+            return response
         except asyncio.TimeoutError:
-            return RuntimeResponse.failed(
+            response = RuntimeResponse.failed(
                 request.run_id,
                 "runtime_timeout",
                 f"Hermes runtime exceeded {self.timeout_seconds}s",
                 retryable=True,
             )
+            self._record_response_event(request, response)
+            return response
         except Exception as exc:
-            return RuntimeResponse.failed(
+            response = RuntimeResponse.failed(
                 request.run_id,
                 "runtime_unavailable",
                 f"Hermes runtime unavailable: {exc}",
                 retryable=True,
             )
+            self._record_response_event(request, response)
+            return response
 
     async def _run_sidecar_turn(self, sidecar_url: str, request: RuntimeRequest) -> RuntimeResponse:
         try:
@@ -190,6 +199,37 @@ class HermesRuntimeClient:
 
         from app.hermes_runtime.worker import health
         return health()
+
+    def _record_response_event(self, request: RuntimeRequest, response: RuntimeResponse) -> None:
+        error = response.error.code if response.error else ""
+        event_name = {
+            "completed": "runtime.completed",
+            "partial": "runtime.partial",
+            "failed": "runtime.failed",
+            "timed_out": "runtime.failed",
+        }.get(response.status, f"runtime.{response.status}")
+        level = "error" if response.status in {"failed", "timed_out"} else "info"
+        cost = {
+            "input_tokens": response.usage.input_tokens,
+            "output_tokens": response.usage.output_tokens,
+            "api_calls": response.usage.api_calls,
+            "tool_calls": response.usage.tool_calls,
+        }
+        record_runtime_event(
+            make_runtime_event(
+                run_id=request.run_id,
+                tenant_id=request.tenant_id,
+                channel_id=request.channel_id,
+                session_id=_request_session_id(request),
+                platform=request.platform,
+                event=event_name,
+                level=level,
+                message=response.error.message if response.error else response.status,
+                error=error,
+                cost=cost,
+            )
+        )
+        record_runtime_health(success=(response.status == "completed"), error=error)
 
 
 def _as_string_list(value) -> list[str]:
@@ -264,6 +304,7 @@ def build_runtime_request(
 
 def store_shadow_response(tenant_id: str, run_id: str, response: RuntimeResponse) -> None:
     from app.hermes_runtime.observability import shadow_result_key
+    from app.services import redis_client as redis
 
     try:
         redis.execute(
@@ -275,3 +316,10 @@ def store_shadow_response(tenant_id: str, run_id: str, response: RuntimeResponse
         )
     except Exception:
         pass
+
+
+def _request_session_id(request: RuntimeRequest) -> str:
+    sender_identity = request.sender.identity_id or request.sender.sender_id
+    chat_type = request.conversation.chat_type or "dm"
+    chat_id = request.conversation.chat_id or sender_identity
+    return f"hr:{request.tenant_id}:{request.channel_id}:{chat_type}:{chat_id}:{sender_identity}"

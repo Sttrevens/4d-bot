@@ -350,6 +350,34 @@ async def _try_hermes_runtime(
 
     sender_ctx = get_current_sender()
     current_ch = get_current_channel()
+    channel_id = str(current_ch.channel_id or "") if current_ch else ""
+    if not channel_id:
+        try:
+            channel_id = str(tenant._build_primary_channel().channel_id or "")
+        except Exception:
+            channel_id = ""
+    if not channel_id or channel_id.startswith("<"):
+        channel_id = f"{tenant.tenant_id}-{channel_platform}" if channel_platform else tenant.tenant_id
+
+    from app.hermes_runtime.events import make_runtime_event
+    from app.hermes_runtime.observability import record_runtime_event
+    record_runtime_event(make_runtime_event(
+        run_id=runtime_run_id,
+        tenant_id=tenant.tenant_id,
+        channel_id=channel_id,
+        session_id=_hermes_session_id(
+            tenant_id=tenant.tenant_id,
+            channel_id=channel_id,
+            chat_type=chat_type,
+            chat_id=chat_id,
+            sender_id=sender_id,
+            identity_id=sender_ctx.identity_id if sender_ctx else "",
+        ),
+        platform=channel_platform,
+        event="runtime.selected",
+        message=choice,
+        payload={"choice": choice},
+    ))
     request = build_runtime_request(
         tenant,
         run_id=runtime_run_id,
@@ -363,7 +391,7 @@ async def _try_hermes_runtime(
         mode=mode,
         chat_context=chat_context,
         image_urls=image_urls,
-        channel_id=current_ch.channel_id if current_ch else "",
+        channel_id=channel_id,
         platform=channel_platform,
         shadow_mode=(choice == "legacy_shadow_hermes"),
     )
@@ -396,6 +424,21 @@ async def _try_hermes_runtime(
     if response.error:
         return f"抱歉，Hermes runtime 暂时不可用：{response.error.message}"
     return "抱歉，Hermes runtime 没有返回可发送的结果。"
+
+
+def _hermes_session_id(
+    *,
+    tenant_id: str,
+    channel_id: str,
+    chat_type: str,
+    chat_id: str,
+    sender_id: str,
+    identity_id: str,
+) -> str:
+    sender_identity = identity_id or sender_id
+    session_chat_type = chat_type or "dm"
+    session_chat_id = chat_id or sender_identity
+    return f"hr:{tenant_id}:{channel_id}:{session_chat_type}:{session_chat_id}:{sender_identity}"
 
 
 def _enrich_reply(reply: str) -> str:

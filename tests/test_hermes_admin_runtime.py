@@ -48,3 +48,18 @@ async def test_admin_hermes_runtime_health_uses_configured_sidecar(monkeypatch):
     assert response["sidecar_status"] == "ok"
     assert response["sidecar_url"] == "http://hermes.test"
     assert response["source_sha"] == "sidecar-sha"
+
+
+@pytest.mark.asyncio
+async def test_admin_hermes_runtime_health_reports_last_sidecar_error(monkeypatch):
+    from app.admin.routes import api_hermes_runtime_health
+    from app.hermes_runtime.observability import record_runtime_health
+
+    monkeypatch.delenv("HERMES_RUNTIME_EXECUTE_LOCAL", raising=False)
+    monkeypatch.setenv("HERMES_RUNTIME_ENABLED", "1")
+    record_runtime_health(success=False, error="runtime_unavailable")
+
+    response = await api_hermes_runtime_health(_token="test-token")
+
+    assert response["sidecar_status"] == "error"
+    assert response["last_error"] == "runtime_unavailable"
