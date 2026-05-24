@@ -30,6 +30,10 @@ HERMES_RUNTIME_URL=http://127.0.0.1:8765
 HERMES_RUNTIME_TIMEOUT_SECONDS=180
 HERMES_RUNTIME_MAX_CONCURRENCY=4
 HERMES_RUNTIME_SOURCE_SHA=c6a992e3e3cb99d935da3d059093b5b1f839738c
+HERMES_UPSTREAM_API_URL=http://127.0.0.1:8642
+HERMES_UPSTREAM_MODEL=hermes-agent
+HERMES_UPSTREAM_API_KEY=
+HERMES_UPSTREAM_TIMEOUT_SECONDS=180
 ```
 
 Secrets should continue to resolve through tenant configuration. Avoid global provider credentials unless they are intentionally configured as a metered fallback.
@@ -69,6 +73,8 @@ Expected health shape:
   "last_error": ""
 }
 ```
+
+When `HERMES_RUNTIME_EXECUTE_LOCAL=true` and `HERMES_UPSTREAM_API_URL` is set, the sidecar worker posts to the upstream Hermes OpenAI-compatible `/v1/chat/completions` endpoint. The adapter passes `X-Hermes-Session-Id` from `RuntimeRequest.conversation.history_key` and `X-Hermes-Session-Key` from `RuntimeRequest.sender.identity_id` or `sender_id`.
 
 ## Rollback
 

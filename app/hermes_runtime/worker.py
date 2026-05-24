@@ -12,6 +12,14 @@ def _configured_for_local_execution() -> bool:
     return os.getenv("HERMES_RUNTIME_EXECUTE_LOCAL", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _upstream_timeout_seconds() -> int:
+    raw = os.getenv("HERMES_UPSTREAM_TIMEOUT_SECONDS") or os.getenv("HERMES_RUNTIME_TIMEOUT_SECONDS") or "180"
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return 180
+
+
 def _planned_tool_calls(request: RuntimeRequest) -> list[dict[str, Any]]:
     """Extract the test/sidecar handoff shape without making it user-facing API."""
     for attachment in request.input.attachments:
@@ -45,6 +53,14 @@ async def run_runtime_turn(request: RuntimeRequest) -> RuntimeResponse:
             "runtime_unavailable",
             "Hermes runtime sidecar is not configured in this deployment.",
             retryable=True,
+        )
+
+    from app.hermes_runtime import upstream_api
+
+    if upstream_api.upstream_api_url():
+        return await upstream_api.run_upstream_turn(
+            request,
+            timeout_seconds=_upstream_timeout_seconds(),
         )
 
     planned_calls = _planned_tool_calls(request)

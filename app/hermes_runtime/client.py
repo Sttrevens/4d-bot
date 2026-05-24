@@ -10,17 +10,13 @@ import httpx
 from app.hermes_runtime.events import make_runtime_event
 from app.hermes_runtime.observability import record_runtime_event, record_runtime_health
 from app.hermes_runtime.types import (
-    RuntimeArtifact,
     RuntimeConversation,
-    RuntimeErrorInfo,
     RuntimeInput,
     RuntimeOptions,
     RuntimePolicy,
     RuntimeRequest,
     RuntimeResponse,
     RuntimeSender,
-    RuntimeToolCallRecord,
-    RuntimeUsage,
 )
 
 
@@ -56,31 +52,7 @@ def _runtime_response_from_dict(data: dict) -> RuntimeResponse:
         raise RuntimeBadResponseError("sidecar response missing status")
 
     try:
-        artifacts = [
-            RuntimeArtifact(**item)
-            for item in data.get("artifacts", []) or []
-            if isinstance(item, dict)
-        ]
-        tool_calls = [
-            RuntimeToolCallRecord(**item)
-            for item in data.get("tool_calls", []) or []
-            if isinstance(item, dict)
-        ]
-        usage_raw = data.get("usage") if isinstance(data.get("usage"), dict) else {}
-        error_raw = data.get("error") if isinstance(data.get("error"), dict) else None
-
-        return RuntimeResponse(
-            run_id=run_id,
-            runtime=str(data.get("runtime") or "hermes_sidecar"),
-            status=status,
-            final_text=str(data.get("final_text") or ""),
-            artifacts=artifacts,
-            tool_calls=tool_calls,
-            usage=RuntimeUsage(**usage_raw),
-            events=list(data.get("events", []) or []),
-            resume=dict(data.get("resume") or {"resumable": False, "resume_token": ""}),
-            error=RuntimeErrorInfo(**error_raw) if error_raw else None,
-        )
+        return RuntimeResponse.from_dict(data)
     except (TypeError, ValueError) as exc:
         raise RuntimeBadResponseError(str(exc)) from exc
 
