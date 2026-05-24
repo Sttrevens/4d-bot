@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from typing import Any
 
 from app.hermes_runtime.events import RuntimeEvent
 from app.services import redis_client as redis
@@ -56,3 +57,21 @@ def record_runtime_event(event: RuntimeEvent) -> None:
         )
     except Exception:
         pass
+
+
+def load_runtime_events(tenant_id: str, run_id: str, *, limit: int = 100) -> list[dict[str, Any]]:
+    limit = max(1, min(int(limit or 100), 500))
+    rows = redis.execute("LRANGE", event_stream_key(tenant_id, run_id), 0, limit - 1)
+    events: list[dict[str, Any]] = []
+    if not isinstance(rows, list):
+        return events
+    for row in rows:
+        if not isinstance(row, str):
+            continue
+        try:
+            parsed = json.loads(row)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            events.append(parsed)
+    return events

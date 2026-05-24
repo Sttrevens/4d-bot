@@ -161,6 +161,81 @@ async def test_client_maps_malformed_sidecar_response_to_bad_response(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_client_accepts_forward_compatible_sidecar_response_fields(monkeypatch):
+    import httpx
+
+    from app.hermes_runtime.client import HermesRuntimeClient
+    from app.hermes_runtime.types import RuntimeConversation, RuntimeInput, RuntimeRequest, RuntimeSender
+
+    class FakeAsyncClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return None
+
+        async def post(self, *_args, **_kwargs):
+            return httpx.Response(
+                200,
+                json={
+                    "run_id": "run-forward-compatible",
+                    "runtime": "hermes_sidecar",
+                    "status": "completed",
+                    "final_text": "sidecar reply",
+                    "artifacts": [
+                        {
+                            "artifact_id": "file_1",
+                            "kind": "html",
+                            "filename": "deck.html",
+                            "delivery_hint": "send_file",
+                            "mime_type": "text/html",
+                        }
+                    ],
+                    "tool_calls": [
+                        {
+                            "name": "export_file",
+                            "status": "success",
+                            "duration_ms": 12,
+                            "side_effect": True,
+                            "input_tokens": 99,
+                        }
+                    ],
+                    "usage": {
+                        "input_tokens": 10,
+                        "output_tokens": 4,
+                        "api_calls": 1,
+                        "tool_calls": 1,
+                        "total_tokens": 14,
+                    },
+                },
+                request=httpx.Request("POST", "http://sidecar.test/v1/runtime/turn"),
+            )
+
+    monkeypatch.setenv("HERMES_RUNTIME_URL", "http://sidecar.test")
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+
+    request = RuntimeRequest(
+        run_id="run-forward-compatible",
+        tenant_id="pm-bot",
+        channel_id="pm-bot-feishu",
+        platform="feishu",
+        sender=RuntimeSender(sender_id="u1"),
+        conversation=RuntimeConversation(history_key="u1"),
+        input=RuntimeInput(text="hello"),
+    )
+
+    response = await HermesRuntimeClient().run_turn(request)
+
+    assert response.status == "completed"
+    assert response.artifacts[0].artifact_id == "file_1"
+    assert response.tool_calls[0].tool_name == "export_file"
+    assert response.usage.input_tokens == 10
+
+
+@pytest.mark.asyncio
 async def test_local_worker_executes_planned_tool_calls_through_tool_bridge(monkeypatch):
     from app.hermes_runtime.types import (
         RuntimeConversation,

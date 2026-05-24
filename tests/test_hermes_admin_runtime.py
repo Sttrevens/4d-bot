@@ -63,3 +63,32 @@ async def test_admin_hermes_runtime_health_uses_configured_sidecar_url(monkeypat
     assert response["sidecar_status"] == "ok"
     assert response["source_sha"] == "sidecar-sha"
     assert response["sidecar_url"] == "http://127.0.0.1:8765"
+
+
+@pytest.mark.asyncio
+async def test_admin_hermes_runtime_events_reads_tenant_scoped_stream(monkeypatch):
+    from app.admin.routes import api_hermes_runtime_events
+
+    calls = []
+
+    def fake_execute(*args):
+        calls.append(args)
+        return [
+            '{"run_id": "run-1", "tenant_id": "pm-bot", "event": "runtime.started"}',
+            '{"run_id": "run-1", "tenant_id": "pm-bot", "event": "runtime.completed"}',
+        ]
+
+    monkeypatch.setattr("app.services.redis_client.execute", fake_execute)
+
+    response = await api_hermes_runtime_events(
+        tenant_id="pm-bot",
+        run_id="run-1",
+        limit=2,
+        _token="test-token",
+    )
+
+    assert calls == [("LRANGE", "pm-bot:runtime:hermes:events:run-1", 0, 1)]
+    assert [event["event"] for event in response["events"]] == [
+        "runtime.started",
+        "runtime.completed",
+    ]
