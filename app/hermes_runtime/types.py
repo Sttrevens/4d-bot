@@ -1,9 +1,28 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Literal
 
 RuntimeName = Literal["legacy", "legacy_shadow_hermes", "hermes_sidecar"]
+
+
+def _dict(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _list(value: Any) -> list[Any]:
+    return list(value) if isinstance(value, list) else []
+
+
+def _dataclass_kwargs(cls, data: Any, *, aliases: dict[str, str] | None = None) -> dict[str, Any]:
+    source = _dict(data)
+    aliases = aliases or {}
+    names = {item.name for item in fields(cls)}
+    kwargs = {name: source[name] for name in names if name in source}
+    for source_name, target_name in aliases.items():
+        if target_name in names and target_name not in kwargs and source_name in source:
+            kwargs[target_name] = source[source_name]
+    return kwargs
 
 
 @dataclass(slots=True)
@@ -109,6 +128,34 @@ class RuntimeResponse:
             error=RuntimeErrorInfo(code=code, message=message, retryable=retryable),
         )
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "RuntimeResponse":
+        payload = _dict(data)
+        usage = RuntimeUsage(**_dataclass_kwargs(RuntimeUsage, payload.get("usage")))
+        error_raw = _dict(payload.get("error"))
+        return cls(
+            run_id=str(payload.get("run_id", "")),
+            runtime=str(payload.get("runtime") or "hermes_sidecar"),
+            status=str(payload.get("status") or "completed"),
+            final_text=str(payload.get("final_text") or ""),
+            artifacts=[
+                RuntimeArtifact(**_dataclass_kwargs(RuntimeArtifact, item))
+                for item in _list(payload.get("artifacts"))
+                if isinstance(item, dict)
+            ],
+            tool_calls=[
+                RuntimeToolCallRecord(
+                    **_dataclass_kwargs(RuntimeToolCallRecord, item, aliases={"name": "tool_name"})
+                )
+                for item in _list(payload.get("tool_calls"))
+                if isinstance(item, dict)
+            ],
+            usage=usage,
+            events=[item for item in _list(payload.get("events")) if isinstance(item, dict)],
+            resume=_dict(payload.get("resume")) or {"resumable": False, "resume_token": ""},
+            error=RuntimeErrorInfo(**_dataclass_kwargs(RuntimeErrorInfo, error_raw)) if error_raw else None,
+        )
+
 
 @dataclass(slots=True)
 class RuntimeRequest:
@@ -127,14 +174,15 @@ class RuntimeRequest:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "RuntimeRequest":
+        payload = _dict(data)
         return cls(
-            run_id=str(data.get("run_id", "")),
-            tenant_id=str(data.get("tenant_id", "")),
-            channel_id=str(data.get("channel_id", "")),
-            platform=str(data.get("platform", "")),
-            sender=RuntimeSender(**dict(data.get("sender") or {})),
-            conversation=RuntimeConversation(**dict(data.get("conversation") or {})),
-            input=RuntimeInput(**dict(data.get("input") or {})),
-            policy=RuntimePolicy(**dict(data.get("policy") or {})),
-            runtime=RuntimeOptions(**dict(data.get("runtime") or {})),
+            run_id=str(payload.get("run_id", "")),
+            tenant_id=str(payload.get("tenant_id", "")),
+            channel_id=str(payload.get("channel_id", "")),
+            platform=str(payload.get("platform", "")),
+            sender=RuntimeSender(**_dataclass_kwargs(RuntimeSender, payload.get("sender"))),
+            conversation=RuntimeConversation(**_dataclass_kwargs(RuntimeConversation, payload.get("conversation"))),
+            input=RuntimeInput(**_dataclass_kwargs(RuntimeInput, payload.get("input"))),
+            policy=RuntimePolicy(**_dataclass_kwargs(RuntimePolicy, payload.get("policy"))),
+            runtime=RuntimeOptions(**_dataclass_kwargs(RuntimeOptions, payload.get("runtime"))),
         )

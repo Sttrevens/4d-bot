@@ -77,3 +77,102 @@ def test_runtime_request_round_trips_without_losing_policy():
     assert restored.run_id == "run-1"
     assert restored.policy.allowed_tool_names == ["think"]
     assert restored.policy.admin is True
+
+
+def test_runtime_request_from_dict_ignores_additive_nested_fields():
+    from app.hermes_runtime.types import RuntimeRequest
+
+    restored = RuntimeRequest.from_dict(
+        {
+            "run_id": "run-compat-1",
+            "tenant_id": "pm-bot",
+            "channel_id": "pm-bot-feishu",
+            "platform": "feishu",
+            "sender": {
+                "sender_id": "ou_1",
+                "sender_name": "Steven",
+                "identity_id": "feishu:ou_1",
+                "display_locale": "zh-CN",
+            },
+            "conversation": {
+                "history_key": "hist-1",
+                "chat_id": "oc_1",
+                "chat_type": "group",
+                "thread_id": "thread-future",
+            },
+            "input": {
+                "text": "hello",
+                "image_urls": ["https://example.test/a.png"],
+                "attachments": [{"kind": "file", "url": "https://example.test/a.txt"}],
+                "chat_context": "context",
+                "future_modalities": ["audio"],
+            },
+            "policy": {
+                "allowed_tool_names": ["think"],
+                "allowed_tool_groups": ["core"],
+                "admin": True,
+                "future_policy": "ignored",
+            },
+            "runtime": {
+                "profile": "default",
+                "memory_enabled": True,
+                "skills_enabled": True,
+                "future_runtime_knob": 3,
+            },
+            "future_top_level": "ignored",
+        }
+    )
+
+    assert restored.sender.identity_id == "feishu:ou_1"
+    assert restored.conversation.history_key == "hist-1"
+    assert restored.input.image_urls == ["https://example.test/a.png"]
+    assert restored.policy.allowed_tool_names == ["think"]
+    assert restored.runtime.skills_enabled is True
+
+
+def test_runtime_response_from_dict_accepts_additive_sidecar_fields():
+    from app.hermes_runtime.types import RuntimeResponse
+
+    response = RuntimeResponse.from_dict(
+        {
+            "run_id": "run-compat-2",
+            "runtime": "hermes_sidecar",
+            "status": "completed",
+            "final_text": "done",
+            "artifacts": [
+                {
+                    "artifact_id": "file_1",
+                    "kind": "html",
+                    "filename": "deck.html",
+                    "delivery_hint": "send_file",
+                    "mime_type": "text/html",
+                }
+            ],
+            "tool_calls": [
+                {
+                    "name": "export_file",
+                    "status": "success",
+                    "duration_ms": 12,
+                    "side_effect": True,
+                    "input_tokens": 99,
+                }
+            ],
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 4,
+                "api_calls": 1,
+                "tool_calls": 1,
+                "total_tokens": 14,
+            },
+            "events": [{"event": "runtime.completed"}],
+            "resume": {"resumable": False, "resume_token": "", "checkpoint": "future"},
+            "future_top_level": "ignored",
+        }
+    )
+
+    assert response.run_id == "run-compat-2"
+    assert response.artifacts[0].artifact_id == "file_1"
+    assert response.tool_calls[0].tool_name == "export_file"
+    assert response.tool_calls[0].side_effect is True
+    assert response.usage.input_tokens == 10
+    assert response.events == [{"event": "runtime.completed"}]
