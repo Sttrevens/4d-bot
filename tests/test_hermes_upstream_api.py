@@ -184,6 +184,59 @@ async def test_upstream_adapter_executes_openai_tool_call_round_trip(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_upstream_adapter_injects_repo_skill_activation_card(monkeypatch):
+    import httpx
+
+    from app.hermes_runtime.upstream_api import run_upstream_turn
+
+    captured = {}
+
+    monkeypatch.setattr(
+        "app.tools.skill_engine.load_triggered_skills",
+        lambda tenant_id, text: (
+            """
+<skill name="guizang-ppt-skill" type="repo">
+Repo 型 skill 已激活：生成横向翻页网页 PPT，提供瑞士国际主义风格。
+可用文件: SKILL.md, assets/template-swiss.html
+Full SKILL.md contents should not be injected into upstream context.
+</skill>
+""",
+            [],
+            {},
+        ),
+    )
+
+    class FakeAsyncClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return None
+
+        async def post(self, path, json):
+            captured["json"] = json
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"role": "assistant", "content": "deck ready"}}]},
+                request=httpx.Request("POST", "http://hermes-upstream.test/v1/chat/completions"),
+            )
+
+    monkeypatch.setenv("HERMES_UPSTREAM_API_URL", "http://hermes-upstream.test")
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+
+    response = await run_upstream_turn(_runtime_request("帮我做一份瑞士风 PPT"), timeout_seconds=3)
+
+    system_context = captured["json"]["messages"][0]["content"]
+    assert response.status == "completed"
+    assert '<skill-activation name="guizang-ppt-skill" type="repo">' in system_context
+    assert "read_agent_skill_file" in system_context
+    assert "Full SKILL.md contents" not in system_context
+
+
+@pytest.mark.asyncio
 async def test_upstream_adapter_maps_http_failure_to_runtime_unavailable(monkeypatch):
     import httpx
 

@@ -188,6 +188,9 @@ async def run_upstream_turn(request: RuntimeRequest, *, timeout_seconds: int = 1
             "HERMES_UPSTREAM_API_URL is not configured.",
             retryable=True,
         )
+    from app.hermes_runtime.skills_bridge import append_skill_activation_context
+
+    request = append_skill_activation_context(request)
     try:
         from app.hermes_runtime.tool_bridge import execute_tool_calls
 

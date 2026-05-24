@@ -45,7 +45,6 @@ def _normalize_repo_skill_cards(context: str) -> str:
         summary = _repo_skill_summary(lines)
         files_text = _line_value(lines, "可用文件:")
         files = [item.strip() for item in files_text.split(",") if item.strip()]
-        file_list = ", ".join(files)
         cards.append(
             "\n".join(
                 [
@@ -54,7 +53,7 @@ def _normalize_repo_skill_cards(context: str) -> str:
                     "  <how-to-use>Use list_agent_skill_files for the manifest, "
                     "read_agent_skill_file for detailed instructions/templates, and "
                     "export_agent_skill_template for exact template exports.</how-to-use>",
-                    f'  <available-files count="{len(files)}">{html.escape(file_list)}</available-files>',
+                    f'  <available-files count="{len(files)}">{html.escape(", ".join(files))}</available-files>',
                     "</skill-activation>",
                 ]
             )
@@ -75,11 +74,15 @@ def build_skill_activation_context(tenant_id: str, user_text: str) -> str:
 
 
 def append_skill_activation_context(request: RuntimeRequest) -> RuntimeRequest:
+    if not request.runtime.skills_enabled:
+        return request
     activation = build_skill_activation_context(request.tenant_id, request.input.text)
     if not activation:
         return request
+    existing = request.input.chat_context.strip()
+    if activation in existing:
+        return request
     updated = RuntimeRequest.from_dict(request.to_dict())
-    existing = updated.input.chat_context.strip()
     updated.input.chat_context = f"{existing}\n\n{activation}" if existing else activation
     return updated
 
