@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 
@@ -19,6 +20,14 @@ class CredentialCandidate:
     credential_ref: str
     credential_id: str = "primary"
     reason: str = "base"
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderCredential:
+    tenant_id: str
+    provider: str
+    credential_id: str
+    secret_ref: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +60,25 @@ class CredentialExhaustion:
 
     def reason_for(self, *, tenant_id: str, provider: str, credential_id: str) -> str:
         return self._exhausted.get((tenant_id, provider, credential_id), "")
+
+
+def select_available_credential(
+    tenant_id: str,
+    provider: str,
+    candidates: Iterable[ProviderCredential],
+    *,
+    exhausted_credential_ids: set[str] | None = None,
+) -> ProviderCredential | None:
+    exhausted = exhausted_credential_ids or set()
+    for credential in candidates:
+        if credential.tenant_id != tenant_id:
+            continue
+        if credential.provider != provider:
+            continue
+        if credential.credential_id in exhausted:
+            continue
+        return credential
+    return None
 
 
 def select_credential_candidate(

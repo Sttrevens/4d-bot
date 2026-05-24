@@ -28,6 +28,54 @@ def test_credential_policy_scopes_pool_by_tenant():
     assert credential_pool_key("tenant-a", "gemini") == "hermes:tenant-a:provider:gemini:pool"
 
 
+def test_credential_policy_selects_only_available_same_tenant_key():
+    from app.hermes_runtime.credential_policy import (
+        ProviderCredential,
+        select_available_credential,
+    )
+
+    candidates = [
+        ProviderCredential(
+            tenant_id="pm-bot",
+            provider="gemini",
+            credential_id="base",
+            secret_ref="tenant:pm-bot:llm_api_key",
+        ),
+        ProviderCredential(
+            tenant_id="pm-bot",
+            provider="gemini",
+            credential_id="backup",
+            secret_ref="tenant:pm-bot:llm_api_key:backup",
+        ),
+        ProviderCredential(
+            tenant_id="code-bot",
+            provider="gemini",
+            credential_id="global-looking",
+            secret_ref="tenant:code-bot:llm_api_key",
+        ),
+    ]
+
+    selected = select_available_credential(
+        "pm-bot",
+        "gemini",
+        candidates,
+        exhausted_credential_ids={"base"},
+    )
+
+    assert selected is not None
+    assert selected.credential_id == "backup"
+    assert selected.tenant_id == "pm-bot"
+
+    no_cross_tenant_fallback = select_available_credential(
+        "pm-bot",
+        "gemini",
+        candidates,
+        exhausted_credential_ids={"base", "backup"},
+    )
+
+    assert no_cross_tenant_fallback is None
+
+
 def test_credential_policy_skips_exhausted_credentials_inside_tenant():
     from app.hermes_runtime.credential_policy import (
         CredentialCandidate,
