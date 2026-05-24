@@ -379,6 +379,23 @@ async def api_hermes_runtime_health(_token: str = Depends(_verify_token)):
     return health()
 
 
+@router.get("/api/runtime/hermes/{tenant_id}/runs/{run_id}/events")
+async def api_hermes_runtime_events(
+    tenant_id: str,
+    run_id: str,
+    limit: int = 100,
+    _token: str = Depends(_verify_token),
+):
+    """Tenant-scoped Hermes runtime event stream for admin diagnostics."""
+    from app.hermes_runtime.observability import load_runtime_events
+
+    return {
+        "tenant_id": tenant_id,
+        "run_id": run_id,
+        "events": load_runtime_events(tenant_id, run_id, limit=limit),
+    }
+
+
 # ── 租户列表 ──
 
 @router.get("/api/tenants")

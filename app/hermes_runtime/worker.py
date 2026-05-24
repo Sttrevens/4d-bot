@@ -49,6 +49,9 @@ async def run_runtime_turn(request: RuntimeRequest) -> RuntimeResponse:
     disabled, it returns a retryable failure so callers can fall back to the
     legacy provider instead of exposing partial runtime behavior to users.
     """
+    from app.hermes_runtime.skills_bridge import append_skill_activation_context
+
+    request = append_skill_activation_context(request)
     if not _configured_for_local_execution():
         return RuntimeResponse.failed(
             request.run_id,

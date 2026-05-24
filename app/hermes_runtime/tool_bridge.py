@@ -87,18 +87,23 @@ def build_runtime_toolset(
     )
 
 
+_REPO_SKILL_META_TOOL_NAMES = {
+    "install_agent_skill_from_github",
+    "list_agent_skill_files",
+    "read_agent_skill_file",
+    "export_agent_skill_template",
+}
+
+
 def _tool_requires_runtime_tenant(tool_name: str) -> bool:
+    if tool_name in _REPO_SKILL_META_TOOL_NAMES:
+        return True
     try:
         from app.services import base_agent
 
         return tool_name in base_agent._CUSTOM_TOOL_META_NAMES
     except Exception:
-        return tool_name in {
-            "install_agent_skill_from_github",
-            "list_agent_skill_files",
-            "read_agent_skill_file",
-            "export_agent_skill_template",
-        }
+        return False
 
 
 def _handler_args(toolset: RuntimeToolset, tool_name: str, args: dict[str, Any]) -> dict[str, Any]:

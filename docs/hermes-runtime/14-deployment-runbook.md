@@ -31,6 +31,7 @@ HERMES_RUNTIME_MAX_CONCURRENCY=4
 HERMES_RUNTIME_SOURCE_SHA=c6a992e3e3cb99d935da3d059093b5b1f839738c
 HERMES_RUNTIME_HOST=127.0.0.1
 HERMES_RUNTIME_PORT=8765
+HERMES_RUNTIME_URL=http://127.0.0.1:8765
 HERMES_UPSTREAM_API_URL=http://127.0.0.1:8642
 HERMES_UPSTREAM_MODEL=hermes-agent
 HERMES_UPSTREAM_API_KEY=
@@ -131,6 +132,15 @@ Add endpoint or admin API:
 ```text
 GET /admin/api/runtime/hermes/health
 ```
+
+Sidecar HTTP checks once the sidecar service is packaged and running:
+
+```text
+GET http://127.0.0.1:8765/health
+POST http://127.0.0.1:8765/v1/runtime/turn
+```
+
+When `HERMES_RUNTIME_URL` is set, the admin health endpoint probes `<url>/health` and returns `sidecar_url`, `sidecar_status`, and the sidecar-reported source/last-success fields. If the probe fails, `sidecar_status` is `unreachable`; visible Hermes traffic must remain disabled or fall back to legacy until the probe recovers.
 
 Local sidecar process:
 

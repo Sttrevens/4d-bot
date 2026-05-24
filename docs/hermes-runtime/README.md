@@ -40,6 +40,7 @@ Hermes source must be pinned. Runtime integration must not depend on a floating 
 | [13-test-benchmark-plan.md](13-test-benchmark-plan.md) | Test and benchmark program | Unit, integration, replay, parity, security suites | Runtime migration is measured against current bot behavior and Hermes parity |
 | [14-deployment-runbook.md](14-deployment-runbook.md) | Production rollout and rollback | Config, deploy, monitor, rollback commands | Operators can safely enable, pause, or revert Hermes runtime |
 | [15-port-to-4d-bot.md](15-port-to-4d-bot.md) | Sibling repo port policy | Port map and drift controls | Generic runtime work is intentionally synced to `../4d-bot` |
+| [16-integration-qa-20260524.md](16-integration-qa-20260524.md) | Integrated branch QA evidence | Test commands, results, safety state, remaining gaps | Reviewers can judge merge readiness without reconstructing automation state |
 
 ## Complete Target State
 
