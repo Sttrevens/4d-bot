@@ -174,6 +174,15 @@ def execute_tool_call(
             code="policy_denied",
             outcome="blocked",
         )
+    side_effect = classify_side_effect(tool_name, args).side_effect
+    if policy.shadow_mode and side_effect:
+        return RuntimeToolResult(
+            ok=False,
+            content=f"Tool '{tool_name}' is side-effecting and cannot run in Hermes shadow mode.",
+            code="shadow_side_effect_denied",
+            outcome="blocked",
+            side_effect=True,
+        )
     handler = toolset.handlers.get(tool_name)
     if handler is None:
         return RuntimeToolResult(

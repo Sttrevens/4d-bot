@@ -118,6 +118,32 @@ async def test_execute_tool_calls_injects_runtime_tenant_for_async_repo_skill_to
     assert seen_args["tenant_id"] == "tenant-a"
 
 
+def test_execute_tool_call_blocks_side_effects_in_shadow_mode():
+    from app.hermes_runtime.tool_bridge import RuntimeToolset, RuntimeToolSchema, execute_tool_call
+    from app.hermes_runtime.types import RuntimePolicy
+
+    called = False
+
+    def export_file(_args):
+        nonlocal called
+        called = True
+        return ToolResult.success("created")
+
+    toolset = RuntimeToolset(
+        tools=[RuntimeToolSchema(name="export_file", schema={"name": "export_file"})],
+        handlers={"export_file": export_file},
+    )
+    policy = RuntimePolicy(allowed_tool_names=["export_file"], shadow_mode=True)
+
+    result = execute_tool_call(toolset, policy, "export_file", {"filename": "shadow.csv"})
+
+    assert result.ok is False
+    assert result.code == "shadow_side_effect_denied"
+    assert result.outcome == "blocked"
+    assert result.side_effect is True
+    assert called is False
+
+
 def test_tool_policy_serializes_writes_to_same_target():
     from app.hermes_runtime.tool_policy import tool_concurrency_key
 

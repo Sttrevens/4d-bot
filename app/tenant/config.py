@@ -249,6 +249,7 @@ class TenantConfig:
     hermes_runtime_profile: str = "default"
     hermes_runtime_fallback_to_legacy: bool = True
     hermes_runtime_timeout_seconds: int = 180
+    hermes_provider_credential_refs: list[str] = field(default_factory=list)
 
     # ── Hermes MCP / Code Execution 开关 ──
     mcp_enabled: bool = False
