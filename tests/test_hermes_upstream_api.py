@@ -4,6 +4,15 @@ from app.tenant.config import TenantConfig
 from app.tools.tool_result import ToolResult
 
 
+@pytest.fixture(autouse=True)
+def _reset_pm_bot_tenant():
+    from app.tenant.registry import tenant_registry
+
+    tenant_registry.unregister("pm-bot")
+    yield
+    tenant_registry.unregister("pm-bot")
+
+
 def _runtime_request(text: str = "hello", *, tools=None):
     from app.hermes_runtime.types import RuntimeConversation, RuntimeInput, RuntimePolicy, RuntimeRequest, RuntimeSender
 
@@ -181,6 +190,352 @@ async def test_upstream_adapter_executes_openai_tool_call_round_trip(monkeypatch
         "tool_call_id": "call_echo_1",
         "content": "echo:hello",
     }
+
+
+@pytest.mark.asyncio
+async def test_upstream_adapter_uses_tenant_provider_model_and_emits_selection_event(monkeypatch):
+    import httpx
+
+    from app.hermes_runtime.upstream_api import run_upstream_turn
+    from app.tenant.registry import tenant_registry
+
+    captured = {}
+
+    class FakeAsyncClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return None
+
+        async def post(self, path, json):
+            captured["json"] = json
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"role": "assistant", "content": "tenant model reply"}}]},
+                request=httpx.Request("POST", "http://hermes-upstream.test/v1/chat/completions"),
+            )
+
+    tenant_registry.register(
+        TenantConfig(
+            tenant_id="pm-bot",
+            llm_provider="gemini",
+            llm_model="gemini-3-flash-preview",
+            llm_model_strong="gemini-3.1-pro-preview-customtools",
+            llm_api_key="secret-key",
+        )
+    )
+    monkeypatch.setenv("HERMES_UPSTREAM_API_URL", "http://hermes-upstream.test")
+    monkeypatch.delenv("HERMES_UPSTREAM_MODEL", raising=False)
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+
+    response = await run_upstream_turn(_runtime_request(), timeout_seconds=3)
+
+    assert response.status == "completed"
+    assert captured["json"]["model"] == "gemini-3-flash-preview"
+    assert response.events == [
+        {
+            "event": "runtime.model.selected",
+            "provider": "gemini",
+            "model": "gemini-3-flash-preview",
+            "credential_ref": "tenant:pm-bot:llm_api_key",
+        }
+    ]
+    assert "secret-key" not in str(response.events)
+
+
+@pytest.mark.asyncio
+async def test_upstream_adapter_retries_tenant_fallback_model_on_provider_exhaustion(monkeypatch):
+    import httpx
+
+    from app.hermes_runtime.upstream_api import run_upstream_turn
+    from app.tenant.registry import tenant_registry
+
+    payloads = []
+
+    class FakeAsyncClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return None
+
+        async def post(self, path, json):
+            payloads.append(json)
+            if len(payloads) == 1:
+                return httpx.Response(
+                    429,
+                    text="quota exhausted",
+                    request=httpx.Request("POST", "http://hermes-upstream.test/v1/chat/completions"),
+                )
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"role": "assistant", "content": "fallback reply"}}]},
+                request=httpx.Request("POST", "http://hermes-upstream.test/v1/chat/completions"),
+            )
+
+    tenant_registry.register(
+        TenantConfig(
+            tenant_id="pm-bot",
+            llm_provider="gemini",
+            llm_model="gemini-3-flash-preview",
+            llm_model_strong="gemini-3.1-pro-preview-customtools",
+            llm_api_key="secret-key",
+        )
+    )
+    monkeypatch.setenv("HERMES_UPSTREAM_API_URL", "http://hermes-upstream.test")
+    monkeypatch.delenv("HERMES_UPSTREAM_MODEL", raising=False)
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+
+    response = await run_upstream_turn(_runtime_request(), timeout_seconds=3)
+
+    assert response.status == "completed"
+    assert response.final_text == "fallback reply"
+    assert [payload["model"] for payload in payloads] == [
+        "gemini-3-flash-preview",
+        "gemini-3.1-pro-preview-customtools",
+    ]
+    assert response.events == [
+        {
+            "event": "runtime.model.selected",
+            "provider": "gemini",
+            "model": "gemini-3-flash-preview",
+            "credential_ref": "tenant:pm-bot:llm_api_key",
+        },
+        {
+            "event": "runtime.provider.exhausted",
+            "provider": "gemini",
+            "model": "gemini-3-flash-preview",
+            "credential_ref": "tenant:pm-bot:llm_api_key",
+            "status_code": 429,
+        },
+        {
+            "event": "runtime.model.selected",
+            "provider": "gemini",
+            "model": "gemini-3.1-pro-preview-customtools",
+            "credential_ref": "tenant:pm-bot:llm_api_key",
+        },
+    ]
+    assert "secret-key" not in str(response.events)
+
+
+@pytest.mark.asyncio
+async def test_upstream_adapter_tries_backup_credential_before_model_fallback(monkeypatch):
+    import httpx
+
+    from app.hermes_runtime.upstream_api import run_upstream_turn
+    from app.tenant.registry import tenant_registry
+
+    attempts = []
+
+    class FakeAsyncClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return None
+
+        async def post(self, path, json, headers=None):
+            attempts.append({"json": json, "headers": dict(headers or {})})
+            if len(attempts) == 1:
+                return httpx.Response(
+                    429,
+                    text="quota exhausted",
+                    request=httpx.Request("POST", "http://hermes-upstream.test/v1/chat/completions"),
+                )
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"role": "assistant", "content": "backup reply"}}]},
+                request=httpx.Request("POST", "http://hermes-upstream.test/v1/chat/completions"),
+            )
+
+    tenant = TenantConfig(
+        tenant_id="pm-bot",
+        llm_provider="gemini",
+        llm_model="gemini-3-flash-preview",
+        llm_model_strong="gemini-3.1-pro-preview-customtools",
+        llm_api_key="secret-key",
+    )
+    tenant.hermes_provider_credential_refs = ["tenant:pm-bot:llm_api_key:backup"]
+    tenant_registry.register(tenant)
+
+    monkeypatch.setenv("HERMES_UPSTREAM_API_URL", "http://hermes-upstream.test")
+    monkeypatch.delenv("HERMES_UPSTREAM_MODEL", raising=False)
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+
+    response = await run_upstream_turn(_runtime_request(), timeout_seconds=3)
+
+    assert response.status == "completed"
+    assert response.final_text == "backup reply"
+    assert [attempt["json"]["model"] for attempt in attempts] == [
+        "gemini-3-flash-preview",
+        "gemini-3-flash-preview",
+    ]
+    assert [attempt["headers"]["X-Hermes-Credential-Ref"] for attempt in attempts] == [
+        "tenant:pm-bot:llm_api_key",
+        "tenant:pm-bot:llm_api_key:backup",
+    ]
+    assert response.events == [
+        {
+            "event": "runtime.model.selected",
+            "provider": "gemini",
+            "model": "gemini-3-flash-preview",
+            "credential_ref": "tenant:pm-bot:llm_api_key",
+            "credential_id": "primary",
+        },
+        {
+            "event": "runtime.provider.exhausted",
+            "provider": "gemini",
+            "model": "gemini-3-flash-preview",
+            "credential_ref": "tenant:pm-bot:llm_api_key",
+            "credential_id": "primary",
+            "status_code": 429,
+        },
+        {
+            "event": "runtime.model.selected",
+            "provider": "gemini",
+            "model": "gemini-3-flash-preview",
+            "credential_ref": "tenant:pm-bot:llm_api_key:backup",
+            "credential_id": "backup",
+        },
+    ]
+    assert "secret-key" not in str(response.events)
+
+
+@pytest.mark.asyncio
+async def test_upstream_adapter_injects_repo_skill_activation_card(monkeypatch):
+    import httpx
+
+    from app.hermes_runtime.upstream_api import run_upstream_turn
+
+    captured = {}
+
+    monkeypatch.setattr(
+        "app.tools.skill_engine.load_triggered_skills",
+        lambda tenant_id, text: (
+            """
+<skill name="guizang-ppt-skill" type="repo">
+Repo 型 skill 已激活：生成横向翻页网页 PPT，提供瑞士国际主义风格。
+可用文件: SKILL.md, assets/template-swiss.html
+Full SKILL.md contents should not be injected into upstream context.
+</skill>
+""",
+            [],
+            {},
+        ),
+    )
+
+    class FakeAsyncClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return None
+
+        async def post(self, path, json):
+            captured["json"] = json
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"role": "assistant", "content": "deck ready"}}]},
+                request=httpx.Request("POST", "http://hermes-upstream.test/v1/chat/completions"),
+            )
+
+    monkeypatch.setenv("HERMES_UPSTREAM_API_URL", "http://hermes-upstream.test")
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+
+    response = await run_upstream_turn(_runtime_request("帮我做一份瑞士风 PPT"), timeout_seconds=3)
+
+    system_context = captured["json"]["messages"][0]["content"]
+    assert response.status == "completed"
+    assert '<skill-activation name="guizang-ppt-skill" type="repo">' in system_context
+    assert "read_agent_skill_file" in system_context
+    assert "Full SKILL.md contents" not in system_context
+
+
+@pytest.mark.asyncio
+async def test_upstream_adapter_prefetches_and_syncs_memory(monkeypatch):
+    import httpx
+
+    from app.hermes_runtime.upstream_api import run_upstream_turn
+
+    captured = {}
+    diary_calls = []
+
+    async def fake_build_memory_context(user_id, user_name="", current_text=""):
+        captured["memory_read"] = {
+            "user_id": user_id,
+            "user_name": user_name,
+            "current_text": current_text,
+        }
+        return "memory says: user prefers Swiss style decks"
+
+    async def fake_write_diary(user_id, user_name, user_content, assistant_content, *, tool_names_called=None):
+        diary_calls.append(
+            {
+                "user_id": user_id,
+                "user_name": user_name,
+                "user_content": user_content,
+                "assistant_content": assistant_content,
+                "tool_names_called": list(tool_names_called or []),
+            }
+        )
+
+    class FakeAsyncClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return None
+
+        async def post(self, path, json):
+            captured["json"] = json
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"role": "assistant", "content": "deck ready"}}]},
+                request=httpx.Request("POST", "http://hermes-upstream.test/v1/chat/completions"),
+            )
+
+    monkeypatch.setenv("HERMES_UPSTREAM_API_URL", "http://hermes-upstream.test")
+    monkeypatch.setattr("app.services.memory.build_memory_context", fake_build_memory_context)
+    monkeypatch.setattr("app.services.memory.write_diary", fake_write_diary)
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+
+    request = _runtime_request("帮我继续做瑞士风 PPT")
+    request.sender.sender_name = "Steven"
+
+    response = await run_upstream_turn(request, timeout_seconds=3)
+
+    assert response.status == "completed"
+    assert "memory says: user prefers Swiss style decks" in captured["json"]["messages"][0]["content"]
+    assert captured["memory_read"] == {
+        "user_id": "feishu:ou_1",
+        "user_name": "Steven",
+        "current_text": "帮我继续做瑞士风 PPT",
+    }
+    assert diary_calls == [
+        {
+            "user_id": "feishu:ou_1",
+            "user_name": "Steven",
+            "user_content": "帮我继续做瑞士风 PPT",
+            "assistant_content": "deck ready",
+            "tool_names_called": [],
+        }
+    ]
 
 
 @pytest.mark.asyncio

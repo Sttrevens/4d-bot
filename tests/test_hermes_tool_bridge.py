@@ -58,6 +58,62 @@ def test_execute_tool_call_normalizes_tool_result():
     assert result.side_effect is False
 
 
+def test_execute_tool_call_blocks_side_effects_in_shadow_mode():
+    from app.hermes_runtime.tool_bridge import RuntimeToolset, RuntimeToolSchema, execute_tool_call
+    from app.hermes_runtime.types import RuntimePolicy
+
+    called = False
+
+    def export_file(_args):
+        nonlocal called
+        called = True
+        return ToolResult.success("created")
+
+    toolset = RuntimeToolset(
+        tools=[RuntimeToolSchema(name="export_file", schema={"name": "export_file"})],
+        handlers={"export_file": export_file},
+    )
+    policy = RuntimePolicy(allowed_tool_names=["export_file"], shadow_mode=True)
+
+    result = execute_tool_call(toolset, policy, "export_file", {"filename": "shadow.csv"})
+
+    assert result.ok is False
+    assert result.code == "shadow_side_effect_denied"
+    assert result.outcome == "blocked"
+    assert result.side_effect is True
+    assert called is False
+
+
+async def test_execute_tool_calls_blocks_side_effects_in_shadow_mode():
+    from app.hermes_runtime.tool_bridge import RuntimeToolset, RuntimeToolSchema, execute_tool_calls
+    from app.hermes_runtime.types import RuntimePolicy
+
+    called = False
+
+    async def export_file(_args):
+        nonlocal called
+        called = True
+        return ToolResult.success("created")
+
+    toolset = RuntimeToolset(
+        tools=[RuntimeToolSchema(name="export_file", schema={"name": "export_file"})],
+        handlers={"export_file": export_file},
+    )
+    policy = RuntimePolicy(allowed_tool_names=["export_file"], shadow_mode=True)
+
+    results = await execute_tool_calls(
+        toolset,
+        policy,
+        [{"tool_name": "export_file", "args": {"filename": "shadow.csv"}}],
+    )
+
+    assert results[0].ok is False
+    assert results[0].code == "shadow_side_effect_denied"
+    assert results[0].outcome == "blocked"
+    assert results[0].side_effect is True
+    assert called is False
+
+
 def test_execute_tool_call_injects_runtime_tenant_for_repo_skill_tools():
     from app.hermes_runtime.tool_bridge import RuntimeToolset, execute_tool_call
     from app.hermes_runtime.types import RuntimePolicy

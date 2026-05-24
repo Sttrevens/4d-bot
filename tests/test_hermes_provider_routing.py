@@ -21,6 +21,41 @@ def test_provider_router_uses_tenant_models_without_raw_key():
     assert "secret-key" not in str(config)
 
 
+def test_provider_router_builds_tenant_scoped_credential_candidates():
+    from app.hermes_runtime.provider_router import build_provider_config
+
+    tenant = TenantConfig(
+        tenant_id="pm-bot",
+        llm_provider="gemini",
+        llm_model="gemini-3-flash-preview",
+        llm_api_key="secret-key",
+    )
+    tenant.hermes_provider_credential_refs = [
+        "tenant:pm-bot:llm_api_key:backup",
+        "tenant:code-bot:llm_api_key",
+        "sk-raw-secret",
+    ]
+
+    config = build_provider_config(tenant, run_id="run-1")
+
+    assert config["credential_candidates"] == [
+        {
+            "tenant_id": "pm-bot",
+            "provider": "gemini",
+            "credential_id": "primary",
+            "secret_ref": "tenant:pm-bot:llm_api_key",
+        },
+        {
+            "tenant_id": "pm-bot",
+            "provider": "gemini",
+            "credential_id": "backup",
+            "secret_ref": "tenant:pm-bot:llm_api_key:backup",
+        },
+    ]
+    assert "secret-key" not in str(config)
+    assert "sk-raw-secret" not in str(config)
+
+
 def test_credential_policy_scopes_pool_by_tenant():
     from app.hermes_runtime.credential_policy import credential_pool_key
 
