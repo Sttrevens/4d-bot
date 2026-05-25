@@ -389,11 +389,36 @@ async def api_hermes_runtime_events(
     """Tenant-scoped Hermes runtime event stream for admin diagnostics."""
     from app.hermes_runtime.observability import load_runtime_events
 
+    if not _is_valid_tenant_id(tenant_id):
+        raise HTTPException(400, "Invalid tenant_id")
     return {
         "tenant_id": tenant_id,
         "run_id": run_id,
         "events": load_runtime_events(tenant_id, run_id, limit=limit),
     }
+
+
+@router.get("/api/runtime/hermes/{tenant_id}/runs/{run_id}/shadow")
+async def api_hermes_runtime_shadow(
+    tenant_id: str,
+    run_id: str,
+    _token: str = Depends(_verify_token),
+):
+    """Tenant-scoped Hermes shadow response for admin diagnostics."""
+    from app.hermes_runtime.observability import load_shadow_response
+
+    if not _is_valid_tenant_id(tenant_id):
+        raise HTTPException(400, "Invalid tenant_id")
+    shadow = load_shadow_response(tenant_id, run_id)
+    return {
+        "tenant_id": tenant_id,
+        "run_id": run_id,
+        "found": shadow is not None,
+        "shadow": shadow or {},
+    }
+
+
+api_hermes_runtime_shadow_response = api_hermes_runtime_shadow
 
 
 # ── 租户列表 ──

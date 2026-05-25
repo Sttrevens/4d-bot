@@ -4,7 +4,7 @@ import json
 import time
 from typing import Any
 
-from app.hermes_runtime.events import RuntimeEvent
+from app.hermes_runtime.events import RuntimeEvent, redact_payload
 
 _HEALTH: dict[str, str] = {
     "last_success_at": "",
@@ -90,10 +90,14 @@ def record_runtime_event(event: RuntimeEvent) -> None:
 
 def load_runtime_events(tenant_id: str, run_id: str, *, limit: int = 100) -> list[dict[str, Any]]:
     limit = max(1, min(int(limit or 100), 500))
-    rows = _redis_execute("LRANGE", event_stream_key(tenant_id, run_id), 0, limit - 1)
-    events: list[dict[str, Any]] = []
+    try:
+        rows = _redis_execute("LRANGE", event_stream_key(tenant_id, run_id), 0, limit - 1)
+    except Exception:
+        return []
     if not isinstance(rows, list):
-        return events
+        return []
+
+    events: list[dict[str, Any]] = []
     for row in rows:
         if not isinstance(row, str):
             continue
@@ -104,3 +108,19 @@ def load_runtime_events(tenant_id: str, run_id: str, *, limit: int = 100) -> lis
         if isinstance(parsed, dict):
             events.append(parsed)
     return events
+
+
+def load_shadow_response(tenant_id: str, run_id: str) -> dict[str, Any] | None:
+    try:
+        row = _redis_execute("GET", shadow_result_key(tenant_id, run_id))
+    except Exception:
+        return None
+    if not isinstance(row, str) or not row:
+        return None
+    try:
+        parsed = json.loads(row)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    return redact_payload(parsed)

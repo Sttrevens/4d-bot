@@ -28,6 +28,20 @@ def _runtime_request(text: str = "hello", *, tools=None):
     )
 
 
+@pytest.fixture(autouse=True)
+def _restore_tenant_registry():
+    from app.tenant.registry import tenant_registry
+
+    old_tenants = tenant_registry._tenants.copy()
+    old_default = tenant_registry._default_tenant_id
+    try:
+        yield
+    finally:
+        tenant_registry._tenants.clear()
+        tenant_registry._tenants.update(old_tenants)
+        tenant_registry._default_tenant_id = old_default
+
+
 @pytest.mark.asyncio
 async def test_upstream_adapter_posts_openai_chat_payload_with_session_headers(monkeypatch):
     import httpx
@@ -190,6 +204,372 @@ async def test_upstream_adapter_executes_openai_tool_call_round_trip(monkeypatch
         "tool_call_id": "call_echo_1",
         "content": "echo:hello",
     }
+
+
+@pytest.mark.asyncio
+async def test_upstream_adapter_empty_policy_tools_uses_tenant_visible_toolset(monkeypatch):
+    import httpx
+
+    from app.hermes_runtime.upstream_api import run_upstream_turn
+    from app.tenant.registry import tenant_registry
+
+    payloads = []
+
+    async def echo(args):
+        return ToolResult.success(f"echo:{args['text']}")
+
+    def fake_get_tenant_tools(tenant, user_text="", override_groups=None, suggested_groups=None):
+        return (
+            [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "echo",
+                        "description": "Echo text",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"text": {"type": "string"}},
+                            "required": ["text"],
+                        },
+                    },
+                }
+            ],
+            {"echo": echo},
+        )
+
+    class FakeAsyncClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return None
+
+        async def post(self, path, json):
+            payloads.append(json)
+            if len(payloads) == 1:
+                return httpx.Response(
+                    200,
+                    json={
+                        "choices": [
+                            {
+                                "message": {
+                                    "role": "assistant",
+                                    "content": "",
+                                    "tool_calls": [
+                                        {
+                                            "id": "call_echo_1",
+                                            "type": "function",
+                                            "function": {
+                                                "name": "echo",
+                                                "arguments": '{"text": "hello"}',
+                                            },
+                                        }
+                                    ],
+                                }
+                            }
+                        ]
+                    },
+                    request=httpx.Request("POST", "http://hermes-upstream.test/v1/chat/completions"),
+                )
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"role": "assistant", "content": "done"}}]},
+                request=httpx.Request("POST", "http://hermes-upstream.test/v1/chat/completions"),
+            )
+
+    tenant_registry.register(TenantConfig(tenant_id="pm-bot", tools_enabled=[]))
+    monkeypatch.setenv("HERMES_UPSTREAM_API_URL", "http://hermes-upstream.test")
+    monkeypatch.setattr("app.services.base_agent._get_tenant_tools", fake_get_tenant_tools)
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+
+    response = await run_upstream_turn(_runtime_request(), timeout_seconds=3)
+
+    assert response.status == "completed"
+    assert response.final_text == "done"
+    assert payloads[0]["tools"][0]["function"]["name"] == "echo"
+    assert response.tool_calls[0].tool_name == "echo"
+    assert response.usage.tool_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_upstream_adapter_emits_checkpoint_event_for_side_effect_tool(monkeypatch):
+    import httpx
+
+    from app.hermes_runtime.upstream_api import run_upstream_turn
+    from app.tenant.registry import tenant_registry
+
+    payloads = []
+    executed = []
+
+    async def edit_file(args):
+        executed.append(dict(args))
+        return ToolResult.success("edited")
+
+    def fake_get_tenant_tools(tenant, user_text="", override_groups=None, suggested_groups=None):
+        return (
+            [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "self_edit_file",
+                        "description": "Edit a repository file",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"path": {"type": "string"}},
+                            "required": ["path"],
+                        },
+                    },
+                }
+            ],
+            {"self_edit_file": edit_file},
+        )
+
+    class FakeAsyncClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return None
+
+        async def post(self, path, json):
+            payloads.append(json)
+            if len(payloads) == 1:
+                return httpx.Response(
+                    200,
+                    json={
+                        "choices": [
+                            {
+                                "message": {
+                                    "role": "assistant",
+                                    "content": "",
+                                    "tool_calls": [
+                                        {
+                                            "id": "call_edit_1",
+                                            "type": "function",
+                                            "function": {
+                                                "name": "self_edit_file",
+                                                "arguments": '{"path": "app/tools/x.py"}',
+                                            },
+                                        }
+                                    ],
+                                }
+                            }
+                        ]
+                    },
+                    request=httpx.Request("POST", "http://hermes-upstream.test/v1/chat/completions"),
+                )
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"role": "assistant", "content": "done"}}]},
+                request=httpx.Request("POST", "http://hermes-upstream.test/v1/chat/completions"),
+            )
+
+    tenant_registry.register(TenantConfig(tenant_id="pm-bot", tools_enabled=["self_edit_file"]))
+    monkeypatch.setenv("HERMES_UPSTREAM_API_URL", "http://hermes-upstream.test")
+    monkeypatch.setattr("app.services.base_agent._get_tenant_tools", fake_get_tenant_tools)
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+
+    response = await run_upstream_turn(_runtime_request(tools=["self_edit_file"]), timeout_seconds=3)
+
+    checkpoint_events = [
+        event for event in response.events if event.get("event") == "runtime.checkpoint.created"
+    ]
+    assert response.status == "completed"
+    assert executed == [{"path": "app/tools/x.py"}]
+    assert len(checkpoint_events) == 1
+    assert checkpoint_events[0]["run_id"] == "run-upstream-1"
+    assert checkpoint_events[0]["tenant_id"] == "pm-bot"
+    assert checkpoint_events[0]["tool_name"] == "self_edit_file"
+    assert checkpoint_events[0]["side_effect_class"] == "code_mutation"
+    assert checkpoint_events[0]["checkpoint_id"].startswith("cp_")
+    assert checkpoint_events[0]["target"] == "app/tools/x.py"
+    assert checkpoint_events[0]["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_upstream_adapter_pauses_for_infrastructure_confirmation_before_execution(monkeypatch):
+    import httpx
+
+    from app.hermes_runtime.upstream_api import run_upstream_turn
+    from app.tenant.registry import tenant_registry
+
+    payloads = []
+    executed = []
+
+    async def restart_instance(args):
+        executed.append(dict(args))
+        return ToolResult.success("restarted")
+
+    def fake_get_tenant_tools(tenant, user_text="", override_groups=None, suggested_groups=None):
+        return (
+            [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "restart_instance",
+                        "description": "Restart a tenant instance",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"tenant_id": {"type": "string"}},
+                            "required": ["tenant_id"],
+                        },
+                    },
+                }
+            ],
+            {"restart_instance": restart_instance},
+        )
+
+    class FakeAsyncClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return None
+
+        async def post(self, path, json):
+            payloads.append(json)
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": "",
+                                "tool_calls": [
+                                    {
+                                        "id": "call_restart_1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "restart_instance",
+                                            "arguments": '{"tenant_id": "pm-bot"}',
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                },
+                request=httpx.Request("POST", "http://hermes-upstream.test/v1/chat/completions"),
+            )
+
+    tenant_registry.register(TenantConfig(tenant_id="pm-bot", tools_enabled=["restart_instance"]))
+    monkeypatch.setenv("HERMES_UPSTREAM_API_URL", "http://hermes-upstream.test")
+    monkeypatch.setattr("app.services.base_agent._get_tenant_tools", fake_get_tenant_tools)
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+    request = _runtime_request(tools=["restart_instance"])
+    request.policy.admin = True
+    request.policy.requires_confirmation_for = ["infrastructure"]
+
+    response = await run_upstream_turn(request, timeout_seconds=3)
+
+    assert response.status == "needs_confirmation"
+    assert executed == []
+    assert len(payloads) == 1
+    assert response.tool_calls[0].tool_name == "restart_instance"
+    assert response.tool_calls[0].status == "failed"
+
+    assert response.tool_calls[0].code == "confirmation_required"
+    assert response.resume["approval_request"]["tool_name"] == "restart_instance"
+    assert response.resume["approval_request"]["side_effect_class"] == "infrastructure"
+
+
+@pytest.mark.asyncio
+async def test_upstream_adapter_blocks_autofix_protected_path_before_tool_execution(monkeypatch):
+    import httpx
+
+    from app.hermes_runtime.upstream_api import run_upstream_turn
+    from app.tenant.registry import tenant_registry
+
+    payloads = []
+    executed = []
+
+    async def edit_file(args):
+        executed.append(dict(args))
+        return ToolResult.success("edited")
+
+    def fake_get_tenant_tools(tenant, user_text="", override_groups=None, suggested_groups=None):
+        return (
+            [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "self_edit_file",
+                        "description": "Edit a repository file",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"path": {"type": "string"}},
+                            "required": ["path"],
+                        },
+                    },
+                }
+            ],
+            {"self_edit_file": edit_file},
+        )
+
+    class FakeAsyncClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return None
+
+        async def post(self, path, json):
+            payloads.append(json)
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": "",
+                                "tool_calls": [
+                                    {
+                                        "id": "call_edit_1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "self_edit_file",
+                                            "arguments": '{"path": "app/hermes_runtime/tool_bridge.py", "old": "a", "new": "b"}',
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                },
+                request=httpx.Request("POST", "http://hermes-upstream.test/v1/chat/completions"),
+            )
+
+    tenant_registry.register(TenantConfig(tenant_id="pm-bot", tools_enabled=["self_edit_file"]))
+    monkeypatch.setenv("HERMES_UPSTREAM_API_URL", "http://hermes-upstream.test")
+    monkeypatch.setattr("app.services.base_agent._get_tenant_tools", fake_get_tenant_tools)
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+    request = _runtime_request(tools=["self_edit_file"])
+    request.policy.self_iteration_enabled = True
+
+    response = await run_upstream_turn(request, timeout_seconds=3)
+
+    assert response.status == "blocked"
+    assert executed == []
+    assert len(payloads) == 1
+    assert response.error is not None
+    assert response.error.code == "policy_denied"
+    assert response.tool_calls[0].tool_name == "self_edit_file"
+    assert response.tool_calls[0].code == "policy_denied"
+    assert not [event for event in response.events if event.get("event") == "runtime.checkpoint.created"]
 
 
 @pytest.mark.asyncio

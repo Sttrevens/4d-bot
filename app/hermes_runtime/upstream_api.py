@@ -6,7 +6,7 @@ from typing import Any
 
 import httpx
 
-from app.hermes_runtime.types import RuntimeRequest, RuntimeResponse, RuntimeToolCallRecord, RuntimeUsage
+from app.hermes_runtime.types import RuntimeErrorInfo, RuntimeRequest, RuntimeResponse, RuntimeToolCallRecord, RuntimeUsage
 
 
 def upstream_api_url() -> str:
@@ -241,16 +241,23 @@ def _is_provider_exhausted_response(response: httpx.Response) -> bool:
     return response.status_code == 429
 
 
-def _openai_tools_from_request(request: RuntimeRequest):
-    if not request.policy.allowed_tool_names:
-        return None, []
+def _execution_policy_for_request(request: RuntimeRequest):
+    from app.hermes_runtime.execution_policy import build_execution_policy
 
+    return build_execution_policy(_load_tenant(request.tenant_id), admin=request.policy.admin)
+
+
+def _openai_tools_from_request(request: RuntimeRequest):
     from app.hermes_runtime.tool_bridge import RuntimeToolset, build_runtime_toolset
 
     toolset = build_runtime_toolset(_load_tenant(request.tenant_id), user_text=request.input.text)
-    allowed = set(request.policy.allowed_tool_names)
-    schemas = [tool.schema for tool in toolset.tools if tool.name in allowed]
-    handlers = {name: handler for name, handler in toolset.handlers.items() if name in allowed}
+    if request.policy.allowed_tool_names:
+        allowed = set(request.policy.allowed_tool_names)
+        schemas = [tool.schema for tool in toolset.tools if tool.name in allowed]
+        handlers = {name: handler for name, handler in toolset.handlers.items() if name in allowed}
+        return RuntimeToolset(tools=toolset.tools, handlers=handlers, tenant_id=toolset.tenant_id), schemas
+    schemas = [tool.schema for tool in toolset.tools]
+    handlers = dict(toolset.handlers)
     return RuntimeToolset(tools=toolset.tools, handlers=handlers, tenant_id=toolset.tenant_id), schemas
 
 
@@ -313,6 +320,15 @@ def _append_chat_context(request: RuntimeRequest, context: str) -> RuntimeReques
     return updated
 
 
+def _checkpoint_events_from_ledger(ledger: list[dict[str, Any]], start: int) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    for entry in ledger[start:]:
+        if not entry.get("checkpoint_id"):
+            continue
+        events.append({"event": "runtime.checkpoint.created", **entry})
+    return events
+
+
 def _memory_bridge_for_request(request: RuntimeRequest):
     if not request.runtime.memory_enabled:
         return None
@@ -366,6 +382,7 @@ async def run_upstream_turn(request: RuntimeRequest, *, timeout_seconds: int = 1
         messages = _messages(request)
         provider_attempts = _provider_attempt_configs(_provider_config_for_request(request))
         events: list[dict[str, Any]] = []
+        side_effect_ledger: list[dict[str, Any]] = []
         toolset, tools = _openai_tools_from_request(request)
         usage = RuntimeUsage()
         tool_records: list[RuntimeToolCallRecord] = []
@@ -431,24 +448,59 @@ async def run_upstream_turn(request: RuntimeRequest, *, timeout_seconds: int = 1
                             "tool_calls": [call["raw"] for call in tool_calls],
                         }
                     )
+                    ledger_start = len(side_effect_ledger)
                     results = await execute_tool_calls(
                         toolset,
                         request.policy,
                         [{"tool_name": call["tool_name"], "args": call["args"]} for call in tool_calls],
                         run_id=request.run_id,
                         tenant_id=request.tenant_id,
+                        ledger=side_effect_ledger,
+                        execution_policy=_execution_policy_for_request(request),
                     )
+                    events.extend(_checkpoint_events_from_ledger(side_effect_ledger, ledger_start))
                     usage = _merge_usage(usage, RuntimeUsage(tool_calls=len(results)))
                     for call, result in zip(tool_calls, results, strict=False):
-                        tool_records.append(
-                            RuntimeToolCallRecord(
-                                tool_name=call["tool_name"],
-                                status="success" if result.ok else "failed",
-                                duration_ms=result.duration_ms,
-                                side_effect=result.side_effect,
-                                code=result.code,
-                            )
+                        record = RuntimeToolCallRecord(
+                            tool_name=call["tool_name"],
+                            status="success" if result.ok else "failed",
+                            duration_ms=result.duration_ms,
+                            side_effect=result.side_effect,
+                            code=result.code,
                         )
+                        tool_records.append(record)
+                        if result.outcome == "needs_confirmation":
+                            structured = result.structured if isinstance(result.structured, dict) else {}
+                            approval_request = structured.get("approval_request")
+                            if not isinstance(approval_request, dict):
+                                approval_request = {}
+                            return RuntimeResponse(
+                                run_id=request.run_id,
+                                status="needs_confirmation",
+                                final_text=result.content,
+                                tool_calls=tool_records,
+                                usage=usage,
+                                events=events,
+                                resume={
+                                    "resumable": True,
+                                    "resume_token": request.run_id,
+                                    "approval_request": approval_request,
+                                },
+                            )
+                        if result.outcome == "blocked":
+                            return RuntimeResponse(
+                                run_id=request.run_id,
+                                status="blocked",
+                                final_text=result.content,
+                                tool_calls=tool_records,
+                                usage=usage,
+                                events=events,
+                                error=RuntimeErrorInfo(
+                                    code=result.code or "policy_denied",
+                                    message=result.content,
+                                    retryable=False,
+                                ),
+                            )
                         messages.append(
                             {
                                 "role": "tool",

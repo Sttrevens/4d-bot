@@ -93,6 +93,26 @@ async def run_runtime_turn(request: RuntimeRequest) -> RuntimeResponse:
             )
             for call, result in zip(planned_calls, results, strict=False)
         ]
+        for result in results:
+            if result.outcome != "needs_confirmation":
+                continue
+            structured = result.structured if isinstance(result.structured, dict) else {}
+            approval_request = structured.get("approval_request")
+            if not isinstance(approval_request, dict):
+                approval_request = {}
+            return RuntimeResponse(
+                run_id=request.run_id,
+                status="needs_confirmation",
+                final_text=result.content,
+                tool_calls=records,
+                usage=RuntimeUsage(tool_calls=len(results)),
+                resume={
+                    "resumable": True,
+                    "resume_token": request.run_id,
+                    "approval_request": approval_request,
+                },
+            )
+
         final_text = "\n".join(
             f"{record.tool_name}: {result.content}" if record.tool_name else result.content
             for record, result in zip(records, results, strict=False)

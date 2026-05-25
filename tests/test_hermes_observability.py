@@ -97,3 +97,45 @@ def test_record_runtime_event_updates_health_and_run_summary(monkeypatch):
     assert any(call[:2] == ("RPUSH", event_stream_key("pm-bot", "run-1")) for call in calls)
     assert any(call[:2] == ("SET", run_summary_key("pm-bot", "run-1")) for call in calls)
     assert health_state()["last_error"] == "runtime_unavailable"
+
+
+def test_load_runtime_events_reads_tenant_scoped_stream(monkeypatch):
+    from app.hermes_runtime.observability import load_runtime_events
+
+    calls = []
+
+    def fake_execute(*args):
+        calls.append(args)
+        return [
+            '{"run_id": "run-1", "tenant_id": "pm-bot", "event": "runtime.started"}',
+            "not-json",
+            '{"run_id": "run-1", "tenant_id": "pm-bot", "event": "runtime.completed"}',
+        ]
+
+    monkeypatch.setattr("app.hermes_runtime.observability._redis_execute", fake_execute)
+
+    events = load_runtime_events("pm-bot", "run-1", limit=3)
+
+    assert calls == [("LRANGE", "pm-bot:runtime:hermes:events:run-1", 0, 2)]
+    assert [event["event"] for event in events] == ["runtime.started", "runtime.completed"]
+
+
+def test_load_shadow_response_redacts_secret_payload(monkeypatch):
+    from app.hermes_runtime.observability import load_shadow_response
+
+    calls = []
+
+    def fake_execute(*args):
+        calls.append(args)
+        return (
+            '{"run_id": "run-1", "tenant_id": "pm-bot", "status": "completed", '
+            '"final_text": "shadow answer", "metadata": {"api_key": "secret-key"}}'
+        )
+
+    monkeypatch.setattr("app.hermes_runtime.observability._redis_execute", fake_execute)
+
+    shadow = load_shadow_response("pm-bot", "run-1")
+
+    assert calls == [("GET", "pm-bot:runtime:hermes:shadow:run-1")]
+    assert shadow["final_text"] == "shadow answer"
+    assert shadow["metadata"]["api_key"] == "[REDACTED]"

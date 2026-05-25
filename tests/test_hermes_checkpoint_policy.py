@@ -95,3 +95,78 @@ def test_async_tool_bridge_marks_side_effect_unknown_when_mutating_tool_raises()
     assert ledger[0]["status"] == "unknown"
     assert ledger[0]["side_effect_class"] == "code_mutation"
     assert ledger[0]["checkpoint_id"].startswith("cp_")
+
+
+def test_async_tool_bridge_requires_confirmation_before_infrastructure_mutation():
+    from app.hermes_runtime.tool_bridge import RuntimeToolset, execute_tool_calls
+    from app.hermes_runtime.types import RuntimePolicy
+
+    executed = []
+
+    async def restart_instance(args):
+        executed.append(dict(args))
+        return "restarted"
+
+    ledger = []
+    toolset = RuntimeToolset(handlers={"restart_instance": restart_instance})
+
+    results = asyncio.run(
+        execute_tool_calls(
+            toolset,
+            RuntimePolicy(
+                allowed_tool_names=["restart_instance"],
+                admin=True,
+                requires_confirmation_for=["infrastructure"],
+            ),
+            [{"tool_name": "restart_instance", "args": {"tenant_id": "pm-bot"}}],
+            run_id="run-1",
+            tenant_id="pm-bot",
+            ledger=ledger,
+        )
+    )
+
+    assert executed == []
+    assert ledger == []
+    assert results[0].ok is False
+    assert results[0].code == "confirmation_required"
+    assert results[0].outcome == "needs_confirmation"
+    assert results[0].side_effect is True
+    assert results[0].structured["approval_request"]["tool_name"] == "restart_instance"
+    assert results[0].structured["approval_request"]["side_effect_class"] == "infrastructure"
+
+
+def test_async_tool_bridge_blocks_autofix_protected_path_before_checkpoint():
+    from app.hermes_runtime.tool_bridge import RuntimeToolset, execute_tool_calls
+    from app.hermes_runtime.types import RuntimePolicy
+
+    executed = []
+
+    async def edit_file(args):
+        executed.append(dict(args))
+        return "edited"
+
+    ledger = []
+    toolset = RuntimeToolset(handlers={"self_edit_file": edit_file})
+
+    results = asyncio.run(
+        execute_tool_calls(
+            toolset,
+            RuntimePolicy(allowed_tool_names=["self_edit_file"], self_iteration_enabled=True),
+            [
+                {
+                    "tool_name": "self_edit_file",
+                    "args": {"path": "app/hermes_runtime/tool_bridge.py", "old": "a", "new": "b"},
+                }
+            ],
+            run_id="run-1",
+            tenant_id="pm-bot",
+            ledger=ledger,
+        )
+    )
+
+    assert executed == []
+    assert ledger == []
+    assert results[0].ok is False
+    assert results[0].code == "policy_denied"
+    assert results[0].outcome == "blocked"
+    assert "app/hermes_runtime/tool_bridge.py" in results[0].content
