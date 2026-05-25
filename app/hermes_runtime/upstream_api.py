@@ -6,7 +6,14 @@ from typing import Any
 
 import httpx
 
-from app.hermes_runtime.types import RuntimeErrorInfo, RuntimeRequest, RuntimeResponse, RuntimeToolCallRecord, RuntimeUsage
+from app.hermes_runtime.types import (
+    RuntimeArtifact,
+    RuntimeErrorInfo,
+    RuntimeRequest,
+    RuntimeResponse,
+    RuntimeToolCallRecord,
+    RuntimeUsage,
+)
 
 
 def upstream_api_url() -> str:
@@ -303,6 +310,95 @@ def _usage(data: dict[str, Any]) -> RuntimeUsage:
     )
 
 
+def _content_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        text_parts = [
+            str(part.get("text") or "")
+            for part in content
+            if isinstance(part, dict) and str(part.get("text") or "").strip()
+        ]
+        return "\n".join(text_parts)
+    return ""
+
+
+def _runtime_usage(value: Any, fallback: RuntimeUsage) -> RuntimeUsage:
+    if not isinstance(value, dict):
+        return fallback
+    return RuntimeUsage(
+        input_tokens=int(value.get("input_tokens") or value.get("prompt_tokens") or 0),
+        output_tokens=int(value.get("output_tokens") or value.get("completion_tokens") or 0),
+        api_calls=int(value.get("api_calls") or fallback.api_calls or 0),
+        tool_calls=int(value.get("tool_calls") or fallback.tool_calls or 0),
+    )
+
+
+def _runtime_response_from_envelope(
+    run_id: str,
+    envelope: dict[str, Any],
+    *,
+    fallback_usage: RuntimeUsage,
+) -> RuntimeResponse | None:
+    if "final_text" not in envelope or "status" not in envelope:
+        return None
+
+    error = envelope.get("error")
+    return RuntimeResponse(
+        run_id=str(envelope.get("run_id") or run_id),
+        runtime=str(envelope.get("runtime") or "hermes_sidecar"),
+        status=str(envelope.get("status") or "completed"),
+        final_text=str(envelope.get("final_text") or ""),
+        artifacts=[
+            RuntimeArtifact(
+                artifact_id=str(item.get("artifact_id") or ""),
+                kind=str(item.get("kind") or ""),
+                filename=str(item.get("filename") or ""),
+                delivery_hint=str(item.get("delivery_hint") or ""),
+            )
+            for item in envelope.get("artifacts") or []
+            if isinstance(item, dict)
+        ],
+        tool_calls=[
+            RuntimeToolCallRecord(
+                tool_name=str(item.get("tool_name") or item.get("name") or ""),
+                status=str(item.get("status") or ""),
+                duration_ms=int(item.get("duration_ms") or 0),
+                side_effect=bool(item.get("side_effect", False)),
+                code=str(item.get("code") or ""),
+            )
+            for item in envelope.get("tool_calls") or []
+            if isinstance(item, dict)
+        ],
+        usage=_runtime_usage(envelope.get("usage"), fallback_usage),
+        events=[item for item in envelope.get("events") or [] if isinstance(item, dict)],
+        resume=dict(envelope.get("resume") or {"resumable": False, "resume_token": ""}),
+        error=RuntimeErrorInfo(**error) if isinstance(error, dict) else None,
+    )
+
+
+def _extract_runtime_response(
+    data: dict[str, Any],
+    run_id: str,
+    fallback_usage: RuntimeUsage,
+) -> RuntimeResponse | None:
+    direct = _runtime_response_from_envelope(run_id, data, fallback_usage=fallback_usage)
+    if direct is not None:
+        return direct
+
+    content = _extract_message(data).get("content")
+    text = _content_text(content).strip()
+    if not text or not text.startswith("{"):
+        return None
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    return _runtime_response_from_envelope(run_id, parsed, fallback_usage=fallback_usage)
+
+
 def _append_chat_context(request: RuntimeRequest, context: str) -> RuntimeRequest:
     if not context.strip():
         return request
@@ -409,6 +505,16 @@ async def run_upstream_turn(request: RuntimeRequest, *, timeout_seconds: int = 1
                     if not isinstance(data, dict):
                         raise ValueError("upstream response is not a JSON object")
                     usage = _merge_usage(usage, _usage(data))
+                    native_response = _extract_runtime_response(data, request.run_id, usage)
+                    if native_response is not None:
+                        native_response.events = events + native_response.events
+                        if memory_bridge is not None:
+                            await memory_bridge.sync_turn(
+                                request.input.text,
+                                native_response.final_text,
+                                tool_names=[record.tool_name for record in tool_records],
+                            )
+                        return native_response
                     message = _extract_message(data)
                     tool_calls = _extract_tool_calls(message)
                     if not tool_calls:

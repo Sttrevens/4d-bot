@@ -37,6 +37,20 @@ def test_selector_returns_shadow_when_shadow_enabled():
     assert select_runtime(tenant, sender_id="u1", run_id="r1") == "legacy_shadow_hermes"
 
 
+def test_selector_returns_shadow_without_visible_rollout():
+    from app.hermes_runtime.selector import select_runtime
+
+    tenant = TenantConfig(
+        tenant_id="pm-bot",
+        agent_runtime="hermes_sidecar",
+        hermes_runtime_enabled=True,
+        hermes_runtime_shadow=True,
+        hermes_runtime_rollout_percent=0,
+    )
+
+    assert select_runtime(tenant, sender_id="u1", run_id="r1") == "legacy_shadow_hermes"
+
+
 def test_selector_returns_hermes_for_full_rollout():
     from app.hermes_runtime.selector import select_runtime
 

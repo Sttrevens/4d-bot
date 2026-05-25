@@ -23,12 +23,12 @@ def select_runtime(tenant, sender_id: str, run_id: str = "") -> RuntimeName:
     if not bool(getattr(tenant, "hermes_runtime_enabled", False)):
         return "legacy"
 
+    if bool(getattr(tenant, "hermes_runtime_shadow", False)):
+        return "legacy_shadow_hermes"
+
     rollout = int(getattr(tenant, "hermes_runtime_rollout_percent", 0) or 0)
     if rollout <= 0:
         return "legacy"
-
-    if bool(getattr(tenant, "hermes_runtime_shadow", False)):
-        return "legacy_shadow_hermes"
 
     if rollout >= 100:
         return "hermes_sidecar"

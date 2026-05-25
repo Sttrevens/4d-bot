@@ -944,6 +944,74 @@ async def test_upstream_adapter_maps_http_failure_to_runtime_unavailable(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_upstream_adapter_accepts_runtime_response_envelope(monkeypatch):
+    import json
+
+    import httpx
+
+    from app.hermes_runtime.upstream_api import run_upstream_turn
+
+    envelope = {
+        "run_id": "run-upstream-1",
+        "runtime": "hermes_sidecar",
+        "status": "partial",
+        "final_text": "Need approval before deploy.",
+        "artifacts": [
+            {
+                "artifact_id": "file_123",
+                "kind": "html",
+                "filename": "deck.html",
+                "delivery_hint": "send_file",
+            }
+        ],
+        "tool_calls": [
+            {
+                "tool_name": "export_file",
+                "status": "success",
+                "duration_ms": 42,
+                "side_effect": True,
+            }
+        ],
+        "usage": {"input_tokens": 13, "output_tokens": 5, "api_calls": 2, "tool_calls": 1},
+        "events": [{"event": "runtime.partial", "level": "info"}],
+        "resume": {"resumable": True, "resume_token": "resume-1"},
+        "error": None,
+    }
+
+    class FakeAsyncClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return None
+
+        async def post(self, *_args, **_kwargs):
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"role": "assistant", "content": json.dumps(envelope)}}]},
+                request=httpx.Request("POST", "http://hermes-upstream.test/v1/chat/completions"),
+            )
+
+    monkeypatch.setenv("HERMES_UPSTREAM_API_URL", "http://hermes-upstream.test")
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+
+    response = await run_upstream_turn(_runtime_request(), timeout_seconds=3)
+
+    assert response.status == "partial"
+    assert response.final_text == "Need approval before deploy."
+    assert response.artifacts[0].artifact_id == "file_123"
+    assert response.tool_calls[0].tool_name == "export_file"
+    assert response.tool_calls[0].side_effect is True
+    assert response.usage.input_tokens == 13
+    assert response.usage.api_calls == 2
+    assert {"event": "runtime.partial", "level": "info"} in response.events
+    assert response.resume == {"resumable": True, "resume_token": "resume-1"}
+
+
+@pytest.mark.asyncio
 async def test_upstream_adapter_maps_malformed_response_to_bad_response(monkeypatch):
     import httpx
 
