@@ -38,6 +38,23 @@ def test_load_runtime_events_reads_tenant_scoped_stream(monkeypatch):
     assert [event["event"] for event in events] == ["runtime.started", "runtime.completed"]
 
 
+def test_load_shadow_response_reads_tenant_scoped_result(monkeypatch):
+    from app.hermes_runtime.observability import load_shadow_response
+
+    calls = []
+
+    def fake_execute(*args):
+        calls.append(args)
+        return '{"run_id": "run-1", "status": "completed", "final_text": "shadow answer"}'
+
+    monkeypatch.setattr("app.hermes_runtime.observability._redis_execute", fake_execute)
+
+    response = load_shadow_response("pm-bot", "run-1")
+
+    assert calls == [("GET", "pm-bot:runtime:hermes:shadow:run-1")]
+    assert response == {"run_id": "run-1", "status": "completed", "final_text": "shadow answer"}
+
+
 def test_runtime_event_includes_rollout_debug_dimensions():
     from app.hermes_runtime.events import make_runtime_event
 

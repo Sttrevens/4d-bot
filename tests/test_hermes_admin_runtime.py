@@ -93,3 +93,32 @@ async def test_admin_hermes_runtime_events_reads_tenant_scoped_stream(monkeypatc
         "runtime.started",
         "runtime.completed",
     ]
+
+
+@pytest.mark.asyncio
+async def test_admin_hermes_shadow_response_reads_tenant_scoped_result(monkeypatch):
+    from app.admin.routes import api_hermes_runtime_shadow_response
+
+    calls = []
+
+    def fake_execute(*args):
+        calls.append(args)
+        return (
+            '{"run_id": "run-1", "runtime": "hermes_sidecar", "status": "completed", '
+            '"final_text": "shadow answer", "usage": {"tool_calls": 2}, '
+            '"tool_calls": [{"tool_name": "read_file", "status": "success"}], "error": null}'
+        )
+
+    monkeypatch.setattr("app.services.redis_client.execute", fake_execute)
+
+    response = await api_hermes_runtime_shadow_response(
+        tenant_id="pm-bot",
+        run_id="run-1",
+        _token="test-token",
+    )
+
+    assert calls == [("GET", "pm-bot:runtime:hermes:shadow:run-1")]
+    assert response["found"] is True
+    assert response["shadow"]["run_id"] == "run-1"
+    assert response["shadow"]["status"] == "completed"
+    assert response["shadow"]["usage"]["tool_calls"] == 2

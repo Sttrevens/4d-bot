@@ -104,3 +104,14 @@ def load_runtime_events(tenant_id: str, run_id: str, *, limit: int = 100) -> lis
         if isinstance(parsed, dict):
             events.append(parsed)
     return events
+
+
+def load_shadow_response(tenant_id: str, run_id: str) -> dict[str, Any] | None:
+    row = _redis_execute("GET", shadow_result_key(tenant_id, run_id))
+    if not isinstance(row, str) or not row.strip():
+        return None
+    try:
+        parsed = json.loads(row)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None

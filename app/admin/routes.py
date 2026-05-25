@@ -396,6 +396,24 @@ async def api_hermes_runtime_events(
     }
 
 
+@router.get("/api/runtime/hermes/{tenant_id}/runs/{run_id}/shadow")
+async def api_hermes_runtime_shadow_response(
+    tenant_id: str,
+    run_id: str,
+    _token: str = Depends(_verify_token),
+):
+    """Tenant-scoped Hermes shadow output for rollout diagnostics."""
+    from app.hermes_runtime.observability import load_shadow_response
+
+    shadow = load_shadow_response(tenant_id, run_id)
+    return {
+        "tenant_id": tenant_id,
+        "run_id": run_id,
+        "found": shadow is not None,
+        "shadow": shadow or {},
+    }
+
+
 # ── 租户列表 ──
 
 @router.get("/api/tenants")

@@ -136,8 +136,107 @@ def _append_side_effect_ledger(
     return entry
 
 
+def _confirmation_tokens_for(effect_class: str) -> set[str]:
+    tokens = {effect_class}
+    if effect_class == "infrastructure":
+        tokens.update({"deploy", "infrastructure"})
+    elif effect_class == "message_send":
+        tokens.update({"send_external_message", "message_send"})
+    elif effect_class == "code_mutation":
+        tokens.add("code_mutation")
+    elif effect_class == "platform_write":
+        tokens.add("platform_write")
+    return tokens
+
+
+def _requires_confirmation(policy: RuntimePolicy, tool_name: str, effect) -> bool:
+    required = {
+        str(item).strip()
+        for item in policy.requires_confirmation_for
+        if str(item).strip()
+    }
+    if not required:
+        return False
+    if tool_name in required:
+        return True
+    return bool(required & _confirmation_tokens_for(effect.side_effect_class))
+
+
+def _confirmation_required_result(
+    *,
+    tool_name: str,
+    args: dict[str, Any],
+    effect,
+) -> RuntimeToolResult:
+    approval_request = {
+        "tool_name": tool_name,
+        "args": args,
+        "side_effect_class": effect.side_effect_class,
+        "rollback_available": effect.rollback_available,
+        "user_visible": effect.user_visible,
+    }
+    return RuntimeToolResult(
+        ok=False,
+        content=f"Tool '{tool_name}' requires explicit approval before execution.",
+        code="confirmation_required",
+        outcome="needs_confirmation",
+        side_effect=effect.side_effect,
+        structured={"approval_request": approval_request},
+    )
+
+
+def _autofix_boundary_result(
+    *,
+    tool_name: str,
+    args: dict[str, Any],
+    effect,
+) -> RuntimeToolResult | None:
+    if tool_name not in {"self_write_file", "self_edit_file"}:
+        return None
+    path = str(args.get("path") or "")
+    from app.services.auto_fix import (
+        _autofix_write_denial_message,
+        _is_autofix_write_path_allowed,
+    )
+
+    if _is_autofix_write_path_allowed(path):
+        return None
+    return RuntimeToolResult(
+        ok=False,
+        content=_autofix_write_denial_message(path),
+        code="policy_denied",
+        outcome="blocked",
+        side_effect=effect.side_effect,
+        structured={
+            "path": path,
+            "side_effect_class": effect.side_effect_class,
+        },
+    )
+
+
+def _shadow_side_effect_result(*, tool_name: str, effect) -> RuntimeToolResult | None:
+    if not effect.side_effect:
+        return None
+    return RuntimeToolResult(
+        ok=False,
+        content=f"Tool '{tool_name}' has side effects and is blocked in Hermes shadow mode.",
+        code="shadow_side_effect_denied",
+        outcome="blocked",
+        side_effect=True,
+        structured={
+            "side_effect_class": effect.side_effect_class,
+            "rollback_available": effect.rollback_available,
+            "user_visible": effect.user_visible,
+        },
+    )
+
+
 def normalize_tool_result(result: Any, *, tool_name: str, duration_ms: int = 0) -> RuntimeToolResult:
     side_effect = classify_side_effect(tool_name).side_effect
+    if isinstance(result, RuntimeToolResult):
+        result.side_effect = result.side_effect or side_effect
+        result.duration_ms = result.duration_ms or duration_ms
+        return result
     if isinstance(result, ToolResult):
         return RuntimeToolResult(
             ok=result.ok,
@@ -174,15 +273,6 @@ def execute_tool_call(
             code="policy_denied",
             outcome="blocked",
         )
-    side_effect = classify_side_effect(tool_name, args).side_effect
-    if policy.shadow_mode and side_effect:
-        return RuntimeToolResult(
-            ok=False,
-            content=f"Tool '{tool_name}' is side-effecting and cannot run in Hermes shadow mode.",
-            code="shadow_side_effect_denied",
-            outcome="blocked",
-            side_effect=True,
-        )
     handler = toolset.handlers.get(tool_name)
     if handler is None:
         return RuntimeToolResult(
@@ -193,6 +283,19 @@ def execute_tool_call(
         )
     args = _handler_args(toolset, tool_name, args)
     effect = classify_side_effect(tool_name, args)
+    if policy.shadow_mode:
+        shadow_result = _shadow_side_effect_result(tool_name=tool_name, effect=effect)
+        if shadow_result is not None:
+            return shadow_result
+    boundary_result = _autofix_boundary_result(tool_name=tool_name, args=args, effect=effect)
+    if boundary_result is not None:
+        return boundary_result
+    if _requires_confirmation(policy, tool_name, effect):
+        return _confirmation_required_result(
+            tool_name=tool_name,
+            args=args,
+            effect=effect,
+        )
     ledger_entry = _append_side_effect_ledger(
         ledger=ledger,
         run_id=run_id,
@@ -259,15 +362,6 @@ async def execute_tool_call_async(
             code="policy_denied",
             outcome="blocked",
         )
-    side_effect = classify_side_effect(tool_name, args).side_effect
-    if policy.shadow_mode and side_effect:
-        return RuntimeToolResult(
-            ok=False,
-            content=f"Tool '{tool_name}' is side-effecting and cannot run in Hermes shadow mode.",
-            code="shadow_side_effect_denied",
-            outcome="blocked",
-            side_effect=True,
-        )
     handler = toolset.handlers.get(tool_name)
     if handler is None:
         return RuntimeToolResult(
@@ -278,6 +372,19 @@ async def execute_tool_call_async(
         )
     args = _handler_args(toolset, tool_name, args)
     effect = classify_side_effect(tool_name, args)
+    if policy.shadow_mode:
+        shadow_result = _shadow_side_effect_result(tool_name=tool_name, effect=effect)
+        if shadow_result is not None:
+            return shadow_result
+    boundary_result = _autofix_boundary_result(tool_name=tool_name, args=args, effect=effect)
+    if boundary_result is not None:
+        return boundary_result
+    if _requires_confirmation(policy, tool_name, effect):
+        return _confirmation_required_result(
+            tool_name=tool_name,
+            args=args,
+            effect=effect,
+        )
     ledger_entry = _append_side_effect_ledger(
         ledger=ledger,
         run_id=run_id,

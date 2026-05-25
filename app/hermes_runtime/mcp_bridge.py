@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from typing import Any, Callable
 
 from app.hermes_runtime.mcp_registry import McpServerConfig, visible_servers_for_tenant
@@ -85,62 +86,11 @@ def _resolve_prefixed_tool(
     return None, ""
 
 
-def execute_mcp_tool_call(
-    tenant,
-    servers: list[McpServerConfig],
-    tool_name: str,
-    args: dict[str, Any] | None = None,
-    *,
-    handlers: dict[str, McpHandler],
-    env: dict[str, str],
-) -> RuntimeToolResult:
-    args = args or {}
-    allowlist = _tool_allowlist(tenant)
-    if allowlist and tool_name not in allowlist:
-        return RuntimeToolResult(
-            ok=False,
-            content=f"MCP tool '{tool_name}' is not allowed for this tenant.",
-            code="policy_denied",
-            outcome="blocked",
-        )
+def _env_for_server(server: McpServerConfig, env: dict[str, str]) -> dict[str, str]:
+    return {ref: env[ref] for ref in server.env_refs if env.get(ref)}
 
-    server, raw_tool_name = _resolve_prefixed_tool(tenant, servers, tool_name)
-    if server is None or not raw_tool_name:
-        return RuntimeToolResult(
-            ok=False,
-            content=f"Unknown or disabled MCP tool: {tool_name}",
-            code="mcp_tool_unavailable",
-            outcome="blocked",
-        )
 
-    missing_env = [ref for ref in server.env_refs if not env.get(ref)]
-    if missing_env:
-        return RuntimeToolResult(
-            ok=False,
-            content=f"MCP server '{server.server_id}' is missing required env refs: {', '.join(missing_env)}",
-            code="mcp_missing_env",
-            outcome="blocked",
-        )
-
-    handler = handlers.get(server.server_id)
-    if handler is None:
-        return RuntimeToolResult(
-            ok=False,
-            content=f"MCP server '{server.server_id}' has no configured call handler.",
-            code="mcp_server_unavailable",
-            outcome="retryable_error",
-        )
-
-    try:
-        result = handler(raw_tool_name, args, env)
-    except Exception as exc:
-        return RuntimeToolResult(
-            ok=False,
-            content=f"Error executing MCP tool '{tool_name}': {exc}",
-            code="tool_bridge_error",
-            outcome="retryable_error",
-        )
-
+def _normalize_mcp_result(result: Any, *, tool_name: str) -> RuntimeToolResult:
     if isinstance(result, RuntimeToolResult):
         return result
     if isinstance(result, ToolResult):
@@ -157,3 +107,171 @@ def execute_mcp_tool_call(
             structured=structured,
         )
     return RuntimeToolResult(ok=True, content=str(result))
+
+
+def _prepare_mcp_call(
+    tenant,
+    servers: list[McpServerConfig],
+    tool_name: str,
+    env: dict[str, str],
+) -> tuple[RuntimeToolResult | None, McpServerConfig | None, str, dict[str, str]]:
+    allowlist = _tool_allowlist(tenant)
+    if allowlist and tool_name not in allowlist:
+        return (
+            RuntimeToolResult(
+                ok=False,
+                content=f"MCP tool '{tool_name}' is not allowed for this tenant.",
+                code="policy_denied",
+                outcome="blocked",
+            ),
+            None,
+            "",
+            {},
+        )
+
+    server, raw_tool_name = _resolve_prefixed_tool(tenant, servers, tool_name)
+    if server is None or not raw_tool_name:
+        return (
+            RuntimeToolResult(
+                ok=False,
+                content=f"Unknown or disabled MCP tool: {tool_name}",
+                code="mcp_tool_unavailable",
+                outcome="blocked",
+            ),
+            None,
+            "",
+            {},
+        )
+
+    missing_env = [ref for ref in server.env_refs if not env.get(ref)]
+    if missing_env:
+        return (
+            RuntimeToolResult(
+                ok=False,
+                content=f"MCP server '{server.server_id}' is missing required env refs: {', '.join(missing_env)}",
+                code="mcp_missing_env",
+                outcome="blocked",
+            ),
+            None,
+            "",
+            {},
+        )
+
+    return None, server, raw_tool_name, _env_for_server(server, env)
+
+
+def execute_mcp_tool_call(
+    tenant,
+    servers: list[McpServerConfig],
+    tool_name: str,
+    args: dict[str, Any] | None = None,
+    *,
+    handlers: dict[str, McpHandler],
+    env: dict[str, str],
+) -> RuntimeToolResult:
+    args = args or {}
+    error, server, raw_tool_name, server_env = _prepare_mcp_call(tenant, servers, tool_name, env)
+    if error is not None:
+        return error
+    assert server is not None
+
+    handler = handlers.get(server.server_id)
+    if handler is None:
+        return RuntimeToolResult(
+            ok=False,
+            content=f"MCP server '{server.server_id}' has no configured call handler.",
+            code="mcp_server_unavailable",
+            outcome="retryable_error",
+        )
+
+    try:
+        result = handler(raw_tool_name, args, server_env)
+    except Exception as exc:
+        return RuntimeToolResult(
+            ok=False,
+            content=f"Error executing MCP tool '{tool_name}': {exc}",
+            code="tool_bridge_error",
+            outcome="retryable_error",
+        )
+
+    if inspect.isawaitable(result):
+        if inspect.iscoroutine(result):
+            result.close()
+        return RuntimeToolResult(
+            ok=False,
+            content=f"Async MCP tool '{tool_name}' must be executed by the async runtime worker.",
+            code="async_tool_requires_worker",
+            outcome="retryable_error",
+        )
+    return _normalize_mcp_result(result, tool_name=tool_name)
+
+
+async def execute_mcp_tool_call_async(
+    tenant,
+    servers: list[McpServerConfig],
+    tool_name: str,
+    args: dict[str, Any] | None = None,
+    *,
+    handlers: dict[str, McpHandler],
+    env: dict[str, str],
+) -> RuntimeToolResult:
+    args = args or {}
+    error, server, raw_tool_name, server_env = _prepare_mcp_call(tenant, servers, tool_name, env)
+    if error is not None:
+        return error
+    assert server is not None
+
+    handler = handlers.get(server.server_id)
+    if handler is None:
+        return RuntimeToolResult(
+            ok=False,
+            content=f"MCP server '{server.server_id}' has no configured call handler.",
+            code="mcp_server_unavailable",
+            outcome="retryable_error",
+        )
+
+    try:
+        result = handler(raw_tool_name, args, server_env)
+        if inspect.isawaitable(result):
+            result = await result
+    except Exception as exc:
+        return RuntimeToolResult(
+            ok=False,
+            content=f"Error executing MCP tool '{tool_name}': {exc}",
+            code="tool_bridge_error",
+            outcome="retryable_error",
+        )
+    return _normalize_mcp_result(result, tool_name=tool_name)
+
+
+def build_mcp_runtime_toolset(
+    tenant,
+    servers: list[McpServerConfig],
+    server_tools: dict[str, list[dict[str, Any]]],
+    *,
+    handlers: dict[str, McpHandler],
+    env: dict[str, str],
+) -> RuntimeToolset:
+    discovered = discover_mcp_tools(tenant, servers, server_tools)
+    runtime_handlers: dict[str, Callable[[dict[str, Any]], Any]] = {}
+
+    for schema in discovered.tools:
+        tool_name = schema.name
+
+        async def call(args: dict[str, Any], *, _tool_name: str = tool_name) -> RuntimeToolResult:
+            return await execute_mcp_tool_call_async(
+                tenant,
+                servers,
+                _tool_name,
+                args,
+                handlers=handlers,
+                env=env,
+            )
+
+        runtime_handlers[tool_name] = call
+
+    return RuntimeToolset(
+        tools=discovered.tools,
+        handlers=runtime_handlers,
+        tenant_id=str(getattr(tenant, "tenant_id", "") or ""),
+    )
