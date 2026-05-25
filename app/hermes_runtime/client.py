@@ -265,17 +265,32 @@ def build_runtime_request(
 
 
 def store_shadow_response(tenant_id: str, run_id: str, response: RuntimeResponse) -> None:
-    from app.hermes_runtime.observability import shadow_result_key
-    from app.services import redis_client as redis
+    from app.hermes_runtime import observability
 
     try:
-        redis.execute(
+        observability._redis_execute(
             "SET",
-            shadow_result_key(tenant_id, run_id),
+            observability.shadow_result_key(tenant_id, run_id),
             json.dumps(response.to_dict(), ensure_ascii=False),
             "EX",
             "604800",
         )
+        observability.record_runtime_run_summary({
+            "tenant_id": tenant_id,
+            "run_id": run_id,
+            "runtime": "legacy_shadow_hermes",
+            "status": response.status,
+            "shadow": True,
+            "shadow_mode": True,
+            "error": response.error.code if response.error else "",
+            "cost": {
+                "input_tokens": response.usage.input_tokens,
+                "output_tokens": response.usage.output_tokens,
+                "api_calls": response.usage.api_calls,
+                "tool_calls": response.usage.tool_calls,
+            },
+            "tool_calls": len(response.tool_calls),
+        })
     except Exception:
         pass
 

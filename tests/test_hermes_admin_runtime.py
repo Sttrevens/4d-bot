@@ -122,3 +122,78 @@ async def test_admin_hermes_shadow_response_reads_tenant_scoped_result(monkeypat
     assert response["shadow"]["run_id"] == "run-1"
     assert response["shadow"]["status"] == "completed"
     assert response["shadow"]["usage"]["tool_calls"] == 2
+
+
+@pytest.mark.asyncio
+async def test_admin_hermes_runtime_adoption_summarizes_indexed_runs(monkeypatch):
+    from app.admin import routes
+
+    summaries = [
+        {"tenant_id": "pm-bot", "run_id": "run-1", "runtime": "hermes_sidecar", "status": "completed", "duration_ms": 1200},
+        {"tenant_id": "pm-bot", "run_id": "run-2", "runtime": "legacy_shadow_hermes", "status": "failed", "duration_ms": 300},
+        {"tenant_id": "code-bot", "run_id": "run-3", "runtime": "legacy", "status": "completed", "duration_ms": 100},
+    ]
+
+    monkeypatch.setattr(
+        "app.hermes_runtime.observability.list_runtime_run_summaries",
+        lambda tenant_id=None, limit=100: [
+            summary for summary in summaries
+            if not tenant_id or summary["tenant_id"] == tenant_id
+        ],
+    )
+
+    response = await routes.api_hermes_runtime_adoption(_token="test-token")
+
+    assert response["summary"]["total_runs"] == 3
+    assert response["summary"]["runtime_counts"]["hermes_sidecar"] == 1
+    assert response["summary"]["runtime_counts"]["legacy_shadow_hermes"] == 1
+    assert response["tenants"]["pm-bot"]["status_counts"] == {"completed": 1, "failed": 1}
+    assert response["tenants"]["pm-bot"]["avg_duration_ms"] == 750
+
+
+@pytest.mark.asyncio
+async def test_admin_hermes_runtime_run_detail_returns_diagnostics(monkeypatch):
+    from app.admin import routes
+
+    expected = {
+        "summary": {"run_id": "run-1", "tenant_id": "pm-bot"},
+        "events": [{"event": "runtime.completed"}],
+        "shadow_response": {"run_id": "run-1", "final_text": "shadow answer"},
+    }
+    monkeypatch.setattr(
+        "app.hermes_runtime.observability.load_runtime_run_detail",
+        lambda tenant_id, run_id: expected if (tenant_id, run_id) == ("pm-bot", "run-1") else {},
+    )
+
+    response = await routes.api_hermes_runtime_run_detail(
+        tenant_id="pm-bot",
+        run_id="run-1",
+        _token="test-token",
+    )
+
+    assert response == expected
+
+
+@pytest.mark.asyncio
+async def test_admin_hermes_runtime_shadow_qa_summarizes_shadow_runs(monkeypatch):
+    from app.admin import routes
+
+    monkeypatch.setattr(
+        routes,
+        "_get_all_tenants",
+        lambda: [{"tenant_id": "pm-bot"}, {"tenant_id": "code-bot"}],
+    )
+    monkeypatch.setattr(
+        "app.hermes_runtime.observability.build_shadow_qa_report",
+        lambda tenant_ids, limit=100: {
+            "total_shadow_runs": 2,
+            "status_counts": {"pass": 1, "review": 1, "fail": 0},
+            "tenants": {tenant_id: {"shadow_run_count": 0} for tenant_id in tenant_ids},
+        },
+    )
+
+    response = await routes.api_hermes_runtime_shadow_qa(_token="test-token")
+
+    assert response["total_shadow_runs"] == 2
+    assert response["status_counts"] == {"pass": 1, "review": 1, "fail": 0}
+    assert set(response["tenants"]) == {"pm-bot", "code-bot"}

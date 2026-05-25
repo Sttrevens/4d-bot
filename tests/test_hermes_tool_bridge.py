@@ -272,3 +272,25 @@ async def test_execute_tool_calls_runs_reads_concurrently_and_serializes_same_ta
     assert read_elapsed < 0.09
     assert [result.content for result in write_results] == ["evt-1", "evt-1"]
     assert max_write_active == 1
+
+
+async def test_execute_tool_calls_async_alias_preserves_call_order():
+    from app.hermes_runtime.tool_bridge import RuntimeToolset, execute_tool_calls_async
+    from app.hermes_runtime.types import RuntimePolicy
+
+    async def read_file(args):
+        return ToolResult.success(args["path"])
+
+    toolset = RuntimeToolset(handlers={"read_file": read_file})
+    policy = RuntimePolicy(allowed_tool_names=["read_file"])
+
+    results = await execute_tool_calls_async(
+        toolset,
+        policy,
+        [
+            {"tool_name": "read_file", "args": {"path": "a.md"}},
+            {"tool_name": "read_file", "args": {"path": "b.md"}},
+        ],
+    )
+
+    assert [result.content for result in results] == ["a.md", "b.md"]

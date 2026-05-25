@@ -485,3 +485,22 @@ async def execute_tool_calls(
         else RuntimeToolResult(ok=False, content="Tool call did not produce a result.", code="tool_bridge_error")
         for result in results
     ]
+
+
+async def execute_tool_calls_async(
+    toolset: RuntimeToolset,
+    policy: RuntimePolicy,
+    calls: list[dict[str, Any]],
+    *,
+    run_id: str = "",
+    tenant_id: str = "",
+    ledger: list[dict[str, Any]] | None = None,
+) -> list[RuntimeToolResult]:
+    return await execute_tool_calls(
+        toolset,
+        policy,
+        calls,
+        run_id=run_id,
+        tenant_id=tenant_id,
+        ledger=ledger,
+    )

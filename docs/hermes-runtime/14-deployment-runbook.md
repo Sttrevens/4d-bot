@@ -131,7 +131,14 @@ Add endpoint or admin API:
 
 ```text
 GET /admin/api/runtime/hermes/health
+GET /admin/api/runtime/hermes/adoption
+GET /admin/api/runtime/hermes/shadow-qa
+GET /admin/api/runtime/hermes/{tenant_id}/runs/{run_id}
+GET /admin/api/runtime/hermes/{tenant_id}/runs/{run_id}/events
+GET /admin/api/runtime/hermes/{tenant_id}/runs/{run_id}/shadow
 ```
+
+Use the adoption endpoint to compare visible Hermes, legacy, and shadow traffic by tenant. Use run detail and shadow QA before moving a tenant from shadow mode to visible rollout.
 
 Sidecar HTTP checks once the sidecar service is packaged and running:
 

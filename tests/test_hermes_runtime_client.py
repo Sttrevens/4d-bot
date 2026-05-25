@@ -248,3 +248,30 @@ async def test_local_worker_executes_planned_tool_calls_through_tool_bridge(monk
     assert response.usage.tool_calls == 1
     assert response.tool_calls[0].tool_name == "async_echo"
     assert response.tool_calls[0].status == "success"
+
+
+def test_store_shadow_response_records_indexed_shadow_summary(monkeypatch):
+    from app.hermes_runtime.client import store_shadow_response
+    from app.hermes_runtime.types import RuntimeResponse, RuntimeUsage
+
+    calls = []
+    monkeypatch.setattr(
+        "app.hermes_runtime.observability._redis_execute",
+        lambda *args: calls.append(args) or "OK",
+    )
+
+    store_shadow_response(
+        "pm-bot",
+        "run-shadow",
+        RuntimeResponse(
+            run_id="run-shadow",
+            status="completed",
+            usage=RuntimeUsage(api_calls=1, tool_calls=2),
+        ),
+    )
+
+    set_calls = [call for call in calls if call[:2] == ("SET", "pm-bot:runtime:hermes:shadow:run-shadow")]
+    summary_calls = [call for call in calls if call[:2] == ("SET", "pm-bot:runtime:hermes:run:run-shadow")]
+    assert set_calls
+    assert summary_calls
+    assert '"shadow_mode": true' in summary_calls[0][2]
