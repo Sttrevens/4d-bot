@@ -149,6 +149,111 @@ def test_execute_tool_call_injects_runtime_tenant_for_repo_skill_tools():
     assert seen_args["tenant_id"] == "tenant-a"
 
 
+def test_execute_tool_call_blocks_terminal_tool_when_execution_backend_disabled():
+    from app.hermes_runtime.execution_policy import ExecutionPolicy
+    from app.hermes_runtime.tool_bridge import RuntimeToolset, execute_tool_call
+    from app.hermes_runtime.types import RuntimePolicy
+
+    executed = False
+
+    def lark_cli_run(args):
+        nonlocal executed
+        executed = True
+        return ToolResult.success("ran")
+
+    toolset = RuntimeToolset(handlers={"lark_cli_run": lark_cli_run})
+    policy = RuntimePolicy(allowed_tool_names=["lark_cli_run"])
+
+    result = execute_tool_call(
+        toolset,
+        policy,
+        "lark_cli_run",
+        {"argv": ["api", "GET", "/open-apis/contact/v3/users"]},
+        execution_policy=ExecutionPolicy(),
+    )
+
+    assert result.ok is False
+    assert result.outcome == "blocked"
+    assert result.code == "execution_disabled"
+    assert executed is False
+
+
+def test_execute_tool_call_requires_confirmation_for_destructive_local_agent_bash():
+    from app.hermes_runtime.execution_policy import ExecutionPolicy
+    from app.hermes_runtime.tool_bridge import RuntimeToolset, execute_tool_call
+    from app.hermes_runtime.types import RuntimePolicy
+
+    executed = False
+
+    def local_agent_request(args):
+        nonlocal executed
+        executed = True
+        return ToolResult.success("queued")
+
+    toolset = RuntimeToolset(handlers={"local_agent_request": local_agent_request})
+    policy = RuntimePolicy(allowed_tool_names=["local_agent_request"])
+
+    result = execute_tool_call(
+        toolset,
+        policy,
+        "local_agent_request",
+        {
+            "tool": "bash.run",
+            "tool_args": {"command": "rm -rf app/tools/generated", "cwd": "/workspace"},
+        },
+        execution_policy=ExecutionPolicy(
+            backend="docker",
+            allow_file_write=True,
+            allowed_paths=["app/tools", "app/knowledge"],
+            requires_checkpoint=True,
+        ),
+    )
+
+    assert result.ok is False
+    assert result.outcome == "needs_confirmation"
+    assert result.code == "confirmation_required"
+    assert result.structured["approval_request"]["command"] == "rm -rf app/tools/generated"
+    assert executed is False
+
+
+def test_execute_tool_call_denies_local_agent_write_outside_execution_allowlist():
+    from app.hermes_runtime.execution_policy import ExecutionPolicy
+    from app.hermes_runtime.tool_bridge import RuntimeToolset, execute_tool_call
+    from app.hermes_runtime.types import RuntimePolicy
+
+    executed = False
+
+    def local_agent_request(args):
+        nonlocal executed
+        executed = True
+        return ToolResult.success("queued")
+
+    toolset = RuntimeToolset(handlers={"local_agent_request": local_agent_request})
+    policy = RuntimePolicy(allowed_tool_names=["local_agent_request"])
+
+    result = execute_tool_call(
+        toolset,
+        policy,
+        "local_agent_request",
+        {
+            "tool": "file.write",
+            "tool_args": {"path": "app/hermes_runtime/generated.py", "text": "x = 1\n"},
+        },
+        execution_policy=ExecutionPolicy(
+            backend="docker",
+            allow_file_write=True,
+            allowed_paths=["app/tools", "app/knowledge"],
+            requires_checkpoint=True,
+        ),
+    )
+
+    assert result.ok is False
+    assert result.outcome == "blocked"
+    assert result.code == "policy_denied"
+    assert "app/hermes_runtime/generated.py" in result.content
+    assert executed is False
+
+
 async def test_execute_tool_calls_injects_runtime_tenant_for_async_repo_skill_tools():
     from app.hermes_runtime.tool_bridge import RuntimeToolset, execute_tool_calls
     from app.hermes_runtime.types import RuntimePolicy

@@ -286,6 +286,89 @@ async def test_upstream_adapter_empty_policy_tools_uses_tenant_visible_toolset(m
 
 
 @pytest.mark.asyncio
+async def test_upstream_adapter_blocks_execution_tool_when_backend_disabled(monkeypatch):
+    import httpx
+
+    from app.hermes_runtime.upstream_api import run_upstream_turn
+    from app.tenant.registry import tenant_registry
+
+    executed = []
+
+    async def lark_cli_run(args):
+        executed.append(dict(args))
+        return ToolResult.success("ran")
+
+    def fake_get_tenant_tools(tenant, user_text="", override_groups=None, suggested_groups=None):
+        return (
+            [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "lark_cli_run",
+                        "description": "Run lark-cli",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"argv": {"type": "array", "items": {"type": "string"}}},
+                            "required": ["argv"],
+                        },
+                    },
+                }
+            ],
+            {"lark_cli_run": lark_cli_run},
+        )
+
+    class FakeAsyncClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return None
+
+        async def post(self, path, json):
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": "",
+                                "tool_calls": [
+                                    {
+                                        "id": "call_lark_1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "lark_cli_run",
+                                            "arguments": '{"argv": ["api", "GET", "/open-apis/contact/v3/users"]}',
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                },
+                request=httpx.Request("POST", "http://hermes-upstream.test/v1/chat/completions"),
+            )
+
+    tenant_registry.register(TenantConfig(tenant_id="pm-bot", tools_enabled=["lark_cli_run"]))
+    monkeypatch.setenv("HERMES_UPSTREAM_API_URL", "http://hermes-upstream.test")
+    monkeypatch.setattr("app.services.base_agent._get_tenant_tools", fake_get_tenant_tools)
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+
+    response = await run_upstream_turn(_runtime_request(tools=["lark_cli_run"]), timeout_seconds=3)
+
+    assert response.status == "blocked"
+    assert response.error is not None
+    assert response.error.code == "execution_disabled"
+    assert response.tool_calls[0].tool_name == "lark_cli_run"
+    assert response.tool_calls[0].code == "execution_disabled"
+    assert executed == []
+
+
+@pytest.mark.asyncio
 async def test_upstream_adapter_emits_checkpoint_event_for_side_effect_tool(monkeypatch):
     import httpx
 

@@ -248,6 +248,12 @@ def _is_provider_exhausted_response(response: httpx.Response) -> bool:
     return response.status_code == 429
 
 
+def _execution_policy_for_request(request: RuntimeRequest):
+    from app.hermes_runtime.execution_policy import build_execution_policy
+
+    return build_execution_policy(_load_tenant(request.tenant_id), admin=request.policy.admin)
+
+
 def _openai_tools_from_request(request: RuntimeRequest):
     from app.hermes_runtime.tool_bridge import RuntimeToolset, build_runtime_toolset
 
@@ -556,6 +562,7 @@ async def run_upstream_turn(request: RuntimeRequest, *, timeout_seconds: int = 1
                         run_id=request.run_id,
                         tenant_id=request.tenant_id,
                         ledger=side_effect_ledger,
+                        execution_policy=_execution_policy_for_request(request),
                     )
                     events.extend(_checkpoint_events_from_ledger(side_effect_ledger, ledger_start))
                     usage = _merge_usage(usage, RuntimeUsage(tool_calls=len(results)))
