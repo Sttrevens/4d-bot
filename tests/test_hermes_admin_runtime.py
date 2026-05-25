@@ -16,6 +16,57 @@ async def test_admin_hermes_runtime_health_reports_pinned_source(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_admin_hermes_runtime_adoption_summarizes_indexed_runs(monkeypatch):
+    from app.admin import routes
+
+    summaries = [
+        {
+            "tenant_id": "pm-bot",
+            "run_id": "run-1",
+            "runtime": "hermes_sidecar",
+            "status": "completed",
+            "duration_ms": 1200,
+        },
+        {
+            "tenant_id": "pm-bot",
+            "run_id": "run-2",
+            "runtime": "legacy_shadow_hermes",
+            "status": "failed",
+            "duration_ms": 300,
+        },
+        {
+            "tenant_id": "code-bot",
+            "run_id": "run-3",
+            "runtime": "legacy",
+            "status": "completed",
+            "duration_ms": 100,
+        },
+    ]
+
+    def fake_list_runtime_run_summaries(*, limit=100, tenant_id=None):
+        assert limit == 100
+        if tenant_id:
+            return [summary for summary in summaries if summary["tenant_id"] == tenant_id]
+        return list(summaries)
+
+    monkeypatch.setattr(routes, "list_runtime_run_summaries", fake_list_runtime_run_summaries)
+
+    response = await routes.api_hermes_runtime_adoption(_token="test-token")
+
+    assert response["summary"]["total_runs"] == 3
+    assert response["summary"]["runtime_counts"] == {
+        "hermes_sidecar": 1,
+        "legacy_shadow_hermes": 1,
+        "legacy": 1,
+    }
+    assert response["tenants"]["pm-bot"]["status_counts"] == {
+        "completed": 1,
+        "failed": 1,
+    }
+    assert response["tenants"]["pm-bot"]["avg_duration_ms"] == 750
+
+
+@pytest.mark.asyncio
 async def test_admin_hermes_runtime_health_reports_last_sidecar_error(monkeypatch):
     from app.admin.routes import api_hermes_runtime_health
     from app.hermes_runtime.observability import record_runtime_health

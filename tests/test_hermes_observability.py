@@ -18,6 +18,33 @@ def test_observability_run_summary_is_tenant_scoped():
     assert run_summary_key("pm-bot", "run-1") == "pm-bot:runtime:hermes:run:run-1"
 
 
+def test_record_runtime_run_summary_indexes_global_and_tenant(monkeypatch):
+    from app.hermes_runtime import observability
+
+    calls = []
+
+    def fake_execute(*args):
+        calls.append(args)
+        return None
+
+    monkeypatch.setattr(observability, "_redis_execute", fake_execute)
+
+    observability.record_runtime_run_summary(
+        {
+            "tenant_id": "pm-bot",
+            "run_id": "run-1",
+            "runtime": "hermes_sidecar",
+            "status": "completed",
+            "updated_at": 123.0,
+        }
+    )
+
+    assert calls[0][0] == "SET"
+    assert calls[0][1] == "pm-bot:runtime:hermes:run:run-1"
+    assert ("ZADD", "runtime:hermes:runs", 123.0, "pm-bot:run-1") in calls
+    assert ("ZADD", "pm-bot:runtime:hermes:runs", 123.0, "run-1") in calls
+
+
 def test_load_runtime_events_reads_tenant_scoped_stream(monkeypatch):
     from app.hermes_runtime.observability import load_runtime_events
 

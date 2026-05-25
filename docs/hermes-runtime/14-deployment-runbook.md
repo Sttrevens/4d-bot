@@ -142,6 +142,16 @@ POST http://127.0.0.1:8765/v1/runtime/turn
 
 When `HERMES_RUNTIME_URL` is set, the admin health endpoint probes `<url>/health` and returns `sidecar_url`, `sidecar_status`, and the sidecar-reported source/last-success fields. If the probe fails, `sidecar_status` is `unreachable`; visible Hermes traffic must remain disabled or fall back to legacy until the probe recovers.
 
+Dashboard adoption visibility is exposed through:
+
+```text
+GET /admin/api/runtime/hermes/adoption?limit=100
+```
+
+This reads indexed Hermes run summaries and returns aggregate counts by tenant,
+runtime, and status. It is telemetry-only and does not enable Hermes for any
+tenant.
+
 Local sidecar process:
 
 ```bash
