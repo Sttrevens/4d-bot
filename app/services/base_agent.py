@@ -805,37 +805,13 @@ def check_url_provenance(
 # 核心理念：GenericAgent 式的"信息密度优先"——context 中不放无关工具定义
 # 用户说"查日程"时不需要看到 git/社媒/浏览器工具的 schema
 
-_TOOL_GROUPS: dict[str, frozenset[str]] = {
-    "core": frozenset({
-        "think", "web_search", "fetch_url",
-        "cerul_search", "cerul_usage",
-        "save_memory", "recall_memory",
-        "list_capability_modules", "load_capability_module", "save_capability_module",
-        "export_file",  # 几乎所有任务最终可能需要导出
-        "read_tool_output",
-        # 跨平台身份工具（所有平台可用）
-        "search_known_user", "initiate_identity_verification",
-        "confirm_identity_verification", "get_user_identity",
-    }),
-    "feishu_collab": (
-        frozenset(CALENDAR_TOOL_MAP) | frozenset(DOC_TOOL_MAP) | frozenset(MINUTES_TOOL_MAP)
-        | frozenset(TASK_TOOL_MAP) | frozenset(USER_TOOL_MAP) | frozenset(MESSAGE_TOOL_MAP)
-        | frozenset(BITABLE_TOOL_MAP) | frozenset(MAIL_TOOL_MAP)
-    ),
-    "code_dev": (
-        frozenset(FILE_TOOL_MAP) | frozenset(GIT_TOOL_MAP) | frozenset(GITHUB_TOOL_MAP)
-        | frozenset(REPO_SEARCH_TOOL_MAP) | frozenset(ISSUE_TOOL_MAP)
-    ),
-    "devops": frozenset(SELF_TOOL_MAP) | frozenset(SERVER_TOOL_MAP),
-    "research": frozenset(SOCIAL_MEDIA_TOOL_MAP) | frozenset(XHS_TOOL_MAP) | frozenset(BROWSER_TOOL_MAP),
-    "content": frozenset(FILE_EXPORT_TOOL_MAP) | frozenset(VIDEO_URL_TOOL_MAP) | frozenset(IMAGE_TOOL_MAP),
-    "admin": (
-        frozenset(PROVISION_TOOL_MAP) | frozenset(CUSTOMER_TOOL_MAP)
-        | frozenset(ENV_TOOL_MAP) | frozenset(CAPABILITY_TOOL_MAP)
-    ),
-    "extension": frozenset(CUSTOM_TOOL_MAP) | frozenset(SKILL_TOOL_MAP),
-    "automation": frozenset(CRON_AGENT_TOOL_MAP) | frozenset(REMINDER_TOOL_MAP.keys()),
-}
+# Authoritative group names — tool membership now lives in plugin_registry
+# (see _DEFAULT_MANIFESTS in app/plugins/registry.py and per-module TOOL_MANIFEST).
+# Only the *keys* are used here; keep in sync with registry groups.
+_TOOL_GROUP_NAMES: frozenset[str] = frozenset({
+    "core", "feishu_collab", "code_dev", "devops",
+    "research", "content", "admin", "extension", "automation",
+})
 
 # 关键词 → 工具组映射（大小写不敏感匹配）
 _GROUP_KEYWORDS: dict[str, list[str]] = {
@@ -949,7 +925,7 @@ def _select_tool_groups(user_text: str, platform: str = "") -> set[str]:
     - 飞书平台 → 始终包含 feishu_collab
     """
     if not user_text:
-        return set(_TOOL_GROUPS.keys())
+        return set(_TOOL_GROUP_NAMES)
 
     text_lower = user_text.lower()
     matched: set[str] = {"core"}
@@ -970,7 +946,7 @@ def _select_tool_groups(user_text: str, platform: str = "") -> set[str]:
     if platform == "feishu":
         non_default -= {"feishu_collab"}
     if not non_default:
-        return set(_TOOL_GROUPS.keys())
+        return set(_TOOL_GROUP_NAMES)
 
     return matched
 
@@ -987,7 +963,10 @@ def _get_group_tool_names(groups: set[str]) -> set[str]:
 
 
 _SYNTHETIC_TOOL_GROUPS: dict[str, frozenset[str]] = {
-    "core": frozenset({"think"}),
+    "core": frozenset({
+        "think",
+        "export_file",  # 几乎所有任务最终可能需要导出
+    }),
 }
 
 
@@ -1153,7 +1132,7 @@ def _get_tenant_tools(
             active_groups.add("feishu_collab")
     elif user_text:
         active_groups = _select_tool_groups(user_text, current_platform)
-        all_groups = set(_TOOL_GROUPS.keys())
+        all_groups = set(_TOOL_GROUP_NAMES)
         if active_groups != all_groups:
             # 只加载匹配组的工具 + request_more_tools 元工具
             active_tool_names = _get_group_tool_names(active_groups)
