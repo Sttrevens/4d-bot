@@ -55,3 +55,11 @@ def test_codex_pricing_not_marked_multi_domain_by_subagent_router():
         "胡扯，codex怎么可能不公布自己的官方pricing",
         ["core", "research"],
     ) == "research"
+
+
+def test_reminder_turn_stays_on_main_agent_with_automation_tools():
+    assert should_delegate_to_sub_agent(
+        "normal",
+        "明天提醒我做QF onboarding流程",
+        ["core", "automation", "feishu_collab"],
+    ) is None

@@ -1767,6 +1767,13 @@ def should_delegate_to_sub_agent(task_type: str, user_text: str, suggested_group
         if not suggested_groups or set(suggested_groups) <= {"core", "content"}:
             return None
 
+    # Reminder/scheduled-task turns need automation tools such as set_reminder.
+    # The Feishu sub-agent only has feishu_collab tools, so keep these on the
+    # main agent where automation + Feishu context can be used together.
+    suggested_set = set(suggested_groups or [])
+    if "automation" in suggested_set or "automation" in set(turn_mode.groups):
+        return None
+
     def _count_keyword_hits(text: str, kw_set: set[str]) -> int:
         count = 0
         for kw in kw_set:
