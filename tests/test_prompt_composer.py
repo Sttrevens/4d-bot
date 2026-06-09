@@ -109,6 +109,37 @@ def test_disclosure_policy_forbids_internal_ops_escalation_to_customer():
     assert "不能把提醒说成私信通知" in prompt
 
 
+def test_identity_context_hides_internal_ids(monkeypatch):
+    from app.services.base_agent import _build_identity_context_block
+    from app.tenant.context import SenderContext
+
+    monkeypatch.setattr(
+        "app.services.identity.get_identity",
+        lambda identity_id: {"name": "Steven", "identity_id": identity_id},
+    )
+    ctx = SenderContext(
+        sender_id="agent:main:main",
+        sender_name="",
+        identity_id="ff0f7996-51d-real-id",
+        channel_platform="qq",
+        linked_platforms={
+            "qq": "agent:main:main",
+            "feishu": "ou_hidden_user_id",
+        },
+    )
+
+    block = _build_identity_context_block(ctx, object())
+
+    assert "可见身份名称: Steven" in block
+    assert "QQ" in block
+    assert "飞书" in block
+    assert "ff0f7996" not in block
+    assert "ou_hidden_user_id" not in block
+    assert "agent:main:main" not in block
+    assert "当前用户已关联统一身份" in block
+    assert "不要把 identity id" in block
+
+
 def test_grounding_policy_for_reports_requires_current_date_and_evidence_labels():
     from app.services.prompt_composer import PromptComposeContext, compose_prompt
 

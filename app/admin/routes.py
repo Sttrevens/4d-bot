@@ -371,6 +371,147 @@ async def api_redis_debug(_token: str = Depends(_verify_token)):
     })
 
 
+@router.get("/api/runtime/hermes/health")
+async def api_hermes_runtime_health(_token: str = Depends(_verify_token)):
+    """Hermes runtime adapter health and upstream pin."""
+    from app.hermes_runtime.worker import health
+
+    return health()
+
+
+@router.get("/api/runtime/hermes/adoption")
+async def api_hermes_runtime_adoption(
+    tenant_id: str = "",
+    limit: int = 100,
+    _token: str = Depends(_verify_token),
+):
+    """Dashboard-facing Hermes runtime adoption summary from indexed run telemetry."""
+    from app.hermes_runtime.observability import list_runtime_run_summaries
+
+    runs = list_runtime_run_summaries(
+        tenant_id.strip() or None,
+        limit=max(1, min(int(limit or 100), 500)),
+    )
+    return _build_runtime_adoption_response(runs)
+
+
+def _build_runtime_adoption_response(runs: list[dict]) -> dict:
+    tenants: dict[str, dict] = {}
+    runtime_counts: dict[str, int] = {}
+    status_counts: dict[str, int] = {}
+
+    for run in runs:
+        tenant_id = str(run.get("tenant_id") or "unknown")
+        runtime = str(run.get("runtime") or "unknown")
+        status = str(run.get("status") or "unknown")
+        duration_ms = _int_or_zero(run.get("duration_ms"))
+
+        runtime_counts[runtime] = runtime_counts.get(runtime, 0) + 1
+        status_counts[status] = status_counts.get(status, 0) + 1
+
+        tenant = tenants.setdefault(
+            tenant_id,
+            {
+                "total_runs": 0,
+                "runtime_counts": {},
+                "status_counts": {},
+                "_duration_total_ms": 0,
+                "_duration_count": 0,
+            },
+        )
+        tenant["total_runs"] += 1
+        tenant["runtime_counts"][runtime] = tenant["runtime_counts"].get(runtime, 0) + 1
+        tenant["status_counts"][status] = tenant["status_counts"].get(status, 0) + 1
+        if duration_ms > 0:
+            tenant["_duration_total_ms"] += duration_ms
+            tenant["_duration_count"] += 1
+
+    for tenant in tenants.values():
+        count = tenant.pop("_duration_count")
+        total = tenant.pop("_duration_total_ms")
+        tenant["avg_duration_ms"] = int(total / count) if count else 0
+
+    return {
+        "summary": {
+            "total_runs": len(runs),
+            "runtime_counts": runtime_counts,
+            "status_counts": status_counts,
+        },
+        "tenants": tenants,
+        "runs": runs,
+    }
+
+
+def _int_or_zero(value) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+@router.get("/api/runtime/hermes/shadow-qa")
+async def api_hermes_runtime_shadow_qa(
+    limit: int = 100,
+    _token: str = Depends(_verify_token),
+):
+    """Dashboard-facing Hermes shadow QA scoring summary."""
+    from app.hermes_runtime.observability import build_shadow_qa_report
+
+    tenant_ids = [
+        str(tenant.get("tenant_id", ""))
+        for tenant in _get_all_tenants()
+        if str(tenant.get("tenant_id", "")).strip()
+    ]
+    return build_shadow_qa_report(tenant_ids, limit=limit)
+
+
+@router.get("/api/runtime/hermes/{tenant_id}/runs/{run_id}")
+async def api_hermes_runtime_run_detail(
+    tenant_id: str,
+    run_id: str,
+    _token: str = Depends(_verify_token),
+):
+    """Tenant-scoped Hermes run summary, events, and shadow output."""
+    from app.hermes_runtime.observability import load_runtime_run_detail
+
+    return load_runtime_run_detail(tenant_id, run_id)
+
+
+@router.get("/api/runtime/hermes/{tenant_id}/runs/{run_id}/events")
+async def api_hermes_runtime_events(
+    tenant_id: str,
+    run_id: str,
+    limit: int = 100,
+    _token: str = Depends(_verify_token),
+):
+    """Tenant-scoped Hermes runtime event stream for admin diagnostics."""
+    from app.hermes_runtime.observability import load_runtime_events
+
+    return {
+        "tenant_id": tenant_id,
+        "run_id": run_id,
+        "events": load_runtime_events(tenant_id, run_id, limit=limit),
+    }
+
+
+@router.get("/api/runtime/hermes/{tenant_id}/runs/{run_id}/shadow")
+async def api_hermes_runtime_shadow_response(
+    tenant_id: str,
+    run_id: str,
+    _token: str = Depends(_verify_token),
+):
+    """Tenant-scoped Hermes shadow output for rollout diagnostics."""
+    from app.hermes_runtime.observability import load_shadow_response
+
+    shadow = load_shadow_response(tenant_id, run_id)
+    return {
+        "tenant_id": tenant_id,
+        "run_id": run_id,
+        "found": shadow is not None,
+        "shadow": shadow or {},
+    }
+
+
 # ── 租户列表 ──
 
 @router.get("/api/tenants")

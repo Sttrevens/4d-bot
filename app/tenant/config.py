@@ -239,6 +239,25 @@ class TenantConfig:
     plugin_groups_enabled: list[str] = field(default_factory=list)  # 启用的工具组 ["core","feishu_collab","code_dev"]，空=全部
     plugin_lazy_loading: bool = True   # 是否按需加载工具（减少 context）
 
+    # ── Agent Runtime（Hermes sidecar 适配层）──
+    # legacy = 当前 Gemini/Kimi provider 路径；hermes_sidecar = 经 app/hermes_runtime 适配层。
+    # 默认全部关闭，避免部署后自动切换流量。
+    agent_runtime: str = "legacy"
+    hermes_runtime_enabled: bool = False
+    hermes_runtime_shadow: bool = False
+    hermes_runtime_rollout_percent: int = 0
+    hermes_runtime_profile: str = "default"
+    hermes_runtime_fallback_to_legacy: bool = True
+    hermes_runtime_timeout_seconds: int = 180
+    hermes_provider_credential_refs: list[str] = field(default_factory=list)
+
+    # ── Hermes MCP / Code Execution 开关 ──
+    mcp_enabled: bool = False
+    mcp_servers_enabled: list[str] = field(default_factory=list)
+    mcp_tool_allowlist: list[str] = field(default_factory=list)
+    hermes_code_execution_backend: str = "none"
+    hermes_code_execution_enabled: bool = False
+
     # ── 容器沙箱（NanoClaw 启发）──
     container_sandbox_enabled: bool = False  # 是否使用 Docker 容器级沙箱（需服务器有 Docker）
 
