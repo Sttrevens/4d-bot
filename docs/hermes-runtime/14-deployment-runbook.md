@@ -131,14 +131,7 @@ Add endpoint or admin API:
 
 ```text
 GET /admin/api/runtime/hermes/health
-GET /admin/api/runtime/hermes/adoption
-GET /admin/api/runtime/hermes/shadow-qa
-GET /admin/api/runtime/hermes/{tenant_id}/runs/{run_id}
-GET /admin/api/runtime/hermes/{tenant_id}/runs/{run_id}/events
-GET /admin/api/runtime/hermes/{tenant_id}/runs/{run_id}/shadow
 ```
-
-Use the adoption endpoint to compare visible Hermes, legacy, and shadow traffic by tenant. Use run detail and shadow QA before moving a tenant from shadow mode to visible rollout.
 
 Sidecar HTTP checks once the sidecar service is packaged and running:
 
@@ -148,6 +141,16 @@ POST http://127.0.0.1:8765/v1/runtime/turn
 ```
 
 When `HERMES_RUNTIME_URL` is set, the admin health endpoint probes `<url>/health` and returns `sidecar_url`, `sidecar_status`, and the sidecar-reported source/last-success fields. If the probe fails, `sidecar_status` is `unreachable`; visible Hermes traffic must remain disabled or fall back to legacy until the probe recovers.
+
+Dashboard adoption visibility is exposed through:
+
+```text
+GET /admin/api/runtime/hermes/adoption?limit=100
+```
+
+This reads indexed Hermes run summaries and returns aggregate counts by tenant,
+runtime, and status. It is telemetry-only and does not enable Hermes for any
+tenant.
 
 Local sidecar process:
 

@@ -110,7 +110,7 @@ def test_memory_quality_api_returns_user_model_quality(monkeypatch):
 
     profile = {
         "name": "吴天骄",
-        "short_term_state": [{"text": "最近因为发布延期很烦", "expires_at": "2026-05-15T00:00:00+00:00"}],
+        "short_term_state": [{"text": "最近因为发布延期很烦", "expires_at": "2026-07-15T00:00:00+00:00"}],
         "support_preferences": ["情绪低落时先陪着拆问题"],
         "low_confidence_candidates": [{"text": "疑似一时状态"}],
         "quarantined_memory": [],

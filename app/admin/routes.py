@@ -30,6 +30,7 @@ from app.services.trial import (
     list_trial_users, get_user_info, approve_user, block_user,
     reset_user, set_user_notes,
 )
+from app.hermes_runtime.observability import list_runtime_run_summaries
 
 logger = logging.getLogger(__name__)
 
@@ -386,11 +387,9 @@ async def api_hermes_runtime_adoption(
     _token: str = Depends(_verify_token),
 ):
     """Dashboard-facing Hermes runtime adoption summary from indexed run telemetry."""
-    from app.hermes_runtime.observability import list_runtime_run_summaries
-
     runs = list_runtime_run_summaries(
-        tenant_id.strip() or None,
         limit=max(1, min(int(limit or 100), 500)),
+        tenant_id=tenant_id.strip() or None,
     )
     return _build_runtime_adoption_response(runs)
 
@@ -447,34 +446,6 @@ def _int_or_zero(value) -> int:
         return int(value or 0)
     except (TypeError, ValueError):
         return 0
-
-
-@router.get("/api/runtime/hermes/shadow-qa")
-async def api_hermes_runtime_shadow_qa(
-    limit: int = 100,
-    _token: str = Depends(_verify_token),
-):
-    """Dashboard-facing Hermes shadow QA scoring summary."""
-    from app.hermes_runtime.observability import build_shadow_qa_report
-
-    tenant_ids = [
-        str(tenant.get("tenant_id", ""))
-        for tenant in _get_all_tenants()
-        if str(tenant.get("tenant_id", "")).strip()
-    ]
-    return build_shadow_qa_report(tenant_ids, limit=limit)
-
-
-@router.get("/api/runtime/hermes/{tenant_id}/runs/{run_id}")
-async def api_hermes_runtime_run_detail(
-    tenant_id: str,
-    run_id: str,
-    _token: str = Depends(_verify_token),
-):
-    """Tenant-scoped Hermes run summary, events, and shadow output."""
-    from app.hermes_runtime.observability import load_runtime_run_detail
-
-    return load_runtime_run_detail(tenant_id, run_id)
 
 
 @router.get("/api/runtime/hermes/{tenant_id}/runs/{run_id}/events")
