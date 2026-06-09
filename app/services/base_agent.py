@@ -1904,6 +1904,56 @@ def _is_admin(sender_id: str = "", sender_name: str = "") -> bool:
     return False
 
 
+def _build_identity_context_block(sender_ctx, tenant) -> str:
+    """Render cross-channel identity context without exposing internal IDs."""
+    _ = tenant
+    platform_labels = {
+        "feishu": "飞书",
+        "wecom": "企业微信",
+        "wecom_kf": "企业微信客服",
+        "qq": "QQ",
+    }
+    current_platform = platform_labels.get(sender_ctx.channel_platform, sender_ctx.channel_platform or "当前平台")
+    if sender_ctx.identity_id and sender_ctx.linked_platforms:
+        identity_name = ""
+        try:
+            from app.services.identity import get_identity
+
+            info = get_identity(sender_ctx.identity_id) or {}
+            identity_name = str(info.get("display_name") or info.get("name") or "").strip()
+        except Exception:
+            logger.debug("identity context name lookup failed", exc_info=True)
+
+        linked_platforms = [
+            platform_labels.get(platform, platform)
+            for platform in sender_ctx.linked_platforms
+            if platform
+        ]
+        linked_text = "、".join(dict.fromkeys(linked_platforms)) or "多个平台"
+        lines = [
+            "[跨平台身份]",
+            "当前用户已关联统一身份；这是内部路由事实，不是用户的人名。",
+        ]
+        if identity_name:
+            lines.append(f"可见身份名称: {identity_name}")
+        lines.extend([
+            f"关联入口: {linked_text}",
+            f"当前入口: {current_platform}",
+            "该用户在所有关联入口共享同一份记忆和对话上下文。",
+            "用户问“我是谁/你认识我吗”时，优先依据用户画像里的身份/背景、偏好、过往主题回答。",
+            "不要把 identity id、platform user id、open_id、userid 等内部标识当作用户姓名或复述给用户，除非用户明确要求技术排查。",
+            "如果用户画像里没有真实姓名或身份事实，可以说明“已识别为同一个已绑定用户，但目前没有足够真实姓名信息”，不要编造。",
+        ])
+        return "\n".join(lines)
+
+    if sender_ctx.channel_platform:
+        return (
+            f"[身份提示] 当前用户在 {current_platform} 平台，尚未关联跨平台身份。"
+            "\n如果用户提到自己在其他平台也和你聊过，你可以用 search_known_user 搜索并发起验证。"
+        )
+    return ""
+
+
 async def _build_system_prompt(
     mode: str = "safe",
     sender_id: str = "",
@@ -2028,21 +2078,9 @@ async def _build_system_prompt(
     try:
         from app.tenant.context import get_current_sender
         sender_ctx = get_current_sender()
-        if sender_ctx.identity_id and sender_ctx.linked_platforms:
-            platforms_str = ", ".join(
-                f"{p}({uid[:12]}...)" for p, uid in sender_ctx.linked_platforms.items()
-            )
-            session_context_blocks.append(
-                f"[跨平台身份] 当前用户已关联统一身份（identity: {sender_ctx.identity_id[:8]}...）。"
-                f"\n关联平台: {platforms_str}"
-                f"\n当前消息来自: {sender_ctx.channel_platform}"
-                f"\n该用户在所有关联平台的记忆和对话上下文是共享的。"
-            )
-        elif sender_ctx.channel_platform:
-            session_context_blocks.append(
-                f"[身份提示] 当前用户在 {sender_ctx.channel_platform} 平台，尚未关联跨平台身份。"
-                f"\n如果用户提到自己在其他平台也和你聊过，你可以用 search_known_user 搜索并发起验证。"
-            )
+        identity_context = _build_identity_context_block(sender_ctx, tenant)
+        if identity_context:
+            session_context_blocks.append(identity_context)
     except Exception:
         logger.warning("identity context injection failed", exc_info=True)
 
