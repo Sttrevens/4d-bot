@@ -63,6 +63,7 @@ _ENTER_SESSION_COOLDOWN = 60  # 秒
 # ── sync_msg cursor 持久化 + 消息归档（context backfill） ──
 _KF_ARCHIVE_TTL = 604800  # 7 天
 _KF_ARCHIVE_MAX_MSGS = 50  # 每用户最多保留 50 条（25 轮）
+_KF_SYNC_TOKEN_MAX_AGE_S_DEFAULT = 300
 
 
 def _save_kf_sync_state(tenant_id: str, cursor: str, token: str) -> None:
@@ -81,19 +82,45 @@ def _save_kf_sync_state(tenant_id: str, cursor: str, token: str) -> None:
         logger.debug("save kf sync state failed for %s", tenant_id)
 
 
-def _load_kf_sync_state(tenant_id: str) -> tuple[str, str]:
-    """加载保存的 sync_msg cursor + token。返回 (cursor, token)。"""
+def _load_kf_sync_state_payload(tenant_id: str) -> dict:
+    """加载保存的 sync_msg cursor + token + metadata。"""
     try:
         from app.services import redis_client as redis
         if not redis.available():
-            return "", ""
+            return {}
         raw = redis.execute("GET", f"kf_sync:{tenant_id}")
         if not raw:
-            return "", ""
+            return {}
         data = json.loads(raw)
-        return data.get("cursor", ""), data.get("token", "")
+        return data if isinstance(data, dict) else {}
     except Exception:
-        return "", ""
+        return {}
+
+
+def _load_kf_sync_state(tenant_id: str) -> tuple[str, str]:
+    """加载保存的 sync_msg cursor + token。返回 (cursor, token)。"""
+    data = _load_kf_sync_state_payload(tenant_id)
+    return data.get("cursor", ""), data.get("token", "")
+
+
+def _kf_sync_token_is_fresh(saved_at: float | int | str | None, *, now: float | None = None) -> bool:
+    """Return whether a saved WeCom KF callback token is recent enough for recovery.
+
+    sync_msg's callback token is not an access_token and can expire quickly; using
+    an old saved token on every restart causes deterministic 95007 errors.
+    """
+    try:
+        ts = float(saved_at or 0)
+    except (TypeError, ValueError):
+        return False
+    if ts <= 0:
+        return False
+    try:
+        max_age = int(os.getenv("WECOM_KF_SYNC_TOKEN_MAX_AGE_S", str(_KF_SYNC_TOKEN_MAX_AGE_S_DEFAULT)))
+    except ValueError:
+        max_age = _KF_SYNC_TOKEN_MAX_AGE_S_DEFAULT
+    now = time.time() if now is None else now
+    return max(0.0, now - ts) <= max_age
 
 
 def _archive_kf_msg(external_userid: str, role: str, content: str) -> None:
@@ -365,10 +392,10 @@ async def _pull_and_process(tenant, callback_token: str, open_kfid: str) -> None
 
         if data.get("errcode", -1) != 0:
             errcode = data.get("errcode", -1)
-            # token 失效已在 wecom_kf_client.sync_msg 内部自动重试，
-            # 如果到这里仍然报错，记录详细信息
+            # access_token 失效已在 wecom_kf_client.sync_msg 内部自动重试；
+            # 95007 是 callback msg token 失效，刷新 access_token 不会修复。
             if errcode in (95007, 42001, 40014):
-                logger.error("wecom_kf sync_msg token still invalid after refresh: errcode=%d %s",
+                logger.error("wecom_kf sync_msg credential still invalid: errcode=%d %s",
                              errcode, data.get("errmsg", ""))
                 break
             # 保存的 cursor 可能已过期，回退到无 cursor 重试一次
