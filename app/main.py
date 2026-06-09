@@ -1292,9 +1292,18 @@ async def _recover_missed_messages() -> None:
         set_current_tenant(tenant)
 
         try:
-            saved_cursor, saved_token = kf_wh._load_kf_sync_state(tenant_id)
+            saved_state = kf_wh._load_kf_sync_state_payload(tenant_id)
+            saved_cursor = str(saved_state.get("cursor") or "")
+            saved_token = str(saved_state.get("token") or "")
+            saved_ts = saved_state.get("ts")
             if not saved_cursor or not saved_token:
                 logger.debug("startup recovery: no saved kf cursor for %s, skip", tenant_id)
+                continue
+            if not kf_wh._kf_sync_token_is_fresh(saved_ts):
+                logger.info(
+                    "startup recovery: saved kf callback token stale for %s, skipping sync_msg",
+                    tenant_id,
+                )
                 continue
 
             logger.info("startup recovery: trying kf sync_msg for %s with saved cursor", tenant_id)
@@ -1308,7 +1317,7 @@ async def _recover_missed_messages() -> None:
 
             if data.get("errcode", -1) != 0:
                 logger.warning(
-                    "startup recovery: kf sync_msg failed for %s (token may be expired): %s",
+                    "startup recovery: kf sync_msg failed for %s (callback msg token may be expired): %s",
                     tenant_id, data.get("errmsg", ""),
                 )
                 recovery_failures.append(
