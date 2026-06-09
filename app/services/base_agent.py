@@ -2411,6 +2411,49 @@ _FILE_SENT_CLAIM = _re.compile(
     r"|文件已经发你了|已经发你了|已经发给你了)",
     _re.IGNORECASE,
 )
+_LINK_DONE_CLAIM = _re.compile(
+    r"((已经|已|刚刚).{0,12}(生成|创建|开好|开通|拿到|申请到).{0,12}(链接|客服链接|专属链接|接入链接))"
+    r"|((链接|客服链接|专属链接|接入链接).{0,12}(已经|已).{0,8}(生成|创建|开好|拿到))",
+    _re.IGNORECASE,
+)
+_APPROVAL_DONE_CLAIM = _re.compile(
+    r"((已经|已|刚刚).{0,12}(审批|批准|通过|同意).{0,12}(申请|请求|开通|实例|bot))"
+    r"|((申请|请求).{0,12}(已经|已).{0,8}(审批|批准|通过|同意))",
+    _re.IGNORECASE,
+)
+_REMINDER_DONE_CLAIM = _re.compile(
+    r"((已经|已|刚刚).{0,16}(设置|创建|安排|建好).{0,16}(提醒|每日提醒|每天提醒|定时任务|定时)"
+    r"|((提醒|每日提醒|每天提醒|定时任务|定时).{0,16}(已经|已).{0,8}(设置|创建|安排|建好))"
+    r"|((从明天|明天开始|以后|每天|每日).{0,20}(给你|发你|推送|提醒).{0,16}(餐单|菜单|减脂餐|推荐)))",
+    _re.IGNORECASE,
+)
+_REMINDER_INTENT = _re.compile(
+    r"((以后|之后|从明天|明天开始)?\s*(每天|每日).{0,24}(给我|帮我|提醒我|发我|推送).{0,24}"
+    r"(餐|餐单|菜单|减脂餐|推荐|提醒))",
+    _re.IGNORECASE,
+)
+_TASK_ASSIGNMENT_DONE_CLAIM = _re.compile(
+    r"((任务).{0,24}(分配好|分配完|已分配|已经分配|负责人.{0,8}(分配|添加|加好|加上))"
+    r"|((已经|已).{0,12}(把|将)?.{0,12}(任务).{0,18}(分配好|分配完|分配给|负责人.{0,8}(加好|添加)))"
+    r"|(全都|全部).{0,12}(分配好|分配完|安排好))",
+    _re.IGNORECASE,
+)
+_MESSAGE_GROUP_SEND_INTENT = _re.compile(
+    r"(发到|发送到|同步到|告知|通知).{0,20}(群|大群|群里|群内)"
+    r"|(群|大群|群里|群内).{0,20}(告知|通知|同步|发)"
+    r"|群消息通知|发到项目大群",
+    _re.IGNORECASE,
+)
+_DIRECT_NOTIFY_INTENT = _re.compile(
+    r"(通知|转告|告诉|私信|同步).{0,18}(Steven|steven|吴天骄|管理员|admin|后台|老板)",
+    _re.IGNORECASE,
+)
+_MESSAGE_GROUP_SEND_TOOLS = frozenset({"send_message_to_group", "send_feishu_message", "reply_feishu_message"})
+_DIRECT_NOTIFY_TOOLS = frozenset({"send_message_to_user", "send_feishu_message", "reply_feishu_message", "notify_admin"})
+_REMINDER_TOOLS_FOR_CLAIMS = frozenset({"set_reminder", "create_cron_agent"})
+_LINK_TOOLS_FOR_CLAIMS = frozenset({"get_kf_account_link", "add_kf_account", "provision_tenant", "approve_provision_request"})
+_APPROVAL_TOOLS_FOR_CLAIMS = frozenset({"approve_provision_request"})
+_TASK_ASSIGNMENT_TOOLS_FOR_CLAIMS = frozenset({"create_feishu_task", "update_feishu_task", "create_feishu_subtask"})
 
 
 def _export_file_sent_successfully(
@@ -2440,6 +2483,69 @@ def _required_action_failed(
         if any(marker.lower() in lowered for marker in failure_markers):
             return True
     return False
+
+
+def _action_satisfied(
+    required_tools: frozenset[str],
+    called: set[str],
+    action_outcomes: list[tuple[str, str]] | None,
+    *,
+    require_success_outcome: bool = False,
+    success_markers: tuple[str, ...] = ("→ 成功", "成功"),
+    failure_markers: tuple[str, ...] = ("→ 失败", "[ERROR]", "失败", "error", "权限不足", "暂未送达", "failed"),
+) -> bool:
+    if not (called & required_tools):
+        return False
+    related = [
+        str(outcome or "")
+        for tool_name, outcome in (action_outcomes or [])
+        if tool_name in required_tools
+    ]
+    if not related:
+        return not require_success_outcome
+    if any(any(marker.lower() in text.lower() for marker in failure_markers) for text in related):
+        return False
+    if require_success_outcome:
+        return any(any(marker.lower() in text.lower() for marker in success_markers) for text in related)
+    return True
+
+
+def check_unfulfilled_actions(
+    user_text: str,
+    tool_names: list[str],
+    action_outcomes: list[tuple[str, str]] | None = None,
+) -> list[str]:
+    """Return explicit user-requested actions that lack matching tool evidence."""
+    text = user_text or ""
+    called = set(tool_names or [])
+    missing: list[str] = []
+
+    if _MESSAGE_GROUP_SEND_INTENT.search(text) and not _action_satisfied(
+        _MESSAGE_GROUP_SEND_TOOLS,
+        called,
+        action_outcomes,
+    ):
+        missing.append("群消息通知")
+
+    if _DIRECT_NOTIFY_INTENT.search(text) and not _action_satisfied(
+        _DIRECT_NOTIFY_TOOLS,
+        called,
+        action_outcomes,
+        require_success_outcome=bool(action_outcomes),
+        success_markers=("→ 成功", "delivered_channels", "message_id", "成功"),
+    ):
+        missing.append("私信通知")
+
+    if _REMINDER_INTENT.search(text) and not _action_satisfied(
+        _REMINDER_TOOLS_FOR_CLAIMS,
+        called,
+        action_outcomes,
+        require_success_outcome=bool(action_outcomes),
+        success_markers=("已设置重复提醒", "已设置提醒", "下次提醒", "ID：rem_", "定时 Agent 任务", "已创建"),
+    ):
+        missing.append("定时提醒")
+
+    return missing
 
 
 def detect_action_claims(
@@ -2472,6 +2578,47 @@ def detect_action_claims(
     # “文件已经发你了” 这种声称必须有 export_file 的成功结果支撑。
     if _FILE_SENT_CLAIM.search(reply_text) and not _export_file_sent_successfully(action_outcomes):
         logger.info("action claim detected (file-send claim without confirmed export success): %s", reply_text[:80])
+        return True
+
+    if _REMINDER_DONE_CLAIM.search(reply_text) and not _action_satisfied(
+        _REMINDER_TOOLS_FOR_CLAIMS,
+        called,
+        action_outcomes,
+        require_success_outcome=True,
+        success_markers=("已设置重复提醒", "已设置提醒", "下次提醒", "ID：rem_", "定时 Agent 任务", "已创建"),
+    ):
+        logger.info("action claim detected (reminder claim without reminder success): %s", reply_text[:80])
+        return True
+
+    if _LINK_DONE_CLAIM.search(reply_text) and not _action_satisfied(
+        _LINK_TOOLS_FOR_CLAIMS,
+        called,
+        action_outcomes,
+        require_success_outcome=True,
+        success_markers=("→ 成功", "url", "link", "open_kfid", "已批准并自动开通实例"),
+    ):
+        logger.info("action claim detected (link claim without link success): %s", reply_text[:80])
+        return True
+
+    if _APPROVAL_DONE_CLAIM.search(reply_text) and not _action_satisfied(
+        _APPROVAL_TOOLS_FOR_CLAIMS,
+        called,
+        action_outcomes,
+        require_success_outcome=True,
+        success_markers=("→ 成功", "已批准", "已批准并自动开通实例", "状态，无需重复操作"),
+    ):
+        logger.info("action claim detected (approval claim without approval success): %s", reply_text[:80])
+        return True
+
+    if _TASK_ASSIGNMENT_DONE_CLAIM.search(reply_text) and not _action_satisfied(
+        _TASK_ASSIGNMENT_TOOLS_FOR_CLAIMS,
+        called,
+        action_outcomes,
+        require_success_outcome=True,
+        success_markers=("已分配给",),
+        failure_markers=("PARTIAL_ASSIGNEE_FAILURE", "负责人添加失败", "分配负责人 0/", "已分配给 0/", "1470500", "[ERROR]", "失败"),
+    ):
+        logger.info("action claim detected (task assignment claim without assignee success): %s", reply_text[:80])
         return True
 
     for pattern, required_tools in _ACTION_CLAIM_PATTERNS:
@@ -3377,6 +3524,11 @@ _PROGRESS_ADMIN_NOTIFY_CLAIM = re.compile(
     r"|((Steven|steven|吴天骄|管理员|admin|后台|老板).{0,18}(确认|知道|收到|处理)))",
     re.IGNORECASE,
 )
+_PROGRESS_RESULT_READY_CLAIM = re.compile(
+    r"(有结果|马上.{0,8}(发|给你结论|给你答案|给你推荐|给你选项)|"
+    r"快.{0,8}(筛|查|找|整理).{0,6}(完|好)|"
+    r"已经.{0,8}(筛|查|找|整理).{0,6}(完|好))"
+)
 
 
 def _notify_admin_succeeded(action_outcomes: list[tuple[str, str]] | None) -> bool:
@@ -3412,6 +3564,10 @@ def _sanitize_progress_hint(
         if re.search(r"(查|搜索|检索|收集资料|资料|数据|来源|网页|网上)", cleaned, re.IGNORECASE):
             logger.info("progress hint rewrote common-knowledge search claim: %s", cleaned)
             return "我给你拆一下这个营养思路"
+
+    if _PROGRESS_RESULT_READY_CLAIM.search(cleaned):
+        logger.info("progress hint rejected: overconfident result-ready claim: %s", cleaned)
+        return None
 
     if _PROGRESS_ADMIN_NOTIFY_CLAIM.search(cleaned) and not _notify_admin_succeeded(action_outcomes):
         logger.info("progress hint rejected: unsupported admin notify claim: %s", cleaned)
