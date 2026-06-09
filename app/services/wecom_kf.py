@@ -81,12 +81,12 @@ class WeComKfClient:
 
     def _clear_token_cache(self) -> None:
         """清除 token 缓存，强制下次请求重新获取。
-        用于 95007/42001 等 token 失效场景。
+        用于 access_token 失效场景。
         """
         self._token_cache.clear()
         logger.info("wecom kf token cache cleared")
 
-    _TOKEN_INVALID_CODES = {95007, 42001, 40014}
+    _ACCESS_TOKEN_INVALID_CODES = {42001, 40014}
 
     # ── 客服账号管理 API ──
 
@@ -233,7 +233,7 @@ class WeComKfClient:
             data = resp.json()
 
         errcode = data.get("errcode", 0)
-        if errcode in self._TOKEN_INVALID_CODES:
+        if errcode in self._ACCESS_TOKEN_INVALID_CODES:
             # token 失效，清除缓存并用新 token 重试一次
             logger.warning("wecom kf sync_msg token invalid (errcode=%d), refreshing token and retrying", errcode)
             self._clear_token_cache()
