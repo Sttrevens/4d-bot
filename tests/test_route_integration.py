@@ -163,3 +163,56 @@ class TestRouteQuotaCheck:
             reply = await route_message("hello", sender_id="u1", run_id="run-1")
 
             assert reply == "legacy 回复"
+
+    @pytest.mark.asyncio
+    async def test_codex_runtime_provider_returns_runtime_reply(self, mock_tenant):
+        """显式启用 Codex CLI provider 时，route_message 走通用 agent runtime。"""
+        from app.hermes_runtime.types import RuntimeResponse
+
+        mock_tenant.llm_provider = "openai"
+        mock_tenant.platform = "feishu"
+        mock_tenant.tools_enabled = ["think"]
+        mock_tenant.allowed_users = []
+        mock_tenant.trial_enabled = False
+        mock_tenant.quota_user_tokens_6h = 0
+        mock_tenant.agent_runtime = "legacy"
+        mock_tenant.agent_runtime_provider = "codex_cli"
+        mock_tenant.agent_runtime_enabled = True
+        mock_tenant.agent_runtime_shadow = False
+        mock_tenant.agent_runtime_rollout_percent = 100
+        mock_tenant.agent_runtime_fallback_to_legacy = True
+        mock_tenant.agent_runtime_timeout_seconds = 42
+        mock_tenant.agent_runtime_workspace = "/tmp/example-repo"
+        mock_tenant.agent_runtime_sandbox = "workspace-write"
+        mock_tenant.agent_runtime_auto_execute = True
+        mock_tenant.hermes_runtime_profile = "default"
+        mock_tenant.hermes_code_execution_backend = "none"
+        mock_tenant.mcp_enabled = False
+
+        with patch("app.tenant.context.get_current_tenant", return_value=mock_tenant), \
+             patch("app.router.intent.check_quota", return_value=(True, "")), \
+             patch("app.router.intent.check_rate_limit", return_value=(True, "")), \
+             patch("app.router.intent.chat_history") as mock_history, \
+             patch("app.router.intent.set_current_user"), \
+             patch("app.router.intent.record_usage"), \
+             patch("app.hermes_runtime.observability.record_runtime_event") as mock_runtime_event, \
+             patch("app.agent_runtime.client.AgentRuntimeClient.run_turn",
+                   new_callable=AsyncMock,
+                   return_value=RuntimeResponse(run_id="run-1", runtime="codex_cli", status="completed", final_text="Codex 回复")) as runtime_run, \
+             patch("app.router.intent.kimi_handle_message", new_callable=AsyncMock) as legacy_handler:
+
+            mock_history.get.return_value = []
+
+            from app.router.intent import route_message
+            reply = await route_message("hello", sender_id="u1", run_id="run-1")
+
+            assert reply == "Codex 回复"
+            legacy_handler.assert_not_awaited()
+            runtime_run.assert_awaited_once()
+            request = runtime_run.await_args.args[0]
+            assert request.runtime.provider == "codex_cli"
+            assert request.runtime.workspace == "/tmp/example-repo"
+            assert request.runtime.sandbox == "workspace-write"
+            selected = [call.args[0].to_dict() for call in mock_runtime_event.call_args_list
+                        if call.args[0].event == "runtime.selected"]
+            assert selected[0]["payload"]["choice"] == "codex_cli"

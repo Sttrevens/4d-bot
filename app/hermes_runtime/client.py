@@ -200,6 +200,31 @@ def _as_string_list(value) -> list[str]:
     return [str(v) for v in value if isinstance(v, str) and v.strip()]
 
 
+def _agent_runtime_provider(tenant) -> str:
+    raw_provider = getattr(tenant, "agent_runtime_provider", "")
+    provider = raw_provider.strip() if isinstance(raw_provider, str) else ""
+    if provider:
+        return provider
+    raw_legacy = getattr(tenant, "agent_runtime", "legacy")
+    return raw_legacy if isinstance(raw_legacy, str) and raw_legacy else "legacy"
+
+
+def _safe_runtime_sandbox(tenant) -> str:
+    raw_sandbox = getattr(tenant, "agent_runtime_sandbox", "read-only")
+    sandbox = raw_sandbox.strip() if isinstance(raw_sandbox, str) and raw_sandbox.strip() else "read-only"
+    if sandbox not in {"read-only", "workspace-write", "danger-full-access"}:
+        return "read-only"
+    auto_execute = getattr(tenant, "agent_runtime_auto_execute", False)
+    if sandbox != "read-only" and auto_execute is not True:
+        return "read-only"
+    return sandbox
+
+
+def _str_runtime_attr(tenant, name: str, default: str = "") -> str:
+    value = getattr(tenant, name, default)
+    return value if isinstance(value, str) else default
+
+
 def build_runtime_request(
     tenant,
     *,
@@ -255,11 +280,19 @@ def build_runtime_request(
             shadow_mode=shadow_mode,
         ),
         runtime=RuntimeOptions(
+            provider=_agent_runtime_provider(tenant),
             profile=str(getattr(tenant, "hermes_runtime_profile", "default") or "default"),
             memory_enabled=bool(getattr(tenant, "memory_context_enabled", True)),
             skills_enabled=True,
             mcp_enabled=bool(getattr(tenant, "mcp_enabled", False)),
             code_execution_backend=str(getattr(tenant, "hermes_code_execution_backend", "none") or "none"),
+            command=_str_runtime_attr(tenant, "agent_runtime_command", ""),
+            args=_as_string_list(getattr(tenant, "agent_runtime_args", [])),
+            workspace=_str_runtime_attr(tenant, "agent_runtime_workspace", ""),
+            sandbox=_safe_runtime_sandbox(tenant),
+            permission_mode=_str_runtime_attr(tenant, "agent_runtime_permission_mode", "plan") or "plan",
+            auto_execute=getattr(tenant, "agent_runtime_auto_execute", False) is True,
+            model=_str_runtime_attr(tenant, "agent_runtime_model", ""),
         ),
     )
 

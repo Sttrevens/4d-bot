@@ -5,6 +5,10 @@ def test_tenant_runtime_defaults_are_legacy_and_disabled():
     tenant = TenantConfig(tenant_id="pm-bot")
 
     assert tenant.agent_runtime == "legacy"
+    assert tenant.agent_runtime_provider == ""
+    assert tenant.agent_runtime_enabled is False
+    assert tenant.agent_runtime_auto_execute is False
+    assert tenant.agent_runtime_sandbox == "read-only"
     assert tenant.hermes_runtime_enabled is False
     assert tenant.hermes_runtime_shadow is False
     assert tenant.hermes_runtime_rollout_percent == 0
@@ -62,6 +66,32 @@ def test_selector_returns_hermes_for_full_rollout():
     )
 
     assert select_runtime(tenant, sender_id="u1", run_id="r1") == "hermes_sidecar"
+
+
+def test_selector_returns_codex_cli_when_explicitly_enabled():
+    from app.hermes_runtime.selector import select_runtime
+
+    tenant = TenantConfig(
+        tenant_id="pm-bot",
+        agent_runtime_provider="codex_cli",
+        agent_runtime_enabled=True,
+        agent_runtime_rollout_percent=100,
+    )
+
+    assert select_runtime(tenant, sender_id="u1", run_id="r1") == "codex_cli"
+
+
+def test_selector_keeps_local_agent_disabled_without_explicit_enable():
+    from app.hermes_runtime.selector import select_runtime
+
+    tenant = TenantConfig(
+        tenant_id="pm-bot",
+        agent_runtime_provider="claude_cli",
+        agent_runtime_enabled=False,
+        agent_runtime_rollout_percent=100,
+    )
+
+    assert select_runtime(tenant, sender_id="u1", run_id="r1") == "legacy"
 
 
 def test_runtime_request_round_trips_without_losing_policy():

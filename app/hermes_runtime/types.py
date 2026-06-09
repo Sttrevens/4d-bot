@@ -3,7 +3,17 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Literal
 
-RuntimeName = Literal["legacy", "legacy_shadow_hermes", "hermes_sidecar"]
+RuntimeName = Literal[
+    "legacy",
+    "legacy_shadow_hermes",
+    "legacy_shadow_codex_cli",
+    "legacy_shadow_claude_cli",
+    "legacy_shadow_custom_command",
+    "hermes_sidecar",
+    "codex_cli",
+    "claude_cli",
+    "custom_command",
+]
 
 
 def _dict(value: Any) -> dict[str, Any]:
@@ -62,6 +72,7 @@ class RuntimePolicy:
 
 @dataclass(slots=True)
 class RuntimeOptions:
+    provider: str = "hermes_sidecar"
     profile: str = "default"
     max_rounds: int = 12
     max_tool_result_chars: int = 20000
@@ -70,6 +81,13 @@ class RuntimeOptions:
     skills_enabled: bool = True
     mcp_enabled: bool = False
     code_execution_backend: str = "none"
+    command: str = ""
+    args: list[str] = field(default_factory=list)
+    workspace: str = ""
+    sandbox: str = "read-only"
+    permission_mode: str = "plan"
+    auto_execute: bool = False
+    model: str = ""
 
 
 @dataclass(slots=True)
@@ -121,9 +139,18 @@ class RuntimeResponse:
         return asdict(self)
 
     @classmethod
-    def failed(cls, run_id: str, code: str, message: str, *, retryable: bool = False) -> "RuntimeResponse":
+    def failed(
+        cls,
+        run_id: str,
+        code: str,
+        message: str,
+        *,
+        retryable: bool = False,
+        runtime: str = "hermes_sidecar",
+    ) -> "RuntimeResponse":
         return cls(
             run_id=run_id,
+            runtime=runtime,
             status="failed",
             error=RuntimeErrorInfo(code=code, message=message, retryable=retryable),
         )

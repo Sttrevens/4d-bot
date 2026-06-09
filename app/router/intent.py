@@ -231,7 +231,7 @@ async def route_message(
 
     multimodal, mm_reason = _is_multimodal(user_text, image_urls)
 
-    runtime_reply = await _try_hermes_runtime(
+    runtime_reply = await _try_agent_runtime(
         tenant=tenant,
         user_text=user_text,
         sender_id=sender_id,
@@ -259,7 +259,7 @@ async def route_message(
             image_urls=image_urls,
             assistant_reply=runtime_reply,
         )
-        _record(tenant.tenant_id, sender_id, "hermes-runtime", "hermes", t_start)
+        _record(tenant.tenant_id, sender_id, "agent-runtime", "agent-runtime", t_start)
         return runtime_reply
 
     if tenant.coding_model and not multimodal:
@@ -321,7 +321,7 @@ async def route_message(
     return reply
 
 
-async def _try_hermes_runtime(
+async def _try_agent_runtime(
     *,
     tenant,
     user_text: str,
@@ -337,10 +337,10 @@ async def _try_hermes_runtime(
     channel_platform: str,
 ) -> str | None:
     from app.hermes_runtime.client import (
-        HermesRuntimeClient,
         build_runtime_request,
         store_shadow_response,
     )
+    from app.agent_runtime.client import AgentRuntimeClient
     from app.hermes_runtime.selector import select_runtime
     from app.tenant.context import get_current_sender, get_current_channel
 
@@ -394,12 +394,16 @@ async def _try_hermes_runtime(
         image_urls=image_urls,
         channel_id=channel_id,
         platform=channel_platform,
-        shadow_mode=(choice == "legacy_shadow_hermes"),
+        shadow_mode=_is_shadow_runtime(choice),
     )
-    timeout = int(getattr(tenant, "hermes_runtime_timeout_seconds", 180) or 180)
-    client = HermesRuntimeClient(timeout_seconds=timeout)
+    timeout = (
+        _int_config(getattr(tenant, "agent_runtime_timeout_seconds", 0), 0)
+        or _int_config(getattr(tenant, "hermes_runtime_timeout_seconds", 180), 180)
+        or 180
+    )
+    client = AgentRuntimeClient(provider=_selected_runtime_provider(choice), timeout_seconds=timeout)
 
-    if choice == "legacy_shadow_hermes":
+    if _is_shadow_runtime(choice):
         async def _shadow() -> None:
             response = await client.run_turn(request)
             store_shadow_response(tenant.tenant_id, runtime_run_id, response)
@@ -412,19 +416,35 @@ async def _try_hermes_runtime(
     if response.status == "completed" and response.final_text:
         return response.final_text
 
-    if bool(getattr(tenant, "hermes_runtime_fallback_to_legacy", True)):
+    fallback = _bool_config(getattr(tenant, "agent_runtime_fallback_to_legacy", True), True) and _bool_config(
+        getattr(tenant, "hermes_runtime_fallback_to_legacy", True), True
+    )
+    if fallback:
         logger.warning(
-            "hermes runtime failed; falling back to legacy tenant=%s run=%s status=%s error=%s",
+            "agent runtime failed; falling back to legacy tenant=%s run=%s provider=%s status=%s error=%s",
             tenant.tenant_id,
             runtime_run_id,
+            _selected_runtime_provider(choice),
             response.status,
             response.error.code if response.error else "",
         )
         return None
 
     if response.error:
-        return f"抱歉，Hermes runtime 暂时不可用：{response.error.message}"
-    return "抱歉，Hermes runtime 没有返回可发送的结果。"
+        return f"抱歉，Agent runtime 暂时不可用：{response.error.message}"
+    return "抱歉，Agent runtime 没有返回可发送的结果。"
+
+
+def _is_shadow_runtime(choice: str) -> bool:
+    return choice.startswith("legacy_shadow_")
+
+
+def _selected_runtime_provider(choice: str) -> str:
+    if choice == "legacy_shadow_hermes":
+        return "hermes_sidecar"
+    if choice.startswith("legacy_shadow_"):
+        return choice.removeprefix("legacy_shadow_")
+    return choice
 
 
 def _hermes_session_id(

@@ -239,7 +239,23 @@ class TenantConfig:
     plugin_groups_enabled: list[str] = field(default_factory=list)  # 启用的工具组 ["core","feishu_collab","code_dev"]，空=全部
     plugin_lazy_loading: bool = True   # 是否按需加载工具（减少 context）
 
-    # ── Agent Runtime（Hermes sidecar 适配层）──
+    # ── Agent Runtime（通用本地/sidecar agent 适配层）──
+    # 默认全部关闭。Codex/Claude/custom local agents 只有显式启用才会接管消息。
+    agent_runtime_provider: str = ""  # "", "hermes_sidecar", "codex_cli", "claude_cli", "custom_command"
+    agent_runtime_enabled: bool = False
+    agent_runtime_shadow: bool = False
+    agent_runtime_rollout_percent: int = 0
+    agent_runtime_fallback_to_legacy: bool = True
+    agent_runtime_timeout_seconds: int = 180
+    agent_runtime_command: str = ""
+    agent_runtime_args: list[str] = field(default_factory=list)
+    agent_runtime_workspace: str = ""
+    agent_runtime_sandbox: str = "read-only"  # read-only | workspace-write | danger-full-access
+    agent_runtime_permission_mode: str = "plan"
+    agent_runtime_auto_execute: bool = False
+    agent_runtime_model: str = ""
+
+    # ── Agent Runtime（Hermes sidecar 适配层，向后兼容）──
     # legacy = 当前 Gemini/Kimi provider 路径；hermes_sidecar = 经 app/hermes_runtime 适配层。
     # 默认全部关闭，避免部署后自动切换流量。
     agent_runtime: str = "legacy"

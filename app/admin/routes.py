@@ -380,6 +380,14 @@ async def api_hermes_runtime_health(_token: str = Depends(_verify_token)):
     return health()
 
 
+@router.get("/api/runtime/providers")
+async def api_agent_runtime_providers(_token: str = Depends(_verify_token)):
+    """List selectable agent runtime providers and their declared capabilities."""
+    from app.agent_runtime.providers import list_provider_manifests
+
+    return {"providers": [item.to_dict() for item in list_provider_manifests()]}
+
+
 @router.get("/api/runtime/hermes/adoption")
 async def api_hermes_runtime_adoption(
     tenant_id: str = "",
