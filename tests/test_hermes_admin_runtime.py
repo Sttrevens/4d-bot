@@ -2,6 +2,19 @@ import pytest
 
 
 @pytest.mark.asyncio
+async def test_admin_agent_runtime_providers_lists_capabilities():
+    from app.admin.routes import api_agent_runtime_providers
+
+    response = await api_agent_runtime_providers(_token="test-token")
+
+    providers = {item["name"]: item for item in response["providers"]}
+    assert {"legacy", "hermes_sidecar", "codex_cli", "claude_cli", "custom_command"} <= set(providers)
+    assert providers["codex_cli"]["supports_streaming"] is True
+    assert providers["codex_cli"]["default_sandbox"] == "read-only"
+    assert providers["claude_cli"]["supports_sessions"] is True
+
+
+@pytest.mark.asyncio
 async def test_admin_hermes_runtime_health_reports_pinned_source(monkeypatch):
     from app.admin.routes import api_hermes_runtime_health
     from app.hermes_runtime.worker import UPSTREAM_HERMES_SHA

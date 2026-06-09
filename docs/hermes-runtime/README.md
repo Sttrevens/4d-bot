@@ -1,8 +1,8 @@
-# Hermes Runtime Integration Matrix
+# Agent Runtime Integration Matrix
 
 ## Decision
 
-The selected direction is **Option A: Hermes as an Agent OS sidecar runtime**.
+The selected direction started as **Option A: Hermes as an Agent OS sidecar runtime**. In the public `4d-bot` repo, the adapter is now generalized so tenants can also opt in to first-class local agent providers: Codex CLI, Claude CLI, Hermes sidecar, or a custom command.
 
 Our production bot keeps ownership of business identity, tenant routing, platform webhooks, tool allowlists, delivery, metering, trial, and deployment. Hermes is introduced behind an adapter as the agent capability substrate: agent loop, context engine, memory provider hooks, skill lifecycle, tool execution runtime, subagents, model/provider routing, MCP, terminal backends, and checkpoint-aware execution.
 
@@ -42,12 +42,13 @@ Hermes source must be pinned. Runtime integration must not depend on a floating 
 | [15-port-to-4d-bot.md](15-port-to-4d-bot.md) | Sibling repo port policy | Port map and drift controls | Generic runtime work is intentionally synced to `../4d-bot` |
 | [16-integration-qa-20260524.md](16-integration-qa-20260524.md) | Integrated branch QA evidence | Test commands, results, safety state, remaining gaps | Reviewers can judge merge readiness without reconstructing automation state |
 | [17-latest-stack-qa-20260525.md](17-latest-stack-qa-20260525.md) | Latest stacked branch QA evidence | Post-#49 slice list, fixes, test results, rollout safety | Reviewers can choose the latest stack over the older draft foundation PR |
+| [../local-agent-runtimes.md](../local-agent-runtimes.md) | Public local runtime provider guide | Codex/Claude/custom command config and safety defaults | OSS users can choose a runtime without reading Hermes internals |
 
 ## Complete Target State
 
 The complete state is reached when:
 
-1. Tenants can choose `legacy` or `hermes_sidecar` runtime without changing webhook handlers.
+1. Tenants can choose `legacy`, `hermes_sidecar`, `codex_cli`, `claude_cli`, or `custom_command` runtime without changing webhook handlers.
 2. Hermes runtime can execute our existing tools through the bridge and cannot access tools outside tenant allowlists.
 3. Repo-style skills, including `op7418/guizang-ppt-skill`, activate through short cards and read their full files on demand.
 4. Memory reads and writes are scoped by tenant, channel, user, and session, with our profile data remaining canonical unless explicitly migrated.
