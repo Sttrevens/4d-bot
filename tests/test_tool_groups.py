@@ -7,9 +7,9 @@ class TestSelectToolGroups:
     """_select_tool_groups: 根据用户消息选择工具组"""
 
     def test_empty_text_returns_all(self):
-        from app.services.base_agent import _select_tool_groups, _TOOL_GROUPS
+        from app.services.base_agent import _select_tool_groups, _TOOL_GROUP_NAMES
         result = _select_tool_groups("", "feishu")
-        assert result == set(_TOOL_GROUPS.keys())
+        assert result == set(_TOOL_GROUP_NAMES)
 
     def test_feishu_always_includes_feishu_collab(self):
         from app.services.base_agent import _select_tool_groups
@@ -31,10 +31,10 @@ class TestSelectToolGroups:
         assert "core" in result
 
     def test_generic_message_returns_all(self):
-        from app.services.base_agent import _select_tool_groups, _TOOL_GROUPS
+        from app.services.base_agent import _select_tool_groups, _TOOL_GROUP_NAMES
         # 没有匹配任何关键词 → 安全回退到全部
         result = _select_tool_groups("你好", "wecom_kf")
-        assert result == set(_TOOL_GROUPS.keys())
+        assert result == set(_TOOL_GROUP_NAMES)
 
     def test_multiple_groups_match(self):
         from app.services.base_agent import _select_tool_groups
@@ -70,12 +70,15 @@ class TestGetGroupToolNames:
         assert "save_memory" in names
 
     def test_multiple_groups(self):
-        from app.services.base_agent import _get_group_tool_names, _TOOL_GROUPS
+        from app.services.base_agent import _get_group_tool_names
+        from app.plugins.registry import plugin_registry
         names = _get_group_tool_names({"core", "research"})
         assert "think" in names  # from core
         assert "web_search" in names  # from core
         # research group should have social media tools
-        assert names & _TOOL_GROUPS["research"]
+        plugin_registry.discover()
+        research_names = plugin_registry.get_group_tool_names({"research"})
+        assert names & research_names
 
     def test_empty_groups(self):
         from app.services.base_agent import _get_group_tool_names
@@ -208,10 +211,10 @@ class TestExpandToolGroup:
         assert not new_names & current
 
     def test_expand_already_loaded(self):
-        from app.services.base_agent import _expand_tool_group, _TOOL_GROUPS
+        from app.services.base_agent import _expand_tool_group, _get_group_tool_names
         tenant = self._make_tenant()
         # 已加载 research 组的所有工具
-        current = set(_TOOL_GROUPS["research"])
+        current = _get_group_tool_names({"research"})
         new_tools, new_map = _expand_tool_group("research", tenant, current)
         assert len(new_tools) == 0
 
