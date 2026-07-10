@@ -1232,9 +1232,21 @@ async def _flush_after_wait(sender_id: str) -> None:
         logger.info("batched %d messages from %s (text merged, %d media items)",
                      len(batch), sender_id, len(all_media))
 
-    # 第一个媒体随文本一起发（初始调用）
-    first_media = all_media[:1] if all_media else None
-    remaining_media = all_media[1:]
+    try:
+        codex_channel_enabled = getattr(get_current_tenant(), "codex_channel_enabled", False) is True
+    except Exception:
+        codex_channel_enabled = False
+
+    # Codex channel runs are single external worker invocations. Keep the full
+    # batch together so multi-image prompts reach the worker in one request.
+    if codex_channel_enabled:
+        first_media = all_media or None
+        remaining_media: list[str] = []
+    else:
+        # Legacy Gemini path keeps the first media in the initial turn and
+        # streams the rest through inbox to avoid oversized inline payloads.
+        first_media = all_media[:1] if all_media else None
+        remaining_media = all_media[1:]
 
     if remaining_media:
         # 告知模型后续还有更多媒体
