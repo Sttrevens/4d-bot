@@ -147,6 +147,7 @@ projection goes to the existing host diagnostics.
 | scripts/run_tests.sh, .github/workflows/a13n-contract.yml | Host sanity and isolated SDK CI |
 | Project-TK/scripts/runtime_domain_contract.py | Domain-only request mapper and response correlation |
 | Project-TK/tests/ccgs_codex_migration/test_runtime_domain_contract.py, docs/runtime-domain-contract.md | Mapper verification and host integration boundary |
+| Project-TK/tools/ccgs_codex_migration/requirements.txt, common.py, tests/ccgs_codex_migration/test_frontmatter_parser.py, .github/workflows/ci.yml | Declare the mapper's YAML dependency in CI and preserve literal scalar endings in the existing migration parser |
 
 ## Verification
 
@@ -181,10 +182,14 @@ At the reviewed revisions, local validation produced:
 | Bot sanity with the real subprocess boundary enabled | 245 passed |
 | Bot full suite | 845 passed, 2 pre-existing memory failures, 8 missing-Chromium environment errors, 5 skipped |
 | Project-TK mapper contracts | 13 passed |
-| Project-TK required migration suite | 48 passed, 1 pre-existing PyYAML frontmatter trailing-newline failure |
+| Project-TK required migration suite, in a clean environment with the declared YAML dependency | 67 passed |
 | Project-TK staged commit validation; bot compile and whitespace checks | Passed |
 
 The two bot memory failures were reproduced in an exact `e03059f` checkout.
+The companion Project-TK change declares its YAML dependency for CI and repairs
+the existing parser's consumed boundary newline, with literal-scalar regressions
+for both the YAML and lightweight fallback backends. It changes developer tooling,
+not generated domain assets or gameplay runtime.
 No live model API call, deployment, or runtime rollout was performed.
 
 ## Port policy
