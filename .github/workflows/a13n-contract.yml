@@ -1,0 +1,48 @@
+name: a13n-contract
+
+on:
+  pull_request:
+    paths:
+      - 'app/agent_runtime/**'
+      - 'app/hermes_runtime/**'
+      - 'app/router/intent.py'
+      - 'app/tenant/config.py'
+      - 'requirements.txt'
+      - 'scripts/a13n_worker.py'
+      - 'scripts/setup_a13n_worker.sh'
+      - 'tests/a13n_worker/**'
+      - 'tests/test_a13n_adapter.py'
+      - 'tests/fixtures/a13n/**'
+      - '.github/workflows/a13n-contract.yml'
+  push:
+    branches: ['codex/a13n-*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  isolated-sdk-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install isolated locked SDK
+        run: |
+          python -m pip install uv
+          bash scripts/setup_a13n_worker.sh "$RUNNER_TEMP/a13n-foundation"
+          uv pip install --python "$RUNNER_TEMP/a13n-foundation/.venv/bin/python" 'pytest>=9,<10'
+      - name: Exercise real SDK without providers
+        run: |
+          "$RUNNER_TEMP/a13n-foundation/.venv/bin/python" -m pytest -q tests/a13n_worker
+      - name: Exercise Host and SDK subprocess boundary
+        run: |
+          uv python install 3.12
+          uv venv "$RUNNER_TEMP/bot-venv" --python 3.12
+          uv pip install --python "$RUNNER_TEMP/bot-venv/bin/python" -r requirements.txt pytest pytest-asyncio
+          export PATH="$RUNNER_TEMP/bot-venv/bin:$PATH"
+          export A13N_TEST_PYTHON="$RUNNER_TEMP/a13n-foundation/.venv/bin/python"
+          bash scripts/run_tests.sh tests/test_a13n_adapter.py

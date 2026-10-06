@@ -9,10 +9,12 @@ RuntimeName = Literal[
     "legacy_shadow_codex_cli",
     "legacy_shadow_claude_cli",
     "legacy_shadow_custom_command",
+    "legacy_shadow_a13n_harness",
     "hermes_sidecar",
     "codex_cli",
     "claude_cli",
     "custom_command",
+    "a13n_harness",
 ]
 
 

@@ -1,0 +1,26 @@
+{
+  "id": "a13n_read_only_replay",
+  "context": {"tenant_id": "contract-bot", "platform": "feishu"},
+  "user_text": "Read the delivery evidence and make a short plan.",
+  "expected_visible_tools": ["read_file", "think"],
+  "scripted_model_tool_calls": [
+    {"name": "read_file", "arguments": {"path": "delivery.md"}},
+    {"name": "think", "arguments": {"note": "Verify before sending"}}
+  ],
+  "scripted_tool_results": [
+    {"name": "read_file", "text": "Artifact delivery.md: ledger_id=ledger-evidence-7."},
+    {"name": "think", "text": "Plan: Verify before sending."}
+  ],
+  "final_text": "Artifact delivery.md: ledger_id=ledger-evidence-7.\nPlan: Verify before sending.",
+  "expect": {
+    "final": "Artifact delivery.md: ledger_id=ledger-evidence-7.\nPlan: Verify before sending.",
+    "call_sequence": ["read_file", "think"],
+    "visible_tools": ["read_file", "think"],
+    "ledger_ids": ["ledger-evidence-7"]
+  },
+  "assertions": {
+    "final_text_contains": ["delivery.md", "Verify before sending"],
+    "expected_call_sequence": ["read_file", "think"],
+    "tool_output_ledger_ids": ["ledger-evidence-7"]
+  }
+}

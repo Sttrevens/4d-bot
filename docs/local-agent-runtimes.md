@@ -19,6 +19,11 @@ The default remains safe:
 | `codex_cli` | `codex exec --json` | Codex local/CLI workflows with JSONL events | `read-only` sandbox |
 | `claude_cli` | `claude -p --output-format stream-json` | Claude local/CLI workflows and session-capable automation | `permission_mode=plan` |
 | `custom_command` | operator supplied | Any local agent that can print a final answer to stdout | Disabled unless opted in |
+| `a13n_harness` | isolated Python 3.13 worker | Experimental Run/State, permissions, usage correlation | Disabled unless opted in; current bot tool gates retained |
+
+The experimental Agent Foundation adapter requires an isolated, pinned worker
+environment. See [a13n integration spike](a13n-integration-spike.md) for setup,
+state/recovery limits, the permission contract, and rollback.
 
 The admin API exposes the same capability matrix:
 
@@ -97,7 +102,7 @@ For richer integrations, prefer implementing the shared `RuntimeRequest` / `Runt
 
 | Field | Default | Meaning |
 |---|---:|---|
-| `agent_runtime_provider` | `""` | `hermes_sidecar`, `codex_cli`, `claude_cli`, or `custom_command` |
+| `agent_runtime_provider` | `""` | `hermes_sidecar`, `codex_cli`, `claude_cli`, `custom_command`, or experimental `a13n_harness` |
 | `agent_runtime_enabled` | `false` | Required opt-in for local agent providers |
 | `agent_runtime_rollout_percent` | `0` | Visible traffic percentage from `0` to `100` |
 | `agent_runtime_shadow` | `false` | Run runtime in the background without delivering its answer |

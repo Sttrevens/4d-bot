@@ -63,7 +63,8 @@ PY
     tests/test_tool_groups.py \
     tests/test_tool_output_ledger.py \
     tests/test_scenario_replay.py \
-    tests/test_benchmark_runner.py
+    tests/test_benchmark_runner.py \
+    tests/test_a13n_adapter.py
 elif [[ "$mode" == "all" ]]; then
   "${PYTEST[@]}" tests/ -v
 else

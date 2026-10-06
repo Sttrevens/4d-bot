@@ -241,7 +241,7 @@ class TenantConfig:
 
     # ── Agent Runtime（通用本地/sidecar agent 适配层）──
     # 默认全部关闭。Codex/Claude/custom local agents 只有显式启用才会接管消息。
-    agent_runtime_provider: str = ""  # "", "hermes_sidecar", "codex_cli", "claude_cli", "custom_command"
+    agent_runtime_provider: str = ""  # also supports experimental "a13n_harness"
     agent_runtime_enabled: bool = False
     agent_runtime_shadow: bool = False
     agent_runtime_rollout_percent: int = 0
@@ -254,6 +254,8 @@ class TenantConfig:
     agent_runtime_permission_mode: str = "plan"
     agent_runtime_auto_execute: bool = False
     agent_runtime_model: str = ""
+    # Additional gates; existing tenant/tool/execution policies still apply.
+    a13n_tool_permissions: dict[str, str] = field(default_factory=dict)
 
     # ── Agent Runtime（Hermes sidecar 适配层，向后兼容）──
     # legacy = 当前 Gemini/Kimi provider 路径；hermes_sidecar = 经 app/hermes_runtime 适配层。

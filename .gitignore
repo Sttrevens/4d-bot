@@ -211,4 +211,5 @@ instances/
 
 # Sensitive runtime data
 .bot-memory/
+.runtime/
 tenants.json
