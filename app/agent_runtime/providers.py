@@ -97,6 +97,14 @@ _PROVIDERS = {
         supports_shell=True,
         safety_note="Only use commands from a trusted local environment.",
     ),
+    "a13n_harness": RuntimeProviderManifest(
+        name="a13n_harness",
+        label="Agent Foundation Harness (experimental)",
+        description="Run a pinned a13n Harness in an isolated Python 3.13 worker, reusing the bot tool bridge.",
+        supports_tools=True,
+        supports_sessions=True,
+        safety_note="Disabled by default. Host owns state persistence, permissions, and side-effect reconciliation.",
+    ),
 }
 
 

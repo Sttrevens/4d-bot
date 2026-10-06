@@ -396,6 +396,7 @@ async def _try_agent_runtime(
         platform=channel_platform,
         shadow_mode=_is_shadow_runtime(choice),
     )
+    request.conversation.fresh_start = _is_fresh_start(user_text)
     timeout = (
         _int_config(getattr(tenant, "agent_runtime_timeout_seconds", 0), 0)
         or _int_config(getattr(tenant, "hermes_runtime_timeout_seconds", 180), 180)
@@ -415,6 +416,14 @@ async def _try_agent_runtime(
     response = await client.run_turn(request)
     if response.status == "completed" and response.final_text:
         return response.final_text
+
+    # A runtime may suspend on a tool gate or lose state after dispatching a
+    # side effect. Re-running the prompt in legacy would bypass the gate or
+    # duplicate that effect. Older providers omit this additive resume flag.
+    if response.resume.get("fallback_safe") is False:
+        if response.status in {"awaiting_approval", "needs_confirmation"}:
+            return "这一步需要明确审批，任务已暂停，尚未执行待审批操作。"
+        return "任务已暂停，请先核对已执行操作和运行状态，再继续。"
 
     fallback = _bool_config(getattr(tenant, "agent_runtime_fallback_to_legacy", True), True) and _bool_config(
         getattr(tenant, "hermes_runtime_fallback_to_legacy", True), True

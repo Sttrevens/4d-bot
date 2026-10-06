@@ -4,7 +4,7 @@ import hashlib
 
 from app.hermes_runtime.types import RuntimeName
 
-_LOCAL_AGENT_PROVIDERS = {"codex_cli", "claude_cli", "custom_command"}
+_LOCAL_AGENT_PROVIDERS = {"codex_cli", "claude_cli", "custom_command", "a13n_harness"}
 
 
 def _str_attr(obj, name: str, default: str = "") -> str:

@@ -25,6 +25,10 @@ class AgentRuntimeClient:
             return await ClaudeCliRuntimeClient(timeout_seconds=self.timeout_seconds).run_turn(request)
         if provider == "custom_command":
             return await CustomCommandRuntimeClient(timeout_seconds=self.timeout_seconds).run_turn(request)
+        if provider == "a13n_harness":
+            from app.agent_runtime.a13n_adapter import A13nRuntimeClient
+
+            return await A13nRuntimeClient(timeout_seconds=self.timeout_seconds).run_turn(request)
         return RuntimeResponse.failed(
             request.run_id,
             "runtime_bad_request",
