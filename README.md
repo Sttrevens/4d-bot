@@ -29,6 +29,7 @@ bash install.sh
 - **记忆系统** — 三层架构：工作记忆 (对话历史) + 事件日志 (journal) + 语义记忆 (per-tenant 可配)
 - **浏览器自动化** — Playwright + Gemini Vision，操作任意网页
 - **能力自获取** — 动态安装 Python 包、创建自定义工具、申请基础设施变更
+- **可选本地 Agent Runtime** — 开源用户可显式接入 Codex CLI、Claude CLI、Hermes sidecar 或任意自定义本地命令；默认关闭且只读
 
 ## 架构概览
 
@@ -36,6 +37,7 @@ bash install.sh
 用户消息 → Webhook Handler (飞书/企微/微信客服)
          → 租户上下文设置 (contextvars)
          → route_message() (配额/限流/试用期检查)
+         → Agent Runtime Selector (默认 legacy，可选 Codex/Claude/Hermes/local command)
          → Gemini Agent Loop (flash, round 6+ 自动升级 pro)
            ├─ 40+ Function Calling 工具
            ├─ 多模态处理 (图片/语音/视频)
@@ -179,6 +181,7 @@ python -m app.main
 - `memory_*` — 记忆系统配置（日记/历史轮数/TTL）
 - `trial_*` — 试用期配置
 - `quota_*` / `rate_limit_*` — 配额和限流
+- `agent_runtime_*` — 可选本地 Agent Runtime，见 [`docs/local-agent-runtimes.md`](docs/local-agent-runtimes.md)
 
 详细字段说明见 `tenants.example.json` 中的注释。
 

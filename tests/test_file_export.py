@@ -241,3 +241,13 @@ class TestToolRegistration:
         """export_file 应在全局工具 map 中"""
         from app.services.base_agent import ALL_TOOL_MAP
         assert "export_file" in ALL_TOOL_MAP
+
+
+class TestToolResultOutcome:
+    def test_tool_result_outcome_helpers(self):
+        assert ToolResult.success("ok").outcome == "ok"
+        assert ToolResult.partial_success("sent with warning").outcome == "partial_success"
+        assert ToolResult.retryable_error("timeout").outcome == "retryable_error"
+        assert ToolResult.api_error("upstream").outcome == "retryable_error"
+        assert ToolResult.invalid_param("bad").outcome == "terminal_error"
+        assert ToolResult.blocked("blocked").outcome == "blocked"

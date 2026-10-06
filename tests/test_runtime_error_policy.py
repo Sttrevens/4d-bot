@@ -32,6 +32,7 @@ def test_httpx_read_error_is_transient_upstream_not_autofixable():
 
     assert decision.kind == "transient_upstream"
     assert not decision.autofix_allowed
+    assert not decision.diagnostic_only
     assert "network" in decision.labels
 
 
@@ -74,7 +75,24 @@ def test_allowed_tool_stack_trace_is_autofixable_code_bug():
 
     assert decision.kind == "code_bug"
     assert decision.autofix_allowed
+    assert not decision.diagnostic_only
     assert "allowed_path" in decision.labels
+
+
+def test_unknown_tool_is_code_bug_but_manual_when_no_allowed_path():
+    decision = classify_runtime_error(
+        _record(
+            category="tool_error",
+            summary="unknown tool: send_feishu_message",
+            detail="unknown tool: send_feishu_message",
+            tool_name="send_feishu_message",
+        )
+    )
+
+    assert decision.kind == "code_bug"
+    assert not decision.autofix_allowed
+    assert decision.diagnostic_only
+    assert "unknown_tool" in decision.labels
 
 
 def test_core_service_stack_trace_is_manual_diagnostic():
@@ -90,6 +108,7 @@ def test_core_service_stack_trace_is_manual_diagnostic():
     assert decision.kind == "manual_diagnostic"
     assert not decision.autofix_allowed
     assert decision.diagnostic_only
+    assert "core_service_path" in decision.labels
 
 
 def test_batch_allows_only_autofixable_code_errors_to_trigger():

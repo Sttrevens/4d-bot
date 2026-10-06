@@ -271,7 +271,7 @@ def test_memory_context_includes_short_term_state_as_background_not_instruction(
             "kind": "emotional_state",
             "confidence": 0.55,
             "sensitivity": "medium",
-            "expires_at": "2026-05-15T00:00:00+00:00",
+            "expires_at": "2026-07-15T00:00:00+00:00",
         }],
         "support_preferences": ["情绪低落时先共情，再拆解下一步"],
         "relationship_notes": ["逐渐信任 bot 能直接承认问题"],

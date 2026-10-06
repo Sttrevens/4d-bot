@@ -103,12 +103,31 @@ def _labels_for_transient(text: str) -> set[str]:
     return labels
 
 
+def _has_allowed_autofix_path(text: str) -> bool:
+    return bool(_ALLOWED_AUTOFIX_PATH_RE.search(text))
+
+
+def _has_core_service_path(text: str) -> bool:
+    return bool(_CORE_SERVICE_PATH_RE.search(text))
+
+
 def classify_runtime_error(error: Any) -> RuntimeErrorDecision:
+    """Classify one runtime error before auto-fix may run.
+
+    This function is intentionally deterministic and fail-closed. It never asks
+    an LLM to decide whether an upstream timeout should mutate code.
+    """
     category = str(getattr(error, "category", "") or "")
     text = _blob(error)
 
     if category in _SKIP_CATEGORIES:
-        return RuntimeErrorDecision(IGNORED, False, False, "skip_category", frozenset({"skip", category}))
+        return RuntimeErrorDecision(
+            kind=IGNORED,
+            autofix_allowed=False,
+            diagnostic_only=False,
+            reason="skip_category",
+            labels=frozenset({"skip", category}),
+        )
 
     transient_labels = _labels_for_transient(text)
     if transient_labels or re.search(r"auto_fix gemini API call failed|_self_get connection error", text, re.I):
@@ -120,85 +139,93 @@ def classify_runtime_error(error: Any) -> RuntimeErrorDecision:
         if not transient_labels:
             transient_labels.add("transient")
         return RuntimeErrorDecision(
-            TRANSIENT_UPSTREAM,
-            False,
-            False,
-            "upstream_or_network_failure",
-            frozenset(transient_labels),
+            kind=TRANSIENT_UPSTREAM,
+            autofix_allowed=False,
+            diagnostic_only=False,
+            reason="upstream_or_network_failure",
+            labels=frozenset(transient_labels),
         )
 
     if category == "timeout":
         return RuntimeErrorDecision(
-            TRANSIENT_UPSTREAM,
-            False,
-            False,
-            "runtime_timeout",
-            frozenset({"transient", "timeout"}),
+            kind=TRANSIENT_UPSTREAM,
+            autofix_allowed=False,
+            diagnostic_only=False,
+            reason="runtime_timeout",
+            labels=frozenset({"transient", "timeout"}),
         )
 
     if _SELF_FIX_RE.search(text):
-        return RuntimeErrorDecision(MANUAL_DIAGNOSTIC, False, True, "self_fix_failure", frozenset({"self_fix"}))
+        return RuntimeErrorDecision(
+            kind=MANUAL_DIAGNOSTIC,
+            autofix_allowed=False,
+            diagnostic_only=True,
+            reason="self_fix_failure",
+            labels=frozenset({"self_fix"}),
+        )
 
     if _UNKNOWN_TOOL_RE.search(text):
         return RuntimeErrorDecision(
-            CODE_BUG,
-            False,
-            True,
-            "unknown_tool_without_allowed_path",
-            frozenset({"unknown_tool"}),
+            kind=CODE_BUG,
+            autofix_allowed=False,
+            diagnostic_only=True,
+            reason="unknown_tool_without_allowed_path",
+            labels=frozenset({"unknown_tool"}),
         )
 
-    if _ALLOWED_AUTOFIX_PATH_RE.search(text):
+    if _has_allowed_autofix_path(text):
         return RuntimeErrorDecision(
-            CODE_BUG,
-            True,
-            False,
-            "stack_trace_points_to_allowed_autofix_path",
-            frozenset({"allowed_path"}),
+            kind=CODE_BUG,
+            autofix_allowed=True,
+            diagnostic_only=False,
+            reason="stack_trace_points_to_allowed_autofix_path",
+            labels=frozenset({"allowed_path"}),
         )
 
     if category in _CODE_BUG_CATEGORIES:
         labels = {"code_category"}
-        if _CORE_SERVICE_PATH_RE.search(text):
+        if _has_core_service_path(text):
             labels.add("core_service_path")
         return RuntimeErrorDecision(
-            MANUAL_DIAGNOSTIC,
-            False,
-            True,
-            "code_error_outside_autofix_write_boundary",
-            frozenset(labels),
+            kind=MANUAL_DIAGNOSTIC,
+            autofix_allowed=False,
+            diagnostic_only=True,
+            reason="code_error_outside_autofix_write_boundary",
+            labels=frozenset(labels),
         )
 
     if category in _TRIAGE_CATEGORIES:
         return RuntimeErrorDecision(
-            NEEDS_TRIAGE,
-            False,
-            False,
-            "requires_llm_code_bug_triage",
-            frozenset({"llm_triage"}),
+            kind=NEEDS_TRIAGE,
+            autofix_allowed=False,
+            diagnostic_only=False,
+            reason="requires_llm_code_bug_triage",
+            labels=frozenset({"llm_triage"}),
         )
 
     return RuntimeErrorDecision(
-        MANUAL_DIAGNOSTIC,
-        False,
-        True,
-        "unrecognized_or_unsafe_for_autofix",
-        frozenset({"fail_closed"}),
+        kind=MANUAL_DIAGNOSTIC,
+        autofix_allowed=False,
+        diagnostic_only=True,
+        reason="unrecognized_or_unsafe_for_autofix",
+        labels=frozenset({"fail_closed"}),
     )
 
 
 def classify_runtime_error_batch(errors: list[Any]) -> RuntimeErrorBatchDecision:
     decisions = tuple(classify_runtime_error(error) for error in errors)
+    autofixable = [
+        error for error, decision in zip(errors, decisions, strict=False)
+        if decision.autofix_allowed
+    ]
+    triage = [
+        error for error, decision in zip(errors, decisions, strict=False)
+        if decision.kind == NEEDS_TRIAGE
+    ]
     return RuntimeErrorBatchDecision(
         decisions=decisions,
-        autofixable_errors=[
-            error for error, decision in zip(errors, decisions, strict=False)
-            if decision.autofix_allowed
-        ],
-        triage_errors=[
-            error for error, decision in zip(errors, decisions, strict=False)
-            if decision.kind == NEEDS_TRIAGE
-        ],
-        transient_count=sum(1 for decision in decisions if decision.kind == TRANSIENT_UPSTREAM),
-        manual_count=sum(1 for decision in decisions if decision.diagnostic_only),
+        autofixable_errors=autofixable,
+        triage_errors=triage,
+        transient_count=sum(1 for d in decisions if d.kind == TRANSIENT_UPSTREAM),
+        manual_count=sum(1 for d in decisions if d.diagnostic_only),
     )

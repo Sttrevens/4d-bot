@@ -1,0 +1,53 @@
+{
+  "id": "web_search_summary",
+  "context": {
+    "tenant_id": "code-bot",
+    "platform": "feishu"
+  },
+  "user_text": "Search for the latest Python 3.13 release notes and give me a summary.",
+  "expected_visible_tools": [
+    "web_search",
+    "summarize_results"
+  ],
+  "scripted_model_tool_calls": [
+    {
+      "name": "web_search",
+      "arguments": {
+        "query": "Python 3.13 release notes"
+      }
+    },
+    {
+      "name": "summarize_results",
+      "arguments": {
+        "content_id": "ledger-search-001",
+        "format": "bullet_points"
+      }
+    }
+  ],
+  "scripted_tool_results": [
+    {
+      "name": "web_search",
+      "text": "Found 5 results for 'Python 3.13 release notes'. Top result: Python 3.13 introduces a new interactive interpreter, experimental JIT compiler, and improvements to error messages. ledger_id=ledger-search-001"
+    },
+    {
+      "name": "summarize_results",
+      "text": "Summary of Python 3.13 release notes:\n- New interactive interpreter (REPL) based on PyREPL\n- Experimental JIT compiler for performance\n- Improved error messages with color highlights\n- Deprecated legacy modules removed\nledger_id=ledger-summary-002"
+    }
+  ],
+  "final_text": "Here is a summary of the Python 3.13 release notes:\n- New interactive interpreter (REPL) based on PyREPL\n- Experimental JIT compiler for performance\n- Improved error messages with color highlights\n- Deprecated legacy modules removed",
+  "assertions": {
+    "final_text_contains": [
+      "Python 3.13",
+      "JIT compiler",
+      "error messages"
+    ],
+    "expected_call_sequence": [
+      "web_search",
+      "summarize_results"
+    ],
+    "tool_output_ledger_ids": [
+      "ledger-search-001",
+      "ledger-summary-002"
+    ]
+  }
+}

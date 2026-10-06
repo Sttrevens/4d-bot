@@ -360,6 +360,24 @@ def _get_allowed_write_paths() -> tuple[str, ...]:
     return _DEFAULT_ALLOWED_WRITE_PATHS
 
 
+def _is_autofix_write_path_allowed(path: str, allowed_paths: tuple[str, ...] | None = None) -> bool:
+    """Return whether auto-fix may write this path under the active tenant policy."""
+    normalized = str(path or "")
+    allowed = allowed_paths if allowed_paths is not None else _get_allowed_write_paths()
+    return bool(normalized) and any(normalized.startswith(prefix) for prefix in allowed)
+
+
+def _autofix_write_denial_message(path: str, allowed_paths: tuple[str, ...] | None = None) -> str:
+    """Build the shared denial text for auto-fix write boundary violations."""
+    normalized = str(path or "")
+    allowed = allowed_paths if allowed_paths is not None else _get_allowed_write_paths()
+    return (
+        f"不允许修改 {normalized}（超出 auto-fix 修复范围）。\n"
+        f"auto-fix 只能修改应用层代码：{', '.join(allowed)}\n"
+        f"如果 bug 在基础设施层，请在修复报告中描述问题和建议方案，管理员会人工处理。"
+    )
+
+
 def _execute_tool(func_name: str, func_args: dict, tool_map: dict) -> str:
     """执行工具调用并返回结果字符串（含安全检查）"""
     from app.tools.tool_result import ToolResult
@@ -367,13 +385,8 @@ def _execute_tool(func_name: str, func_args: dict, tool_map: dict) -> str:
     # 安全检查：auto-fix 只能修改应用层文件（per-tenant allowlist 策略）
     if func_name in ("self_write_file", "self_edit_file"):
         path = func_args.get("path", "")
-        allowed = _get_allowed_write_paths()
-        if not any(path.startswith(a) for a in allowed):
-            return (
-                f"不允许修改 {path}（超出 auto-fix 修复范围）。\n"
-                f"auto-fix 只能修改应用层代码：{', '.join(allowed)}\n"
-                f"如果 bug 在基础设施层，请在修复报告中描述问题和建议方案，管理员会人工处理。"
-            )
+        if not _is_autofix_write_path_allowed(path):
+            return _autofix_write_denial_message(path)
 
     handler = tool_map.get(func_name)
     if handler is None:

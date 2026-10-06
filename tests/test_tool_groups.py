@@ -7,9 +7,9 @@ class TestSelectToolGroups:
     """_select_tool_groups: 根据用户消息选择工具组"""
 
     def test_empty_text_returns_all(self):
-        from app.services.base_agent import _select_tool_groups, _TOOL_GROUP_NAMES
+        from app.services.base_agent import _select_tool_groups, _get_all_tool_groups
         result = _select_tool_groups("", "feishu")
-        assert result == set(_TOOL_GROUP_NAMES)
+        assert result == _get_all_tool_groups()
 
     def test_feishu_always_includes_feishu_collab(self):
         from app.services.base_agent import _select_tool_groups
@@ -31,10 +31,10 @@ class TestSelectToolGroups:
         assert "core" in result
 
     def test_generic_message_returns_all(self):
-        from app.services.base_agent import _select_tool_groups, _TOOL_GROUP_NAMES
+        from app.services.base_agent import _select_tool_groups, _get_all_tool_groups
         # 没有匹配任何关键词 → 安全回退到全部
         result = _select_tool_groups("你好", "wecom_kf")
-        assert result == set(_TOOL_GROUP_NAMES)
+        assert result == _get_all_tool_groups()
 
     def test_multiple_groups_match(self):
         from app.services.base_agent import _select_tool_groups
@@ -492,3 +492,60 @@ class TestDeepResearchInstructions:
         from app.services.base_agent import _MAX_TOOL_RESULT_LEN
         # 至少 16000 以避免截断导致 URL 幻觉
         assert _MAX_TOOL_RESULT_LEN >= 16000
+
+
+class TestRegistryGroupDiscovery:
+    def test_groups_include_manifest_changes_and_external_plugins(self, monkeypatch):
+        from types import SimpleNamespace
+        from app.plugins.registry import ToolManifest, plugin_registry
+        from app.services.base_agent import _get_all_tool_groups, _select_tool_groups
+
+        plugin_registry.discover()
+        monkeypatch.setattr(plugin_registry, "_plugins", plugin_registry.list_plugins())
+        monkeypatch.setattr(plugin_registry.get_plugin("browser_ops").manifest, "group", "new_manifest_group")
+        plugin_registry.register_external(
+            "test_external", ToolManifest(group="new_external_group"),
+            SimpleNamespace(TOOL_DEFINITIONS=[], TOOL_MAP={}),
+        )
+        expected = set(plugin_registry.get_all_groups()) | {"core"}
+        assert _get_all_tool_groups() == expected
+        assert {"new_manifest_group", "new_external_group"} <= expected
+        assert _select_tool_groups("") == expected
+        assert _select_tool_groups("你好", "wecom_kf") == expected
+
+
+class TestExportFileRegression:
+    _make_tenant = TestGetTenantToolsLazyLoading._make_tenant
+    @pytest.mark.parametrize("groups", [{"core"}, {"content"}, {"core", "research"}, {"core", "content", "code_dev"}])
+    def test_export_schema_and_handler_in_explicit_groups(self, groups):
+        from app.plugins.registry import plugin_registry
+        from app.services.base_agent import _get_tenant_tools, _get_group_tool_names
+        from app.tools.file_export import TOOL_MAP
+
+        plugin_registry.discover()
+        assert plugin_registry.get_plugin("file_export").manifest.group == "content"
+        assert "export_file" in _get_group_tool_names(groups)
+        tools, tool_map = _get_tenant_tools(self._make_tenant("wecom_kf"), override_groups=groups)
+        names = [t["function"]["name"] for t in tools]
+        assert names.count("export_file") == 1
+        assert tool_map["export_file"] is TOOL_MAP["export_file"]
+        if groups == {"core"}:
+            assert "generate_image" not in names
+
+    @pytest.mark.parametrize("text", ["检查 git 代码", "调研小红书", "生成PDF报告", "查日程并生成PDF报告", "你好", ""])
+    def test_export_in_keyword_and_fallback_paths(self, text):
+        from app.services.base_agent import _get_tenant_tools
+        tools, tool_map = _get_tenant_tools(self._make_tenant("wecom_kf"), user_text=text)
+        assert sum(t["function"]["name"] == "export_file" for t in tools) == 1
+        assert callable(tool_map["export_file"])
+
+    def test_export_respects_tenant_whitelist(self):
+        from app.services.base_agent import _get_tenant_tools, _expand_tool_group
+        tenant = self._make_tenant("wecom_kf")
+        tenant.tools_enabled = ["web_search"]
+        tools, tool_map = _get_tenant_tools(tenant, override_groups={"core"})
+        assert "export_file" not in {t["function"]["name"] for t in tools}
+        assert "export_file" not in tool_map
+        tools, tool_map = _expand_tool_group("core", tenant, set())
+        assert "export_file" not in {t["function"]["name"] for t in tools}
+        assert "export_file" not in tool_map
