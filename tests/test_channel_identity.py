@@ -270,8 +270,8 @@ class TestIdentityToolRegistration:
         assert "initiate_identity_verification" in names
 
     def test_identity_tools_in_core_group(self):
-        from app.services.base_agent import _TOOL_GROUPS
-        core = _TOOL_GROUPS["core"]
+        from app.services.base_agent import _get_group_tool_names
+        core = _get_group_tool_names({"core"})
         assert "search_known_user" in core
         assert "get_user_identity" in core
 

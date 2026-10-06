@@ -60,6 +60,7 @@ PY
     tests/test_tool_escalation.py \
     tests/test_empty_fallback.py \
     tests/test_plugin_registry.py \
+    tests/test_tool_groups.py \
     tests/test_tool_output_ledger.py \
     tests/test_scenario_replay.py \
     tests/test_benchmark_runner.py
